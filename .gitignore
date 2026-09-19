@@ -40,3 +40,16 @@ packaging/aur/waydroid-nvidia-bin/*.tar.zst
 # Test binaries (built on demand by tests/run-probe.sh)
 tests/nvimportprobe
 tests/nvimportprobe-portable
+
+# Local measurements, release archives and credentials (publish binaries as assets)
+/perf.data*
+*.core
+core.[0-9]*
+/.venv/
+/venv/
+/.env
+/.env.*
+!/.env.example
+/dist/
+/artifacts/
+*.pkg.tar.*

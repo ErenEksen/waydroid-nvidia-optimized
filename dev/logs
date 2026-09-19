@@ -11,15 +11,13 @@ set +e
 LOG=/var/lib/waydroid/waydroid.log
 GFX_RE='gralloc|Gralloc|EGL|egl|[Vv]ulkan|SurfaceFlinger|hwcomposer|hwc|libEGL|swiftshader|mesa|drm|minigbm|venus|ANGLE'
 
-# waydroid.log is world-readable (0644) and the wheel group reads the system
-# journal — no sudo needed for either. logcat goes through guest() (lxc-attach,
-# NOPASSWD-allowlisted) instead of `sudo waydroid.py logcat` (bare sudo without
-# a tty burns PAM attempts -> faillock; see STATE.md).
+# Host log/journal access is read-only. Guest logcat uses noninteractive sudo;
+# authenticate in your own terminal first. No NOPASSWD rule is required.
 case "${1:-dump}" in
   -f)    exec tail -f "$LOG" ;;
   gfx)   guest 'logcat -d' | grep -E "$GFX_RE" ;;
-  all)   exec guest 'logcat -d' ;;
-  crash) exec guest 'logcat -d -b crash -t 400' ;;
+  all)   guest 'logcat -d' ;;
+  crash) guest 'logcat -d -b crash -t 400' ;;
   units)
     echo "===== $VENUS_UNIT (user) ====="; journalctl --user -u "$VENUS_UNIT" -n 40 --no-pager
     echo "===== $CONTAINER_UNIT ====="; journalctl -u "$CONTAINER_UNIT" -n 40 --no-pager

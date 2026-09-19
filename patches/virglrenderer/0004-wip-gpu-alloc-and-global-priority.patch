@@ -1,5 +1,5 @@
 diff --git a/server/render_context.c b/server/render_context.c
-index 718b1b5..d58a6fb 100644
+index 718b1b5..aa52283 100644
 --- a/server/render_context.c
 +++ b/server/render_context.c
 @@ -62,8 +62,53 @@ render_context_dispatch_submit_fence(struct render_context *ctx,
@@ -66,6 +66,28 @@ index 718b1b5..d58a6fb 100644
 +      RENDER_CONTEXT_DISPATCH(IMPORT_SEMAPHORE, import_semaphore, 1),
  #undef RENDER_CONTEXT_DISPATCH
     };
+ 
+@@ -252,6 +299,11 @@ render_context_dispatch(struct render_context *ctx)
+    }
+ 
+    const bool ok = entry->dispatch(ctx, &req, req_fds, req_fd_count);
++   /* IMPORT_SEMAPHORE consumes every supplied fd even when its reply cannot
++    * be sent. Do not close an already transferred/reused descriptor twice. */
++   if (req.header.op == RENDER_CONTEXT_OP_IMPORT_SEMAPHORE)
++      for (int i = 0; i < req_fd_count; i++)
++         req_fds[i] = -1;
+    if (!ok) {
+       render_log("failed to dispatch context op %d", req.header.op);
+       goto fail;
+@@ -261,7 +313,8 @@ render_context_dispatch(struct render_context *ctx)
+ 
+ fail:
+    for (int i = 0; i < req_fd_count; i++)
+-      close(req_fds[i]);
++      if (req_fds[i] >= 0)
++         close(req_fds[i]);
+    return false;
+ }
  
 diff --git a/server/render_protocol.h b/server/render_protocol.h
 index ed74a1e..a172b75 100644
@@ -207,9 +229,18 @@ index e271986..819f4e3 100644
  render_state_create_resource(uint32_t ctx_id,
                               uint32_t res_id,
 diff --git a/src/proxy/proxy_context.c b/src/proxy/proxy_context.c
-index b718ef2..1a5c533 100644
+index b718ef2..ebbf375 100644
 --- a/src/proxy/proxy_context.c
 +++ b/src/proxy/proxy_context.c
+@@ -225,7 +225,7 @@ proxy_context_export_fence(struct virgl_context *base,
+          return -ENOTCONN;
+       if (reply_fd_count)
+          close(reply_fd);
+-      return 1;
++      return reply.status == RENDER_CONTEXT_EXPORT_FENCE_SIGNALED ? 1 : -EIO;
+    }
+ 
+    /* translate fence_id to the render-server seqno of the pending fence; if
 @@ -291,10 +291,11 @@ proxy_context_export_fence(struct virgl_context *base,
  }
  
@@ -327,7 +358,7 @@ index b718ef2..1a5c533 100644
  
  static bool
 diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
-index c170bd3..9b8992c 100644
+index c170bd3..2433bb4 100644
 --- a/src/venus/vkr_context.c
 +++ b/src/venus/vkr_context.c
 @@ -5,10 +5,19 @@
@@ -350,7 +381,7 @@ index c170bd3..9b8992c 100644
  #include "util/anon_file.h"
  #include "venus-protocol/vn_protocol_renderer_dispatches.h"
  
-@@ -136,10 +145,11 @@ vkr_context_init_proc_table(struct vkr_context *ctx)
+@@ -136,11 +145,15 @@ vkr_context_init_proc_table(struct vkr_context *ctx)
  }
  
  bool
@@ -364,9 +395,13 @@ index c170bd3..9b8992c 100644
 +                          uint64_t fence_id,
 +                          uint64_t timeline_point)
  {
++   if (atomic_load(&ctx->sync_failed))
++      return false;
++
     /* retire fence on cpu timeline directly */
     if (ring_idx == 0) {
-@@ -155,11 +165,309 @@ vkr_context_submit_fence(struct vkr_context *ctx,
+       ctx->retire_fence(ctx->ctx_id, ring_idx, fence_id);
+@@ -155,17 +168,344 @@ vkr_context_submit_fence(struct vkr_context *ctx,
     /* always merge fences */
     assert(!(flags & ~VIRGL_RENDERER_FENCE_FLAG_MERGEABLE));
     flags = VIRGL_RENDERER_FENCE_FLAG_MERGEABLE;
@@ -403,10 +438,15 @@ index c170bd3..9b8992c 100644
 +                                int sync_file_fd,
 +                                uint64_t timeline_point)
 +{
++   if (atomic_load(&ctx->sync_failed)) {
++      if (sync_file_fd >= 0)
++         close(sync_file_fd);
++      return;
++   }
 +   const int drm_fd = ctx->timeline.drm_fd;
 +   bool imported = false;
 +
-+   const int64_t t0 = vkr_timeline_now_ns();
++   const int64_t t0 = ctx->perf_stats ? vkr_timeline_now_ns() : 0;
 +   int64_t t_ioctl = t0, t_close = t0;
 +
 +   if (sync_file_fd >= 0 && ctx->timeline.one_ioctl) {
@@ -448,29 +488,29 @@ index c170bd3..9b8992c 100644
 +                 !ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TRANSFER, &xfer);
 +   }
 +
-+   if (!imported) {
-+      /* fd < 0 = fence already signaled; also the failure fallback so the
-+       * client never stalls on WAIT_AVAILABLE
-+       */
-+      if (sync_file_fd >= 0)
-+         vkr_log("timeline: import at point %" PRIu64 " failed, signaling",
-+                 timeline_point);
++   if (!imported && sync_file_fd == -1) {
++      /* Only a successful Vulkan export may provide the -1 signaled sentinel. */
 +      const uint64_t point = timeline_point;
 +      const uint32_t handle = ctx->timeline.handle;
 +      struct drm_syncobj_timeline_array signal = {
-+         .handles = (uintptr_t)&handle,
-+         .points = (uintptr_t)&point,
-+         .count_handles = 1,
++         .handles = (uintptr_t)&handle, .points = (uintptr_t)&point, .count_handles = 1,
 +      };
-+      ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &signal);
++      imported = !ioctl(drm_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_SIGNAL, &signal);
++   }
++   if (!imported) {
++      atomic_store(&ctx->sync_failed, true);
++      vkr_log("timeline: materialization failed at point %" PRIu64
++              "; refusing to signal incomplete GPU work", timeline_point);
 +   }
 +
-+   t_ioctl = vkr_timeline_now_ns();
++   if (ctx->perf_stats)
++      t_ioctl = vkr_timeline_now_ns();
 +   if (sync_file_fd >= 0)
 +      close(sync_file_fd);
-+   t_close = vkr_timeline_now_ns();
++   if (ctx->perf_stats)
++      t_close = vkr_timeline_now_ns();
 +
-+   if (t_close - t0 > 2000000)
++   if (ctx->perf_stats && t_close - t0 > 2000000)
 +      vkr_log("NVWD-TL slow import point %" PRIu64 ": ioctls %" PRId64
 +              " us close %" PRId64 " us (%s)",
 +              timeline_point, (t_ioctl - t0) / 1000, (t_close - t_ioctl) / 1000,
@@ -624,12 +664,20 @@ index c170bd3..9b8992c 100644
 +       * must land monotonically) or import inline (would bill fence releases
 +       * to this thread)
 +       */
-+      while (ctx->timeline.worker.count == ARRAY_SIZE(ctx->timeline.worker.jobs))
++      while (ctx->timeline.worker.count == ARRAY_SIZE(ctx->timeline.worker.jobs)) {
++         if (ctx->perf_stats)
++            ctx->perf_timeline_waits++;
 +         cnd_wait(&ctx->timeline.worker.space, &ctx->timeline.mutex);
++      }
 +
 +      ctx->timeline.worker.jobs[ctx->timeline.worker.count].fd = sync_file_fd;
 +      ctx->timeline.worker.jobs[ctx->timeline.worker.count].point = timeline_point;
 +      ctx->timeline.worker.count++;
++      if (ctx->perf_stats && ctx->timeline.worker.count > ctx->perf_timeline_high_water) {
++         ctx->perf_timeline_high_water = ctx->timeline.worker.count;
++         vkr_log("NVWD-PERF timeline_high_water=%u timeline_waits=%" PRIu64,
++                 ctx->perf_timeline_high_water, ctx->perf_timeline_waits);
++      }
 +      cnd_signal(&ctx->timeline.worker.cond);
 +      mtx_unlock(&ctx->timeline.mutex);
 +      return;
@@ -645,13 +693,15 @@ index c170bd3..9b8992c 100644
 +                                     uint64_t semaphore_id,
 +                                     int sync_file_fd)
 +{
++   mtx_lock(&ctx->external_sync_mutex);
 +   struct vkr_device *dev = vkr_context_get_object(ctx, device_id);
 +   struct vkr_semaphore *sem = vkr_context_get_object(ctx, semaphore_id);
 +   if (!dev || dev->base.type != VK_OBJECT_TYPE_DEVICE || !sem ||
-+       sem->base.type != VK_OBJECT_TYPE_SEMAPHORE) {
++       sem->base.type != VK_OBJECT_TYPE_SEMAPHORE || sem->device != dev) {
 +      vkr_log("import_semaphore: bad object ids dev %" PRIu64 " sem %" PRIu64,
 +              device_id, semaphore_id);
 +      close(sync_file_fd);
++      mtx_unlock(&ctx->external_sync_mutex);
 +      return -EINVAL;
 +   }
 +
@@ -662,8 +712,20 @@ index c170bd3..9b8992c 100644
 +      .handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT,
 +      .fd = sync_file_fd,
 +   };
++   const int64_t begin = ctx->perf_stats ? vkr_timeline_now_ns() : 0;
 +   VkResult result =
 +      dev->proc_table.ImportSemaphoreFdKHR(dev->base.handle.device, &info);
++   if (ctx->perf_stats) {
++      ctx->perf_imports++;
++      ctx->perf_import_errors += result != VK_SUCCESS;
++      ctx->perf_import_ns += vkr_timeline_now_ns() - begin;
++      if ((ctx->perf_imports & 255) == 1)
++         vkr_log("NVWD-PERF imports=%" PRIu64 " import_errors=%" PRIu64 " import_ns=%" PRIu64,
++                 ctx->perf_imports, ctx->perf_import_errors, ctx->perf_import_ns);
++   }
++   if (result == VK_ERROR_DEVICE_LOST)
++      atomic_store(&ctx->sync_failed, true);
++   mtx_unlock(&ctx->external_sync_mutex);
 +   if (result != VK_SUCCESS) {
 +      vkr_log("import_semaphore: vkImportSemaphoreFdKHR failed %d", result);
 +      close(sync_file_fd);
@@ -677,7 +739,24 @@ index c170bd3..9b8992c 100644
  int
  vkr_context_export_fence(struct vkr_context *ctx,
                           uint32_t ring_idx,
-@@ -644,6 +952,25 @@ vkr_context_destroy(struct vkr_context *ctx)
+                          uint64_t fence_id,
+                          int *out_fd)
+ {
++   if (atomic_load(&ctx->sync_failed))
++      return -ENODEV;
+    /* ring 0 is the cpu timeline: fences retire at submit time */
+    if (ring_idx == 0)
+       return 1;
+@@ -182,7 +522,7 @@ bool
+ vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
+ {
+    /* CS error is considered fatal (destroy the context?) */
+-   if (vkr_context_get_fatal(ctx)) {
++   if (vkr_context_get_fatal(ctx) || atomic_load(&ctx->sync_failed)) {
+       vkr_log("submit_cmd: early bail due to fatal decoder state");
+       return false;
+    }
+@@ -644,6 +984,25 @@ vkr_context_destroy(struct vkr_context *ctx)
  
     vkr_context_wait_ring_fini(ctx);
  
@@ -703,23 +782,70 @@ index c170bd3..9b8992c 100644
     if (ctx->ring_monitor.started)
        vkr_context_ring_monitor_fini(ctx);
  
-@@ -727,6 +1054,11 @@ vkr_context_create(uint32_t ctx_id,
+@@ -659,12 +1018,18 @@ vkr_context_destroy(struct vkr_context *ctx)
+ 
+    _mesa_hash_table_destroy(ctx->object_table, vkr_context_free_object);
+    mtx_destroy(&ctx->object_mutex);
++   mtx_destroy(&ctx->external_sync_mutex);
+ 
+    vkr_cs_encoder_fini(&ctx->encoder);
+    vkr_cs_decoder_fini(&ctx->decoder);
+ 
+    vkr_library_unload(&ctx->vulkan_library);
+ 
++   if (ctx->perf_stats)
++      vkr_log("NVWD-PERF imports=%" PRIu64 " import_errors=%" PRIu64
++              " import_ns=%" PRIu64 " timeline_high_water=%u timeline_waits=%" PRIu64,
++              ctx->perf_imports, ctx->perf_import_errors, ctx->perf_import_ns,
++              ctx->perf_timeline_high_water, ctx->perf_timeline_waits);
+    free(ctx->debug_name);
+    free(ctx);
+ }
+@@ -727,6 +1092,15 @@ vkr_context_create(uint32_t ctx_id,
     if (!vkr_context_wait_ring_init(ctx))
        goto err_ctx_wait_ring_init;
  
++   if (mtx_init(&ctx->external_sync_mutex, mtx_plain) != thrd_success)
++      goto err_external_sync_mutex;
++   atomic_init(&ctx->sync_failed, false);
++   ctx->perf_stats = getenv("VTEST_PERF_STATS") && !strcmp(getenv("VTEST_PERF_STATS"), "1");
 +   if (mtx_init(&ctx->timeline.mutex, mtx_plain) != thrd_success)
-+      goto err_ctx_wait_ring_init;
++      goto err_timeline_mutex;
 +   ctx->timeline.drm_fd = -1;
 +   ctx->timeline.handle = 0;
 +
     if (mtx_init(&ctx->object_mutex, mtx_plain) != thrd_success)
        goto err_ctx_object_mutex;
  
+@@ -771,6 +1145,10 @@ err_ctx_resource_mutex:
+ err_ctx_object_table:
+    mtx_destroy(&ctx->object_mutex);
+ err_ctx_object_mutex:
++   mtx_destroy(&ctx->timeline.mutex);
++err_timeline_mutex:
++   mtx_destroy(&ctx->external_sync_mutex);
++err_external_sync_mutex:
+    vkr_context_wait_ring_fini(ctx);
+ err_ctx_wait_ring_init:
+    free(ctx->debug_name);
 diff --git a/src/venus/vkr_context.h b/src/venus/vkr_context.h
-index 7ba72eb..ce1a850 100644
+index 7ba72eb..a0688f8 100644
 --- a/src/venus/vkr_context.h
 +++ b/src/venus/vkr_context.h
-@@ -98,6 +98,50 @@ struct vkr_context {
+@@ -89,6 +89,12 @@ struct vkr_context {
+    struct hash_table *resource_table;
+ 
+    bool cs_fatal_error;
++   mtx_t external_sync_mutex; /* semaphore/device lifetime vs socket import */
++   bool perf_stats;
++   uint64_t perf_imports, perf_import_errors, perf_import_ns;
++   uint32_t perf_timeline_high_water;
++   uint64_t perf_timeline_waits;
++   atomic_bool sync_failed;   /* sticky; never turn an error into completion */
+    struct vkr_cs_encoder encoder;
+    struct vkr_cs_decoder decoder;
+    struct vn_dispatch_context dispatch;
+@@ -98,6 +104,50 @@ struct vkr_context {
  
     struct vkr_queue *sync_queues[64];
  
@@ -770,7 +896,7 @@ index 7ba72eb..ce1a850 100644
     struct vkr_instance *instance;
     char *instance_name;
  
-@@ -130,6 +174,40 @@ vkr_context_submit_fence(struct vkr_context *ctx,
+@@ -130,6 +180,40 @@ vkr_context_submit_fence(struct vkr_context *ctx,
                           uint32_t ring_idx,
                           uint64_t fence_id);
  
@@ -812,7 +938,7 @@ index 7ba72eb..ce1a850 100644
  vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size);
  
 diff --git a/src/venus/vkr_device.c b/src/venus/vkr_device.c
-index 3e943bf..3880c3e 100644
+index 3e943bf..a405d43 100644
 --- a/src/venus/vkr_device.c
 +++ b/src/venus/vkr_device.c
 @@ -108,6 +108,8 @@ vkr_dispatch_vkCreateDevice(struct vn_dispatch_context *dispatch,
@@ -873,11 +999,76 @@ index 3e943bf..3880c3e 100644
        free(exts);
        free(dev);
        return;
+@@ -335,17 +371,19 @@ vkr_device_destroy(struct vkr_context *ctx, struct vkr_device *dev, bool destroy
+    /* only wait if on workder thread to prepare for vk obj cleanup */
+    if (ctx->on_worker_thread) {
+       VkResult result = vk->DeviceWaitIdle(device);
+-      if (result != VK_SUCCESS)
++      if (result != VK_SUCCESS) {
++         atomic_store(&ctx->sync_failed, true);
+          vkr_log("vkDeviceWaitIdle(%p) failed(%d)", dev, (int32_t)result);
++      }
+    }
+ 
+-   mtx_destroy(&dev->object_mutex);
+-
+    if (!list_is_empty(&dev->objects)) {
+       list_for_each_entry_safe (struct vkr_object, obj, &dev->objects, track_head)
+          vkr_device_object_destroy(ctx, dev, obj);
+    }
+ 
++   mtx_destroy(&dev->object_mutex);
++
+    list_for_each_entry_safe (struct vkr_queue, queue, &dev->queues, base.track_head)
+       vkr_queue_destroy(ctx, queue);
+ 
+@@ -375,7 +413,9 @@ vkr_dispatch_vkDestroyDevice(struct vn_dispatch_context *dispatch,
+    if (!dev)
+       return;
+ 
++   mtx_lock(&ctx->external_sync_mutex);
+    vkr_device_destroy(ctx, dev, true);
++   mtx_unlock(&ctx->external_sync_mutex);
+ }
+ 
+ static void
 diff --git a/src/venus/vkr_queue.c b/src/venus/vkr_queue.c
-index b7242e0..4287de8 100644
+index b7242e0..9598f8c 100644
 --- a/src/venus/vkr_queue.c
 +++ b/src/venus/vkr_queue.c
-@@ -79,7 +79,8 @@ bool
+@@ -5,6 +5,11 @@
+ 
+ #include "vkr_queue.h"
+ 
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <unistd.h>
++
+ #include "venus-protocol/vn_protocol_renderer_queue.h"
+ 
+ #include "vkr_context.h"
+@@ -52,6 +57,8 @@ vkr_device_alloc_queue_sync(struct vkr_device *dev,
+    }
+ 
+    sync->device_lost = false;
++   sync->exported = false;
++   sync->sync_fd = -1;
+    sync->flags = fence_flags;
+    sync->ring_idx = ring_idx;
+    sync->fence_id = fence_id;
+@@ -62,6 +69,10 @@ vkr_device_alloc_queue_sync(struct vkr_device *dev,
+ static void
+ vkr_device_free_queue_sync(struct vkr_device *dev, struct vkr_queue_sync *sync)
+ {
++   if (sync->sync_fd >= 0) {
++      close(sync->sync_fd);
++      sync->sync_fd = -1;
++   }
+    mtx_lock(&dev->free_sync_mutex);
+    list_addtail(&sync->head, &dev->free_syncs);
+    mtx_unlock(&dev->free_sync_mutex);
+@@ -79,7 +90,8 @@ bool
  vkr_queue_sync_submit(struct vkr_queue *queue,
                        uint32_t flags,
                        uint32_t ring_idx,
@@ -887,38 +1078,205 @@ index b7242e0..4287de8 100644
  {
     TRACE_FUNC();
     struct vkr_device *dev = queue->device;
-@@ -103,6 +104,26 @@ vkr_queue_sync_submit(struct vkr_queue *queue,
+@@ -103,12 +115,42 @@ vkr_queue_sync_submit(struct vkr_queue *queue,
        return false;
     }
  
-+   /* Materialize the fresh fence into the context's shared timeline: SYNC_FD
-+    * export has copy transference and the fence has a pending signal op, so
-+    * exporting right after QueueSubmit is spec-legal.  fd == -1 (already
-+    * signaled) and errors both make vkr_context_timeline_import signal the
-+    * point directly.
-+    */
-+   if (timeline_point) {
-+      int fd = -1;
-+      if (dev->physical_device->KHR_external_fence_fd && !sync->device_lost) {
-+         const VkFenceGetFdInfoKHR info = {
-+            .sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
-+            .fence = sync->fence,
-+            .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
-+         };
-+         if (vk->GetFenceFdKHR(dev->base.handle.device, &info, &fd) != VK_SUCCESS)
-+            fd = -1;
++   /* Export exactly once, before the retirement thread can wait. SYNC_FD
++    * export resets VkFence, so WaitForFences on that fence would stall forever.
++    * Retain the actual payload for poll() and duplicate it for consumers. */
++   if (dev->physical_device->KHR_external_fence_fd && !sync->device_lost) {
++      const VkFenceGetFdInfoKHR info = {
++         .sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
++         .fence = sync->fence,
++         .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
++      };
++      result = vk->GetFenceFdKHR(dev->base.handle.device, &info, &sync->sync_fd);
++      if (result == VK_SUCCESS) {
++         sync->exported = true;
++      } else {
++         vkr_log("sync export failed: %d (fence %" PRIu64 ")", result, fence_id);
++         atomic_store(&queue->context->sync_failed, true);
++         sync->device_lost = true;
 +      }
-+      vkr_context_timeline_import(queue->context, fd, timeline_point);
++   }
++   if (sync->device_lost)
++      atomic_store(&queue->context->sync_failed, true);
++   if (timeline_point && !atomic_load(&queue->context->sync_failed)) {
++      int fd = sync->sync_fd < 0 ? -1 : fcntl(sync->sync_fd, F_DUPFD_CLOEXEC, 0);
++      if (!sync->exported || (sync->sync_fd >= 0 && fd < 0)) {
++         atomic_store(&queue->context->sync_failed, true);
++         vkr_log("timeline export unavailable; context failed");
++      } else {
++         vkr_context_timeline_import(queue->context, fd, timeline_point);
++      }
 +   }
 +
     mtx_lock(&queue->sync_thread.mutex);
     list_addtail(&sync->head, &queue->sync_thread.syncs);
     cnd_signal(&queue->sync_thread.cond);
+    mtx_unlock(&queue->sync_thread.mutex);
+ 
+-   return true;
++   return !atomic_load(&queue->context->sync_failed);
+ }
+ 
+ 
+@@ -117,7 +159,6 @@ vkr_queue_export_fence_sync_file(struct vkr_queue *queue, uint64_t fence_id, int
+ {
+    TRACE_FUNC();
+    struct vkr_device *dev = queue->device;
+-   struct vn_device_proc_table *vk = &dev->proc_table;
+ 
+    if (!dev->physical_device->KHR_external_fence_fd)
+       return -ENOTSUP;
+@@ -133,26 +174,18 @@ vkr_queue_export_fence_sync_file(struct vkr_queue *queue, uint64_t fence_id, int
+          break;
+       }
+ 
+-      /* SYNC_FD export has copy transference and the fence has a pending
+-       * signal operation (QueueSubmit happened in vkr_queue_sync_submit), so
+-       * this is spec-legal even while the sync thread waits on the fence.
+-       * The driver may return -1 if the fence already signaled; map that to
+-       * "already signaled".
+-       */
+-      const VkFenceGetFdInfoKHR info = {
+-         .sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR,
+-         .fence = sync->fence,
+-         .handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT,
+-      };
+-      int fd = -1;
+-      VkResult result = vk->GetFenceFdKHR(dev->base.handle.device, &info, &fd);
+-      if (result != VK_SUCCESS) {
+-         ret = -EINVAL;
+-      } else if (fd < 0) {
++      if (!sync->exported) {
++         ret = -ENOTSUP;
++      } else if (sync->sync_fd < 0) {
+          ret = 1;
+       } else {
+-         *out_fd = fd;
+-         ret = 0;
++         const int fd = fcntl(sync->sync_fd, F_DUPFD_CLOEXEC, 0);
++         if (fd < 0) {
++            ret = -errno;
++         } else {
++            *out_fd = fd;
++            ret = 0;
++         }
+       }
+       break;
+    }
+@@ -172,8 +205,13 @@ vkr_queue_sync_thread_fini(struct vkr_queue *queue)
+ 
+    thrd_join(queue->sync_thread.thread, NULL);
+ 
+-   list_for_each_entry_safe (struct vkr_queue_sync, sync, &queue->sync_thread.syncs, head)
+-      vkr_queue_sync_retire(queue, sync);
++   list_for_each_entry_safe (struct vkr_queue_sync, sync, &queue->sync_thread.syncs, head) {
++      list_del(&sync->head);
++      if (atomic_load(&queue->context->sync_failed))
++         vkr_device_free_queue_sync(queue->device, sync);
++      else
++         vkr_queue_sync_retire(queue, sync);
++   }
+ 
+    mtx_destroy(&queue->sync_thread.mutex);
+    cnd_destroy(&queue->sync_thread.cond);
+@@ -226,6 +264,17 @@ vkr_queue_thread(void *arg)
+       VkResult result;
+       if (sync->device_lost) {
+          result = VK_ERROR_DEVICE_LOST;
++      } else if (sync->exported) {
++         if (sync->sync_fd < 0) {
++            result = VK_SUCCESS;
++         } else {
++            struct pollfd pfd = { .fd = sync->sync_fd, .events = POLLIN };
++            const int ready = poll(&pfd, 1, 3000);
++            result = ready == 0 || (ready < 0 && errno == EINTR) ? VK_TIMEOUT :
++                     ready > 0 && (pfd.revents & POLLIN) &&
++                        !(pfd.revents & (POLLERR | POLLNVAL)) ? VK_SUCCESS :
++                     VK_ERROR_DEVICE_LOST;
++         }
+       } else {
+          result = vk->WaitForFences(dev->base.handle.device, 1, &sync->fence, true,
+                                     ns_per_sec * 3);
+@@ -237,8 +286,13 @@ vkr_queue_thread(void *arg)
+          continue;
+ 
+       list_del(&sync->head);
+-
+-      vkr_queue_sync_retire(queue, sync);
++      if (result == VK_SUCCESS && !atomic_load(&ctx->sync_failed)) {
++         vkr_queue_sync_retire(queue, sync);
++      } else {
++         atomic_store(&ctx->sync_failed, true);
++         vkr_log("fence wait failed: %d; not retiring as success", result);
++         vkr_device_free_queue_sync(dev, sync);
++      }
+    }
+    mtx_unlock(&queue->sync_thread.mutex);
+ 
+@@ -267,9 +321,9 @@ vkr_queue_sync_thread_init(struct vkr_queue *queue)
+    return 0;
+ 
+ fail_thrd_create:
+-   mtx_destroy(&queue->sync_thread.mutex);
+-fail_cnd_init:
+    cnd_destroy(&queue->sync_thread.cond);
++fail_cnd_init:
++   mtx_destroy(&queue->sync_thread.mutex);
+    return ret;
+ }
+ 
+@@ -550,14 +604,23 @@ static void
+ vkr_dispatch_vkCreateSemaphore(struct vn_dispatch_context *dispatch,
+                                struct vn_command_vkCreateSemaphore *args)
+ {
+-   vkr_semaphore_create_and_add(dispatch->data, args);
++   struct vkr_context *ctx = dispatch->data;
++   struct vkr_device *dev = vkr_device_from_handle(args->device);
++   mtx_lock(&ctx->external_sync_mutex);
++   struct vkr_semaphore *sem = vkr_semaphore_create_and_add(ctx, args);
++   if (sem)
++      sem->device = dev;
++   mtx_unlock(&ctx->external_sync_mutex);
+ }
+ 
+ static void
+ vkr_dispatch_vkDestroySemaphore(struct vn_dispatch_context *dispatch,
+                                 struct vn_command_vkDestroySemaphore *args)
+ {
+-   vkr_semaphore_destroy_and_remove(dispatch->data, args);
++   struct vkr_context *ctx = dispatch->data;
++   mtx_lock(&ctx->external_sync_mutex);
++   vkr_semaphore_destroy_and_remove(ctx, args);
++   mtx_unlock(&ctx->external_sync_mutex);
+ }
+ 
+ static void
 diff --git a/src/venus/vkr_queue.h b/src/venus/vkr_queue.h
-index 5246a5a..9c802ad 100644
+index 5246a5a..ce8745d 100644
 --- a/src/venus/vkr_queue.h
 +++ b/src/venus/vkr_queue.h
-@@ -95,10 +95,14 @@ vkr_queue_destroy(struct vkr_context *ctx, struct vkr_queue *queue);
+@@ -11,6 +11,8 @@
+ struct vkr_queue_sync {
+    VkFence fence;
+    bool device_lost;
++   bool exported; /* after SYNC_FD export the VkFence is reset */
++   int sync_fd;   /* own the payload for both retirement and socket fallback */
+ 
+    uint32_t flags;
+    uint32_t ring_idx;
+@@ -58,6 +60,7 @@ VKR_DEFINE_OBJECT_CAST(fence, VK_OBJECT_TYPE_FENCE, VkFence)
+ 
+ struct vkr_semaphore {
+    struct vkr_object base;
++   struct vkr_device *device;
+ };
+ VKR_DEFINE_OBJECT_CAST(semaphore, VK_OBJECT_TYPE_SEMAPHORE, VkSemaphore)
+ 
+@@ -95,10 +98,14 @@ vkr_queue_destroy(struct vkr_context *ctx, struct vkr_queue *queue);
  int
  vkr_queue_export_fence_sync_file(struct vkr_queue *queue, uint64_t fence_id, int *out_fd);
  
@@ -1279,7 +1637,7 @@ index 3a7381f..95b0b0d 100644
     VCMD_SUBMIT_CMD2_FLAG_RING_IDX = 1 << 0,
     VCMD_SUBMIT_CMD2_FLAG_IN_FENCE_FD = 1 << 1,
 diff --git a/vtest/vtest_renderer.c b/vtest/vtest_renderer.c
-index f3212ad..3a9cbbb 100644
+index f3212ad..6823253 100644
 --- a/vtest/vtest_renderer.c
 +++ b/vtest/vtest_renderer.c
 @@ -53,6 +53,7 @@
@@ -1431,6 +1789,15 @@ index f3212ad..3a9cbbb 100644
  int vtest_sync_export_sync_file(uint32_t length_dw)
  {
     struct vtest_context *ctx = vtest_get_current_context();
+@@ -2542,7 +2632,7 @@ int vtest_sync_export_sync_file(uint32_t length_dw)
+             status = VCMD_SYNC_EXPORT_SYNC_FILE_OK;
+          else if (ret == 1)
+             status = VCMD_SYNC_EXPORT_SYNC_FILE_SIGNALED;
+-      } else {
++      } else if (sync->value >= value) {
+          status = VCMD_SYNC_EXPORT_SYNC_FILE_SIGNALED;
+       }
+    }
 @@ -2560,7 +2650,7 @@ int vtest_sync_export_sync_file(uint32_t length_dw)
     return ret >= 0 ? 0 : ret;
  }

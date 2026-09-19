@@ -1,10 +1,10 @@
 # Zero-roundtrip fence export via shared DRM timeline syncobj
 
-Status: **working** (M8.B done 2026-07-12: 0.00% janky, flat 5 ms @250 Hz with
-the path engaged). Prereqs researched 2026-07-12 (see STATE.md log: syncobj
-ioctls are DRM_RENDER_ALLOW, cross-process and cross-driver by design;
-reference designs: linux-drm-syncobj-v1, PipeWire 1.2). Kill switch:
-`VTEST_NO_TIMELINE=1` on the server disables the capability param.
+Status (2026-09-19): isolated correctness/fallback tests pass; live Android
+performance acceptance is **pending**. The measurements below are retained as
+historical maintainer notes from 2026-07-12, not results for the present 165 Hz
+system. See `performance-validation-2026-09-19.md`.
+Guest fallback switch: `VTEST_NO_TIMELINE_FENCE=1`.
 
 ## Problem
 
@@ -63,9 +63,14 @@ Per frame:
   hold NVIDIA fences.
 - `WAIT_AVAILABLE` waits for materialization only; the real GPU wait stays on
   the consumer (KWin) exactly as today.
-- Timeline points materialize in submission order per queue (single vkr queue
-  per ring); cross-ring order is irrelevant — each point is only consumed
-  individually.
+- A context's fast timeline is assigned to its first external-fence queue.
+  Other queues use socket exports: a cumulative timeline must not treat
+  independent queues as one ordered stream. In particular, a signaled sentinel
+  must not signal past still-pending work from another queue.
+- Export failure and timeline import failure poison synchronization rather than
+  signaling the point. Only a successful export can yield the -1 sentinel.
+- Internal VkFence SYNC_FD export resets its payload: the retirement worker polls
+  a retained fd and exports duplicate it, never waits the reset VkFence.
 - Guest wait timeout (1 s): on timeout or any ioctl failure, fall back to the
   old socket export; on device-lost the old path also reports it.
 - sync_file export requires a *materialized* point — hence WAIT_AVAILABLE

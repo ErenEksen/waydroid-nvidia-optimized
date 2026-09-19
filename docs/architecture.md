@@ -79,11 +79,14 @@ The guest display runs at the monitor's real refresh rate (tested at 500 Hz):
   any refresh rate the display offers. Default behavior is unchanged when
   the prop is unset.
 
-## Frame synchronization: all GPU-side
+## Frame synchronization: explicit fences with safe fallbacks
 
 - **Fences**: a per-context DRM timeline syncobj is shared between guest and
   host once (the container shares the host kernel), so per-frame fence
   export costs kernel ioctls only — zero socket roundtrips.
+- The shared fast timeline is restricted to one ordered queue per context;
+  additional queues retain the socket fallback. See `performance-smoothness.md`
+  for fence lifetime, failure and ring-ordering guarantees.
 - **Semaphores**: imported `sync_fd` wait semaphores (BufferQueue acquire
   fences) are forwarded to the host driver as real semaphore imports instead
   of being CPU-waited before submit.

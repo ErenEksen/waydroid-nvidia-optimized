@@ -5,6 +5,11 @@
 # fresh checkout — one recipe, two front-ends. Does NOT deploy (see dev/deploy).
 # Usage: dev/build <mesa[-x86|-x86_64]|virgl|hwc|gralloc|angle[-x86|-x86_64]|all>
 source "$(dirname "$(readlink -f "$0")")/env.sh"
+# Scope build dependencies to this process and its build children; runtime
+# helpers must keep using the caller's runtime Python (normally /usr/bin/python3).
+if [[ -x "$WNV/venv/bin/meson" ]]; then
+    export PATH="$WNV/venv/bin:$PATH"
+fi
 B="$REPO/build"
 
 build_angle() {
@@ -30,12 +35,13 @@ case "${1:-}" in
     mesa-x86)
              say "mesa (guest venus driver, x86/i686)"
              ANDROID_ABI=x86 "$B/mesa/build.sh" "$MESA_TREE" "$MESA_BUILD_X86" ;;
+    mesa-host) say "native Venus ICD (tests only)"; "$B/mesa/build-host.sh" "$MESA_TREE" "$WNV/mesa-host" ;;
     virgl)   say "virglrenderer (host renderer)"; REPO="$REPO" "$B/virglrenderer/build.sh" "$VIRGL_TREE" "$VIRGL_BUILD" ;;
     hwc)     say "hwcomposer"; "$B/hwcomposer/build.sh" "$HWC_TREE/hwcomposer" "$HWC_BUILD/out" ;;
     gralloc) say "gralloc backend"; REPO="$REPO" "$B/gralloc/build.sh" "$HWC_BUILD/out" ;;
     angle)   "$0" angle-x86_64; "$0" angle-x86 ;;
     angle-x86_64) say "ANGLE (x86_64, rare, slow)"; build_angle x86_64 ;;
     angle-x86)    say "ANGLE (x86/i686, rare, slow)"; build_angle x86 ;;
-    all)     "$0" mesa; "$0" virgl; "$0" hwc ;;
+    all)     "$0" mesa; "$0" virgl; "$0" hwc; "$0" gralloc ;;
     *) die "usage: dev/build <mesa[-x86|-x86_64]|virgl|hwc|gralloc|angle[-x86|-x86_64]|all>" ;;
 esac

@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Fetch exact source pins into an isolated, non-destructive development area.
+set -euo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+source "$REPO/packaging/ci/pins.env"
+source "$REPO/packaging/ci/hwc-pins.env"
+WNV="${WNV:-$REPO/.work}"
+mkdir -p "$WNV"
+fetch() {
+    local name="$1" url="$2" sha="$3" patches="${4:-}" committed="${5:-0}"
+    local dir="$WNV/$name"
+    if [[ -f "$dir/.nvwd-ready" ]]; then
+        [[ $(cat "$dir/.nvwd-ready") == "$sha" ]] || { echo "pin changed: use a new WNV directory" >&2; exit 1; }
+        echo "$name: already provisioned (local edits preserved)"; return
+    fi
+    [[ ! -e "$dir" ]] || { echo "incomplete/existing tree: $dir; inspect it rather than overwriting" >&2; exit 1; }
+    git init -q "$dir"
+    git -C "$dir" fetch --depth 1 "$url" "$sha"
+    git -C "$dir" checkout -q --detach FETCH_HEAD
+    [[ $(git -C "$dir" rev-parse HEAD) == "$sha" ]]
+    git -C "$dir" config user.name 'waydroid-nvidia build'
+    git -C "$dir" config user.email 'build@localhost'
+    if [[ -n "$patches" ]]; then
+        local p i=0
+        for p in "$REPO/patches/$patches/"*.patch; do
+            i=$((i + 1))
+            if (( i <= committed )); then git -C "$dir" am "$p"; else git -C "$dir" apply --intent-to-add "$p"; fi
+        done
+    fi
+    printf '%s\n' "$sha" > "$dir/.nvwd-ready"
+}
+case "${1:-sources}" in
+ sources)
+    fetch mesa "$MESA_UPSTREAM" "$MESA_SHA" mesa 2
+    fetch virglrenderer "$VIRGL_UPSTREAM" "$VIRGL_SHA" virglrenderer 3
+    fetch hwcomposer-src "$HWC_UPSTREAM" "$HWC_SHA" hwcomposer
+    fetch minigbm "$MINIGBM_UPSTREAM" "$MINIGBM_SHA"
+    printf '%s\n' "$MINIGBM_SHA" > "$WNV/minigbm/.provisioned"
+    ;;
+ ndk)
+    dir="$WNV/android-ndk-$NDK_VERSION"
+    if [[ -x "$dir/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]]; then echo "$dir"; exit 0; fi
+    zip="$WNV/android-ndk-$NDK_VERSION-linux.zip"
+    [[ -f "$zip" ]] || { curl -fL --retry 3 -o "$zip.part" "https://dl.google.com/android/repository/android-ndk-$NDK_VERSION-linux.zip"; mv "$zip.part" "$zip"; }
+    printf '%s  %s\n' "$NDK_ZIP_SHA256" "$zip" | sha256sum -c -
+    unzip -q "$zip" -d "$WNV"
+    ;;
+ python)
+    [[ -x "$WNV/venv/bin/python" ]] || python3 -m venv "$WNV/venv"
+    "$WNV/venv/bin/python" -m pip install -r "$REPO/build/requirements.txt"
+    ;;
+ *) echo 'usage: dev/bootstrap [sources|ndk|python]' >&2; exit 2 ;;
+esac

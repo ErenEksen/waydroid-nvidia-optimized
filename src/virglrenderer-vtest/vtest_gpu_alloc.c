@@ -43,6 +43,15 @@ struct alloc_vk {
    VkDevice device;
    VkPhysicalDeviceMemoryProperties mem_props;
 
+   /* Immutable for this physical device; protected by alloc_vk_mutex. No
+    * VkImage, exported allocation, or client buffer is retained here. */
+   struct {
+      VkFormat format;
+      uint32_t count;
+      uint64_t modifiers[64];
+   } modifier_cache[8];
+   uint32_t modifier_cache_count;
+
    PFN_vkCreateImage CreateImage;
    PFN_vkDestroyImage DestroyImage;
    PFN_vkGetImageMemoryRequirements GetImageMemoryRequirements;
@@ -244,6 +253,8 @@ vtest_gpu_alloc_image(uint32_t width, uint32_t height, uint32_t drm_format,
                       bool linear, uint32_t *out_stride,
                       uint64_t *out_modifier, uint64_t *out_size, int *out_fd)
 {
+   if (!width || !height)
+      return -EINVAL;
    const VkFormat format = drm_format_to_vk(drm_format);
    if (format == VK_FORMAT_UNDEFINED)
       return -EINVAL;
@@ -273,31 +284,51 @@ vtest_gpu_alloc_image(uint32_t width, uint32_t height, uint32_t drm_format,
        * pixel offsets; NVIDIA dma_bufs mmap fine from any memory type */
       mod_candidates[mod_count++] = 0; /* DRM_FORMAT_MOD_LINEAR */
    } else {
-      VkDrmFormatModifierPropertiesListEXT mod_list = {
-         .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
-      };
-      VkFormatProperties2 fmt_props = {
-         .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
-         .pNext = &mod_list,
-      };
-      vk->GetPhysicalDeviceFormatProperties2(vk->physical_device, format,
-                                             &fmt_props);
-      VkDrmFormatModifierPropertiesEXT props[64];
-      mod_list.drmFormatModifierCount =
-         mod_list.drmFormatModifierCount < 64 ? mod_list.drmFormatModifierCount
-                                              : 64;
-      mod_list.pDrmFormatModifierProperties = props;
-      vk->GetPhysicalDeviceFormatProperties2(vk->physical_device, format,
-                                             &fmt_props);
-
-      const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
-                                        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
-      for (uint32_t i = 0; i < mod_list.drmFormatModifierCount; i++) {
-         /* single-plane, renderable+samplable, not linear */
-         if (props[i].drmFormatModifierPlaneCount == 1 &&
-             (props[i].drmFormatModifierTilingFeatures & need) == need &&
-             props[i].drmFormatModifier != 0)
-            mod_candidates[mod_count++] = props[i].drmFormatModifier;
+      uint32_t slot;
+      for (slot = 0; slot < vk->modifier_cache_count; slot++) {
+         if (vk->modifier_cache[slot].format == format)
+            break;
+      }
+      if (slot == vk->modifier_cache_count) {
+         if (slot >= sizeof(vk->modifier_cache) / sizeof(vk->modifier_cache[0]))
+            goto out;
+         VkDrmFormatModifierPropertiesListEXT list = {
+            .sType = VK_STRUCTURE_TYPE_DRM_FORMAT_MODIFIER_PROPERTIES_LIST_EXT,
+         };
+         VkFormatProperties2 properties = {
+            .sType = VK_STRUCTURE_TYPE_FORMAT_PROPERTIES_2,
+            .pNext = &list,
+         };
+         vk->GetPhysicalDeviceFormatProperties2(vk->physical_device, format, &properties);
+         const uint32_t capacity = list.drmFormatModifierCount;
+         if (capacity > 4096)
+            goto out;
+         VkDrmFormatModifierPropertiesEXT *props =
+            capacity ? calloc(capacity, sizeof(*props)) : NULL;
+         if (capacity && !props)
+            goto out;
+         list.pDrmFormatModifierProperties = props;
+         vk->GetPhysicalDeviceFormatProperties2(vk->physical_device, format, &properties);
+         const uint32_t count = list.drmFormatModifierCount < capacity ?
+            list.drmFormatModifierCount : capacity;
+         const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+                                           VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+         for (uint32_t i = 0; i < count && mod_count < 64; i++) {
+            if (props[i].drmFormatModifierPlaneCount == 1 &&
+                (props[i].drmFormatModifierTilingFeatures & need) == need &&
+                props[i].drmFormatModifier != 0)
+               mod_candidates[mod_count++] = props[i].drmFormatModifier;
+         }
+         free(props);
+         vk->modifier_cache[slot].format = format;
+         vk->modifier_cache[slot].count = mod_count;
+         memcpy(vk->modifier_cache[slot].modifiers, mod_candidates,
+                mod_count * sizeof(mod_candidates[0]));
+         vk->modifier_cache_count++;
+      } else {
+         mod_count = vk->modifier_cache[slot].count;
+         memcpy(mod_candidates, vk->modifier_cache[slot].modifiers,
+                mod_count * sizeof(mod_candidates[0]));
       }
    }
    if (!mod_count)
@@ -428,6 +459,8 @@ vtest_gpu_alloc_cpu(uint32_t width, uint32_t height, uint32_t drm_format,
    /* experiment control: udmabuf-first (NVIDIA-linear path suspected of
     * breaking hwcomposer's own SW buffers) */
 {
+   if (!width || !height || (uint64_t)width * drm_format_bpp(drm_format) > UINT32_MAX - 255u)
+      return -EINVAL;
    const uint32_t bpp = drm_format_bpp(drm_format);
    const uint32_t stride = (uint32_t)ALLOC_ALIGN((uint64_t)width * bpp, 256);
    const uint64_t size = ALLOC_ALIGN((uint64_t)stride * height, 4096);

@@ -1,136 +1,82 @@
-# waydroid-nvidia
+# Waydroid NVIDIA Optimized
 
-**GPU-accelerated Waydroid on the NVIDIA driver — container-native, no VM.
-Needs the open kernel modules (`nvidia-open`); the userspace stays NVIDIA's
-regular proprietary stack.**
+**Compared with [Shiro836/waydroid-nvidia](https://github.com/Shiro836/waydroid-nvidia):**
+this fork fixes Venus semaphore ordering/error handling and an unbounded submit-record
+list scan, caches allocator/HWC state, and adds a persistent renderer-only shader cache.
+It includes profiling tools, regression tests, and checksummed upgrades with rollback.
+**Resolution, visual quality and refresh rate are not reduced.** Desktop smoothness
+improved in local use; the measured Mesa CPU hotspot disappeared, but Epic Seven's
+periodic long frames remain. This is an **experimental optimization release**, not a
+promise of higher FPS in every game.
 
-[![build](https://github.com/Shiro836/waydroid-nvidia/actions/workflows/build.yml/badge.svg)](https://github.com/Shiro836/waydroid-nvidia/actions/workflows/build.yml)
-[![release](https://img.shields.io/github/v/release/Shiro836/waydroid-nvidia)](https://github.com/Shiro836/waydroid-nvidia/releases)
-[![AUR](https://img.shields.io/aur/version/waydroid-nvidia-bin)](https://aur.archlinux.org/packages/waydroid-nvidia-bin)
-[![nix](https://img.shields.io/badge/NixOS-community%20flake-5277C3?logo=nixos&logoColor=white)](https://github.com/yigexuanmu/waydroid-nvidia-nix)
-[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+## Install / update (existing NVIDIA installation)
 
-Stock Waydroid can't render on NVIDIA. This project proxies Vulkan (Mesa
-Venus) over a unix socket to a host-side renderer that issues the real Vulkan
-calls — Android x86 and x86_64 app processes render on your NVIDIA GPU,
-CUDA/NVENC and full performance stay intact, everything remains a container:
-
-```
-Android app ── Vulkan ──▶ guest Mesa Venus ── unix socket ──▶ host renderer
-                                                                   │
-KWin ◀── hwcomposer ◀── gralloc imports ◀── NVIDIA dmabufs ◀── NVIDIA driver
-```
-
-Buffers are allocated host-side as NVIDIA block-linear images and travel to
-the compositor as native NVIDIA dmabufs — no cross-vendor negotiation, no
-copies. GL runs through ANGLE, ASTC textures are emulated in a compute shader
-(desktop NVIDIA lacks the hardware Android mandates), and frame sync is fully
-GPU-side (timeline syncobjs + imported sync_fd semaphores; zero per-frame
-socket roundtrips). The guest runs native high refresh — 500 Hz verified,
-with a translated ARM game holding 500 fps at 2 ms present-to-present.
-
-Verified in the field on Turing, Ampere, Ada and Blackwell GPUs. Real games
-tested: Minecraft Bedrock, Subway Surfers, Arknights, Honkai: Star Rail —
-plus Google Play certification and ARM translation (libhoudini).
-
-## Requirements
-
-- **NVIDIA open kernel modules** (`nvidia-open`/`nvidia-open-dkms`) — the
-  closed module has no DMA-BUF support, and every displayed buffer here is
-  one. The userspace (`nvidia-utils`) is the same proprietary code either
-  way; nouveau/NVK is out of scope (stock Waydroid handles it). Open KM
-  means **Turing (RTX 20 / GTX 16) or newer**.
-- Driver **595.71+** (610.x recommended) with **`nvidia-drm.modeset=1`**.
-- A Wayland session (tested on KWin / Plasma 6) and the usual Waydroid
-  kernel bits (binder).
-- Unsure about a machine? `tests/run-probe.sh` checks the exact
-  buffer-sharing paths in ~30 s and names anything missing — see
-  [`docs/troubleshooting.md`](docs/troubleshooting.md).
-
-## Install (Arch / AUR)
+Run as your **normal desktop user**, not root:
 
 ```sh
-yay -S waydroid-nvidia-bin        # provides/conflicts: waydroid
-waydroid init                     # download an Android image, as usual
-sudo waydroid-nvidia-setup        # add --refresh <hz> to match your monitor
+git clone https://github.com/ErenEksen/waydroid-nvidia-optimized.git && cd waydroid-nvidia-optimized && ./install.sh
+```
+
+Already cloned? `git pull --ff-only && ./install.sh`.
+The installer downloads the pinned `perf-v1` bundle, verifies SHA-256 and every
+component, asks for sudo, backs up the old set, and restarts Waydroid. **Save your
+game first.** It is a persistent update: launch Waydroid normally afterward.
+Apps, saves and Android images are not erased. `./install.sh --check` only downloads
+and validates; it does not install or restart anything.
+
+**Prerequisite:** an initialized upstream **waydroid-nvidia** installation using
+`wd-venus.service` and `waydroid-container.service`. Stock Waydroid alone is not
+sufficient. On Arch/CachyOS, first follow the upstream installation:
+
+```sh
+yay -S waydroid-nvidia-bin
+# Only for a fresh installation; do not reinitialize existing Android data:
+waydroid init
+sudo waydroid-nvidia-setup
 sudo systemctl enable --now waydroid-container.service
 systemctl --user enable --now wd-venus.service
-# re-log-in once (udev rule for /dev/udmabuf), then:
-waydroid session start            # or launch Waydroid from the app menu
 ```
 
-`waydroid-nvidia-setup` deploys the guest stack, writes the config, verifies
-your environment (modeset, vendor image, render node) and removes stale
-config left by older installs. Safe to re-run any time — it's also the first
-thing to try when something misbehaves. Verify acceleration:
+The AUR package above is the **upstream base**, not this fork's optimized release.
+Then run this fork's installer. It preserves the existing display configuration.
+The prebuilt host binaries require glibc **2.38+** and the upstream renderer
+runtime libraries (initial validation: Arch/CachyOS). First-time upstream setup,
+NVIDIA open kernel modules, a compatible NVIDIA driver,
+Wayland, binder and working DMA-BUF sharing are still required. Hybrid/iGPU-driven
+compositors retain upstream limitations. See [manual installation](docs/install-manual.md)
+and [troubleshooting](docs/troubleshooting.md). Other installation layouts need manual
+review; the updater refuses custom renderer paths.
+
+### Rollback
+
+The installer prints the exact backup directory. From this checkout, use it as follows:
 
 ```sh
-sudo waydroid shell dumpsys SurfaceFlinger | grep GLES
-# GLES: ... ANGLE (NVIDIA, Vulkan ... Venus (NVIDIA GeForce ...))
-sudo waydroid shell getprop ro.product.cpu.abilist
-# x86_64,x86,... means Houdini can translate ARM32-only apps into the x86 path
+sudo -v && ./dev/install-bundle --rollback /var/lib/waydroid/nv/perf-backups/EXACT-BACKUP
 ```
 
-**If your compositor is not on the NVIDIA GPU** (monitors connected to
-another GPU, iGPU-driven laptop panel): the compositor can't display this
-stack's NVIDIA buffers and the Waydroid window dies instantly. The workaround
-is running Waydroid nested inside gamescope pinned to the NVIDIA GPU, so
-compositing happens on NVIDIA and gamescope hands your desktop something it
-can display. Needs `gamescope` and `wayland-utils`:
+A failed post-install health check attempts to restore the previous complete set.
+Package upgrades or upstream setup can overwrite these optimizations; reapply afterward.
+No global governor, real-time priority, sysctl or passwordless-sudo rules are installed.
 
-```sh
-waydroid session stop; sleep 5
-W=$(wayland-info | grep -B1 'flags: current' | grep -oP 'width:\s*\K\d+' | head -1)
-H=$(wayland-info | grep -B1 'flags: current' | grep -oP 'height:\s*\K\d+' | head -1)
-GPU=$(lspci -nn | grep -Ei 'vga|3d' | grep -i nvidia | grep -oP '\[\K10de:[0-9a-f]{4}' | head -1)
-gamescope -f -W "$W" -H "$H" --prefer-vk-device "$GPU" -- \
-  sh -c 'WAYLAND_DISPLAY=$GAMESCOPE_WAYLAND_DISPLAY exec waydroid show-full-ui'
-```
+## What's shipped / validation
 
-Launch apps from inside Android while nested (`waydroid app launch` swaps the
-window and crashes gamescope). **Broken on hybrid Intel+NVIDIA laptops right
-now** — gamescope crashes and takes the host session down with it
-(issue #2, upstream gamescope#1590); hybrid support is being worked on there.
+The bundle updates both x86 and x86_64 guest Mesa drivers, the host renderer,
+gralloc backend, HWC and a user-service cache override. It **reuses** the upstream
+Waydroid Python integration, ANGLE and SurfaceFlinger; it is not a complete Android image.
+`perf-v1` contains locally built binaries with checksums, **not CI/SLSA-attested binaries**.
+Source patches and pinned build recipes are in this repository; binaries live in Releases,
+not Git. Native synchronization/fault tests and both guest builds passed; full Android
+gameplay/desktop acceptance is still pending.
 
-**NixOS:** community flake —
-[yigexuanmu/waydroid-nvidia-nix](https://github.com/yigexuanmu/waydroid-nvidia-nix).
-**Other distros:** the same binaries install anywhere — see
-[`docs/install-manual.md`](docs/install-manual.md).
+- [Measured results and remaining Epic Seven stutter](docs/performance-epic7-2026-09-19.md)
+- [Performance scope and acceptance criteria](docs/performance-smoothness.md)
+- [Build and development workflow](docs/dev-workflow.md)
+- [Architecture](docs/architecture.md) · [Building](docs/building.md)
 
-**Releases are fully attested**: every asset is CI-built from pinned sources
-and carries SLSA provenance —
-`gh attestation verify <asset> --repo Shiro836/waydroid-nvidia`.
+## Credits / license
 
-## Documentation
-
-- [`docs/troubleshooting.md`](docs/troubleshooting.md) — health checks, known
-  failure modes, one-command debug capture, GPU probe kit
-- [`docs/architecture.md`](docs/architecture.md) — how the stack works
-- [`docs/transport-design.md`](docs/transport-design.md) — socket protocol
-  extensions (fences, imports, GPU allocation)
-- [`docs/building.md`](docs/building.md) — building from source, repo layout,
-  CI/attestation
-- [`docs/dev-workflow.md`](docs/dev-workflow.md) — dev environment setup and
-  the edit → build → deploy → measure loop
-- [`docs/install-manual.md`](docs/install-manual.md) — non-Arch installation
-
-## Limitations & roadmap
-
-Not yet supported: ETC2 texture emulation (ASTC is; affected games show
-placeholder textures), ASTC readback (uploads/sampling work), RGBA_FP16
-gralloc buffers. dma_buf mmap read bandwidth is below native (readback paths
-only). Planned: self-contained guest image published as an OTA channel,
-shared-memory ring transport, ETC2, input-to-photon measurement.
-
-## Prior art & references
-
-Anbox Cloud on NVIDIA (commercial existence proof of this shape) ·
-waydroid#1883 / #564 / #1402 ·
-[Mesa Venus](https://gitlab.freedesktop.org/mesa/mesa) ·
-[virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer) · ANGLE.
-
-## License
-
-Original code in `src/`, `build/`, `dev/`, `tests/`, `docs/` is MIT (see
-[`LICENSE`](LICENSE)). Files under `patches/` are derivative works of their
-respective upstreams and carry those upstreams' licenses.
+Based on **Shiro836/waydroid-nvidia**, Mesa Venus, virglrenderer and Waydroid.
+Original project code is [MIT](LICENSE); patches retain their respective upstream
+licenses. The upstream AUR/Nix packages and upstream benchmark claims are not
+maintained or independently guaranteed by this fork.

@@ -23,6 +23,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -73,7 +74,7 @@ sock_write_all(int fd, const void *buf, size_t len)
 {
    const char *p = buf;
    while (len) {
-      ssize_t n = write(fd, p, len);
+      ssize_t n = send(fd, p, len, MSG_NOSIGNAL);
       if (n < 0 && errno == EINTR)
          continue;
       if (n <= 0)
@@ -119,12 +120,28 @@ sock_recv_fd(int sock)
    if (n <= 0)
       return -1;
 
-   struct cmsghdr *c = CMSG_FIRSTHDR(&msg);
-   if (!c || c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS)
+   int received = -1;
+   unsigned count = 0;
+   for (struct cmsghdr *c = CMSG_FIRSTHDR(&msg); c; c = CMSG_NXTHDR(&msg, c)) {
+      if (c->cmsg_level != SOL_SOCKET || c->cmsg_type != SCM_RIGHTS ||
+          c->cmsg_len < CMSG_LEN(0))
+         continue;
+      size_t nfds = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
+      for (size_t i = 0; i < nfds; i++) {
+         int fd;
+         memcpy(&fd, (char *)CMSG_DATA(c) + i * sizeof(int), sizeof(fd));
+         if (count++ == 0)
+            received = fd;
+         else
+            close(fd);
+      }
+   }
+   if (count != 1 || (msg.msg_flags & (MSG_CTRUNC | MSG_TRUNC))) {
+      if (received >= 0)
+         close(received);
       return -1;
-   int fd;
-   memcpy(&fd, CMSG_DATA(c), sizeof(fd));
-   return fd;
+   }
+   return received;
 }
 
 static int
@@ -142,6 +159,13 @@ vtest_connect(void)
    strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
    if (connect(sock, (struct sockaddr *)&addr, sizeof(addr))) {
       LOGE("connect(%s): %s", path, strerror(errno));
+      close(sock);
+      return -1;
+   }
+
+   const struct timeval timeout = { .tv_sec = 30 };
+   if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
+       setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) {
       close(sock);
       return -1;
    }
@@ -199,6 +223,7 @@ vtest_dev_destroy(struct gbm_device *gbm)
    struct vtest_dev *dev = (struct vtest_dev *)gbm;
    if (dev->sock >= 0)
       close(dev->sock);
+   pthread_mutex_destroy(&dev->mutex);
    free(dev);
 }
 
@@ -238,6 +263,13 @@ vtest_alloc(struct alloc_args *args)
    return -ENODEV;
 
 have_resp:;
+   if (resp[0] != VCMD_RESOURCE_ALLOC_GPU_RESP_SIZE ||
+       resp[1] != VCMD_RESOURCE_ALLOC_GPU) {
+      close(dev->sock);
+      dev->sock = -1;
+      pthread_mutex_unlock(&dev->mutex);
+      return -EPROTO;
+   }
    const uint32_t *d = &resp[VTEST_HDR_SIZE];
    const uint32_t status = d[0];
    if (status) {
@@ -248,6 +280,10 @@ have_resp:;
    }
 
    int fd = sock_recv_fd(dev->sock);
+   if (fd < 0) {
+      close(dev->sock);
+      dev->sock = -1;
+   }
    pthread_mutex_unlock(&dev->mutex);
    if (fd < 0) {
       LOGE("alloc: fd receive failed");

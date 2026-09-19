@@ -12,14 +12,17 @@ BUILDDIR="${2:-$SRCDIR/build}"
 # repo root = three levels up from this script (build/virglrenderer/build.sh)
 REPO="${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}"
 
+source "$REPO/build/profile.sh"
+
 echo "virgl/build.sh: install net-new vtest allocator source"
 install -m 0644 "$REPO/src/virglrenderer-vtest/vtest_gpu_alloc.c" "$SRCDIR/vtest/"
 install -m 0644 "$REPO/src/virglrenderer-vtest/vtest_gpu_alloc.h" "$SRCDIR/vtest/"
 
 if [ ! -f "$BUILDDIR/build.ninja" ]; then
     echo "virgl/build.sh: fresh meson setup -> $BUILDDIR"
-    meson setup "$BUILDDIR" "$SRCDIR" -Dvenus=true -Drender-server-worker=auto
+    meson setup "$BUILDDIR" "$SRCDIR" --buildtype="$MESON_BUILD_TYPE" -Db_ndebug=if-release -Dvenus=true -Drender-server-worker=auto
 fi
 
-ninja -C "$BUILDDIR"
+meson configure "$BUILDDIR" --buildtype="$MESON_BUILD_TYPE" -Db_ndebug=if-release
+ninja -j "$JOBS" -C "$BUILDDIR"
 echo "  -> $BUILDDIR/vtest/virgl_test_server (+ server/virgl_render_server)"

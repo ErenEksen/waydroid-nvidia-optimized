@@ -1,5 +1,5 @@
 diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
-index a86b9aa..940c89b 100644
+index a86b9aa..e9d616f 100644
 --- a/hwcomposer/gralloc_handler.cpp
 +++ b/hwcomposer/gralloc_handler.cpp
 @@ -25,6 +25,7 @@
@@ -10,7 +10,15 @@ index a86b9aa..940c89b 100644
  #include <cstdint>
  #include <memory>
  
-@@ -162,6 +163,32 @@ namespace {
+@@ -34,6 +35,7 @@
+ #include <wayland-client.h>
+ 
+ #include <log/log.h>
++#include <cutils/properties.h>
+ #include <ui/Rect.h>
+ #include <ui/GraphicBufferMapper.h>
+ #include <gralloc_handle.h>
+@@ -162,6 +164,32 @@ namespace {
          return fmt;
      }
  }
@@ -43,7 +51,7 @@ index a86b9aa..940c89b 100644
  std::unique_ptr<buffer> create_dmabuf_wl_buffer(display *display, const buffer_metadata& metadata,
                                                                  int prime_fd, int drm_format, int byte_stride,
                                                                  int offset, uint64_t modifier, buffer_handle_t handle)
-@@ -178,6 +205,15 @@ std::unique_ptr<buffer> create_dmabuf_wl_buffer(display *display, const buffer_m
+@@ -178,6 +206,15 @@ std::unique_ptr<buffer> create_dmabuf_wl_buffer(display *display, const buffer_m
      }
      assert(drm_format >= 0);
  
@@ -59,11 +67,12 @@ index a86b9aa..940c89b 100644
      zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(display->dmabuf);
      zwp_linux_buffer_params_v1_add(params, prime_fd, 0, offset, byte_stride, modifier >> 32, modifier & 0xffffffff);
      zwp_linux_buffer_params_v1_add_listener(params, &params_listener, nullptr);
-@@ -264,6 +300,11 @@ std::unique_ptr<buffer> create_buffer_gbm(display *display, const buffer_metadat
+@@ -264,6 +301,12 @@ std::unique_ptr<buffer> create_buffer_gbm(display *display, const buffer_metadat
  }
  std::unique_ptr<buffer> create_buffer_cros(display *display, const buffer_metadata& metadata, buffer_handle_t handle) {
      auto *cros_handle = reinterpret_cast<const cros_gralloc_handle *>(handle);
-+    ALOGI("attach dmabuf: %ux%u fmt 0x%x stride %u mod 0x%llx usage 0x%x",
++    static const bool debug_buffers = property_get_bool("debug.waydroid.hwc_buffers", false);
++    if (debug_buffers) ALOGI("attach dmabuf: %ux%u fmt 0x%x stride %u mod 0x%llx usage 0x%x",
 +          metadata.width, metadata.height, cros_handle->format,
 +          cros_handle->strides[0],
 +          (unsigned long long)cros_handle->format_modifier,
@@ -71,7 +80,7 @@ index a86b9aa..940c89b 100644
      return create_dmabuf_wl_buffer(display, metadata, cros_handle->fds[0], cros_handle->format, cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, handle);
  }
  std::unique_ptr<buffer> create_buffer_android(display *display, const buffer_metadata& metadata, buffer_handle_t handle) {
-@@ -314,6 +355,8 @@ gralloc_handler::get_buffer_metadata_func gralloc_handler::select_get_buffer_met
+@@ -314,6 +357,8 @@ gralloc_handler::get_buffer_metadata_func gralloc_handler::select_get_buffer_met
  }
  
  gralloc_handler::create_buffer_func gralloc_handler::select_create_buffer_impl(display *display, GrallocType gralloc_type) {
@@ -80,7 +89,7 @@ index a86b9aa..940c89b 100644
      if (gralloc_type == GrallocType::GRALLOC_GBM && display->dmabuf) {
          return create_buffer_gbm;
      } else if (gralloc_type == GrallocType::GRALLOC_CROS && display->dmabuf) {
-@@ -333,7 +376,39 @@ gralloc_handler::update_shm_buffer_func gralloc_handler::select_update_shm_buffe
+@@ -333,7 +378,39 @@ gralloc_handler::update_shm_buffer_func gralloc_handler::select_update_shm_buffe
      }
  }
  
@@ -159,7 +168,7 @@ index 1d045e3..73a173b 100644
  };
 \ No newline at end of file
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index f509ed7..4e921d3 100644
+index f509ed7..7d64f98 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
 @@ -104,9 +104,25 @@ namespace {
@@ -188,7 +197,7 @@ index f509ed7..4e921d3 100644
              std::unique_ptr<buffer> result;
              if (layer->flags & HWC_IS_CURSOR_LAYER)
                  result = pdev->display->cursor_handler->create_buffer(pdev, metadata, layer);
-@@ -351,6 +367,26 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+@@ -351,6 +367,16 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
      surface_context.attach_buffer(*buf);
      apply_surface_damage(hwc_layer, surface_context);
      surface_context.set_buffer_transform(hwc_transform_to_buffer_transform(hwc_layer->transform));
@@ -198,29 +207,20 @@ index f509ed7..4e921d3 100644
 +     * Without an opaque region the compositor premult-blends the subsurface
 +     * and "transparent" content shows the black window behind it — while
 +     * SF-side screenshots look correct. */
-+    {
-+        struct wl_region *opaque = nullptr;
-+        if (hwc_layer->blending == HWC_BLENDING_NONE) {
-+            opaque = wl_compositor_create_region(pdev->display->compositor);
-+            /* finite surface-local rect: INT32_MAX regions overflow region
-+             * math in some compositors and get silently dropped */
-+            wl_region_add(opaque, 0, 0,
-+                          (int32_t)ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
-+                          (int32_t)ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
-+        }
-+        wl_surface_set_opaque_region(surface_context.surface, opaque);
-+        if (opaque)
-+            wl_region_destroy(opaque);
-+    }
++    surface_context.set_opacity(pdev->display->compositor,
++        hwc_layer->blending == HWC_BLENDING_NONE,
++        (int32_t)ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
++        (int32_t)ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
      // Scaling can only be supported correctly with wp_viewport
      if (surface_context.viewport) {
          surface_context.set_crop(rect_apply_transform(hwc_layer->sourceCropf, hwc_layer->transform));
-@@ -446,6 +482,14 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+@@ -446,6 +472,15 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
      }
  
      auto& mode = pdev->selected_mode;
 +    static int set_count = 0;
-+    if ((set_count++ % 2000) == 0) {
++    static const bool debug_frames = property_get_bool("debug.waydroid.hwc_frames", false);
++    if (debug_frames && (set_count++ % 2000) == 0) {
 +        char aa[PROPERTY_VALUE_MAX];
 +        property_get("waydroid.active_apps", aa, "none");
 +        ALOGI("hwc_set #%d: active_apps=%s layers=%zu windows=%zu compose=%d",
@@ -230,7 +230,7 @@ index f509ed7..4e921d3 100644
      mode->setup_set(pdev, contents);
  
      std::scoped_lock lock(pdev->display->windowsMutex);
-@@ -459,9 +503,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+@@ -459,9 +494,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
          if (layer->flags & HWC_IS_CURSOR_LAYER) {
              found_cursor = true;
              pdev->display->cursor_handler->apply_cursor(pdev, layer, l);
@@ -247,7 +247,7 @@ index f509ed7..4e921d3 100644
          }
      }
      if (!found_cursor) {
-@@ -792,6 +840,20 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
+@@ -792,6 +831,20 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
      if (pdev->display->refresh > 1000 && pdev->display->refresh < 1000000)
          pdev->vsync_period_ns = 1000 * 1000 * 1000 / (pdev->display->refresh / 1000);
  
@@ -268,7 +268,7 @@ index f509ed7..4e921d3 100644
      struct timespec rt;
      if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in vsync thread clock_gettime: %s",
-@@ -924,6 +986,8 @@ int wl_cursor_cursor_handler::apply_cursor(waydroid_hwc_composer_device_1* pdev,
+@@ -924,6 +977,8 @@ int wl_cursor_cursor_handler::apply_cursor(waydroid_hwc_composer_device_1* pdev,
              return -1;
          }
          set_cursor(pdev->display);
@@ -526,10 +526,65 @@ index 000b388..a874a73 100644
                  m_draw_framebuffer_at = i;
              }
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 0bd2f35..d5d1eeb 100644
+index 0bd2f35..9df05e2 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
-@@ -2047,7 +2047,17 @@ static void* hwc_wayland_thread(void* data) {
+@@ -324,6 +324,27 @@ BufferTransform hwc_transform_to_buffer_transform(uint32_t hwc_transform) {
+     }
+ }
+ 
++void surface_context::set_opacity(wl_compositor *compositor, bool opaque, int32_t width, int32_t height) {
++    if (!opaque)
++        width = height = 0;
++    if (opacity_valid && opaque_cached == opaque && opaque_width == width && opaque_height == height)
++        return;
++    wl_region *region = nullptr;
++    if (opaque) {
++        region = wl_compositor_create_region(compositor);
++        if (!region)
++            return; // leave cache invalid/unchanged so the next frame retries
++        wl_region_add(region, 0, 0, width, height);
++    }
++    wl_surface_set_opaque_region(surface, region);
++    if (region)
++        wl_region_destroy(region);
++    opacity_valid = true;
++    opaque_cached = opaque;
++    opaque_width = width;
++    opaque_height = height;
++}
++
+ void surface_context::attach_buffer(buffer& buf) {
+     wl_surface_attach(surface, buf.wl_buffer, 0, 0);
+ }
+@@ -636,11 +657,14 @@ surface_context::~surface_context() {
+     if (surface)
+         wl_surface_destroy(surface);
+ }
+-surface_context::surface_context(surface_context&& other) : surface(other.surface), viewport(other.viewport) {
++surface_context::surface_context(surface_context&& other) : surface(other.surface), viewport(other.viewport),
++    opacity_valid(other.opacity_valid), opaque_cached(other.opaque_cached),
++    opaque_width(other.opaque_width), opaque_height(other.opaque_height) {
+     other.surface = nullptr;
+     other.viewport = nullptr;
+ }
+ surface_context& surface_context::operator=(surface_context&& rhs) {
++    if (this == &rhs) return *this;
+     if (viewport)
+         wp_viewport_destroy(viewport);
+     if (surface)
+@@ -648,6 +672,10 @@ surface_context& surface_context::operator=(surface_context&& rhs) {
+ 
+     surface = rhs.surface;
+     viewport = rhs.viewport;
++    opacity_valid = rhs.opacity_valid;
++    opaque_cached = rhs.opaque_cached;
++    opaque_width = rhs.opaque_width;
++    opaque_height = rhs.opaque_height;
+ 
+     rhs.surface = nullptr;
+     rhs.viewport = nullptr;
+@@ -2047,7 +2075,17 @@ static void* hwc_wayland_thread(void* data) {
      while (ret != -1)
          ret = wl_display_dispatch(display);
  
@@ -549,7 +604,7 @@ index 0bd2f35..d5d1eeb 100644
      abort();
  }
 diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
-index 82ebbd5..07d1210 100644
+index 82ebbd5..73950e0 100644
 --- a/hwcomposer/wayland-hwc.h
 +++ b/hwcomposer/wayland-hwc.h
 @@ -107,18 +107,21 @@ struct buffer_metadata {
@@ -579,3 +634,19 @@ index 82ebbd5..07d1210 100644
  }
  
  struct buffer {
+@@ -148,8 +151,13 @@ enum class BufferTransform : int32_t {
+ BufferTransform hwc_transform_to_buffer_transform(uint32_t hwc_transform);
+ 
+ struct surface_context {
+-    struct wl_surface *surface;
+-    struct wp_viewport *viewport;
++    struct wl_surface *surface {};
++    struct wp_viewport *viewport {};
++    // State belongs to the wl_surface and moves with it, never to a buffer.
++    bool opacity_valid {false};
++    bool opaque_cached {false};
++    int32_t opaque_width {0}, opaque_height {0};
++    void set_opacity(wl_compositor *compositor, bool opaque, int32_t width, int32_t height);
+ 
+     surface_context() = default;
+     surface_context(wl_surface *surface, wp_viewport *viewport);

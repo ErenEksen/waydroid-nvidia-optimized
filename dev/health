@@ -1,27 +1,47 @@
-#!/usr/bin/env bash
-# health — post-restart sanity check before trusting a measurement.
-# Verifies: boot, the active renderer, crash count, KWin dmabuf errors, and the
-# hwc mode diagnostics. Cheap; run it after every dev/restart.
-source "$(dirname "$(readlink -f "$0")")/env.sh"
-need_sudo
+#!/usr/bin/env python3
+"""Fail-closed health gate. No crash, missing measurement or failed command is benign."""
+import argparse
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+from perf.runtime import guest, run
 
-say "boot / props"
-guest 'getprop sys.boot_completed; getprop waydroid.active_apps; getprop ro.hardware.egl; getprop ro.hardware.vulkan; getprop debug.hwui.renderer; getprop debug.renderengine.backend' 2>/dev/null || warn "container not answering"
-
-say "SurfaceFlinger renderer (want: ANGLE ... c1a25085dd9e over venus)"
-guest 'dumpsys SurfaceFlinger | grep -iE "GLES:|renderer"' 2>/dev/null | head -3 || true
-
-say "crashes since boot (want 0; 1 early hwc_binder_thread SIGABRT is known/benign)"
-n=$(guest 'logcat -d -b crash 2>/dev/null | grep -c Cmdline; :' 2>/dev/null || echo '?')
-echo "  crash Cmdline count: $n"
-
-say "hwc mode diagnostics (last few)"
-guest 'logcat -d 2>/dev/null | grep -E "hwc_set #|full-ui:|single-window:" | tail -5' 2>/dev/null || true
-
-say "KWin dmabuf bind errors (want 0)"
-kn=$(journalctl --user -t kwin_wayland --since -60s 2>/dev/null | grep -c GL_INVALID || true)
-echo "  GL_INVALID lines (last 60s): $kn"
-
-say "host renderer + GPU"
-systemctl --user is-active "$VENUS_UNIT" | sed 's/^/  wd-venus: /'
-nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader 2>/dev/null | sed 's/^/  5090: /' || true
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('--since', default='-60s', help='journal boundary (use @epoch from before restart)')
+a = p.parse_args()
+report = {'checks': {}, 'errors': []}
+try:
+    state = run(['systemctl', '--user', 'show', 'wd-venus.service', '-p', 'ActiveState', '-p', 'NRestarts']).stdout
+    report['checks']['renderer'] = state.strip()
+    if 'ActiveState=active' not in state or not re.search(r'^NRestarts=0$', state, re.M):
+        report['errors'].append('renderer not active or restarted after failure')
+    for key, expected in (('sys.boot_completed', '1'), ('ro.hardware.vulkan', 'virtio'), ('ro.hardware.egl', 'angle')):
+        value = guest(f'getprop {key}').strip()
+        report['checks'][key] = value
+        if value != expected:
+            report['errors'].append(f'{key}: expected {expected}, got {value}')
+    sf = guest('dumpsys SurfaceFlinger')
+    renderer = '\n'.join(line for line in sf.splitlines() if re.search(r'GLES:|renderer', line, re.I))
+    report['checks']['surfaceflinger'] = renderer
+    if not renderer or re.search(r' llvmpipe|swiftshader', renderer, re.I):
+        report['errors'].append('missing/software SurfaceFlinger renderer')
+    crashes = guest('logcat -d -b crash')
+    crash_count = len(re.findall(r'Cmdline:', crashes))
+    report['checks']['crashes_since_guest_boot'] = crash_count
+    if crash_count:
+        report['errors'].append('Android crash log is nonempty (not cleared by this tool)')
+    logs = run(['journalctl', '--user', '-u', 'wd-venus.service', '--since', a.since, '--no-pager']).stdout
+    errors = [l for l in logs.splitlines() if re.search(r'bad object ids|failed|device.?lost|fatal|invalid.*(fd|handle)', l, re.I)]
+    report['checks']['renderer_errors'] = errors
+    if errors:
+        report['errors'].append('renderer synchronization/transport errors')
+    kwin = run(['journalctl', '--user', '-t', 'kwin_wayland', '--since', a.since, '--no-pager']).stdout
+    if re.search(r'GL_INVALID|dmabuf.*fail|fail.*dmabuf', kwin, re.I):
+        report['errors'].append('KWin DMA-BUF/GL errors')
+except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+    report['errors'].append(str(exc))
+report['healthy'] = not report['errors']
+print(json.dumps(report, indent=2))
+sys.exit(0 if report['healthy'] else 1)

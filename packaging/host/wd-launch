@@ -4,12 +4,12 @@
 # then opens the full-ui window. Safe to run repeatedly.
 set -u
 
-WAYDROID_DIR="$HOME/repos/waydroid"
+WAYDROID=("${WAYDROID_BIN:-/usr/bin/waydroid}")
+if [[ -n "${WAYDROID_SRC:-}" ]]; then WAYDROID=(python3 "$WAYDROID_SRC/waydroid.py"); fi
 XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}"
 export XDG_RUNTIME_DIR WAYLAND_DISPLAY
 
-cd "$WAYDROID_DIR" || exit 1
 
 notify() { notify-send -a Waydroid "$1" "${2:-}" 2>/dev/null || true; }
 
@@ -18,21 +18,26 @@ session_alive() {
 }
 
 guest_booted() {
-    [ "$(python3 waydroid.py prop get sys.boot_completed 2>/dev/null)" = "1" ]
+    [ "$("${WAYDROID[@]}" prop get sys.boot_completed 2>/dev/null)" = "1" ]
 }
 
 # Detect a crashed/zombie stack: session unit dead, or guest not answering.
 if ! session_alive || ! guest_booted; then
     notify "Waydroid" "(re)starting the stack…"
-    python3 waydroid.py session stop >/dev/null 2>&1
-    systemctl --user restart wd-venus.service
-    sudo -n systemctl restart wd-container.service || {
+    "${WAYDROID[@]}" session stop >/dev/null 2>&1
+    if systemctl --user is-active --quiet wd-session.service; then
+        systemctl --user stop wd-session.service || exit 1
+    fi
+    sudo -n systemctl stop waydroid-container.service || {
+        notify "Waydroid" "Authentication needed: run dev/restart in your terminal after sudo -v"; exit 1; }
+    systemctl --user restart wd-venus.service || exit 1
+    sudo -n systemctl restart waydroid-container.service || {
         notify "Waydroid" "FAILED: wd-container restart (sudo -n)"; exit 1; }
     sleep 2
-    systemd-run --user --unit=wd-session --collect --working-directory="$PWD" \
+    systemd-run --user --unit=wd-session --collect \
         --setenv=WAYLAND_DISPLAY="$WAYLAND_DISPLAY" \
         --setenv=XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" \
-        python3 waydroid.py session start || {
+        "${WAYDROID[@]}" session start || {
         notify "Waydroid" "FAILED: session start"; exit 1; }
     for _ in $(seq 1 60); do
         guest_booted && break
@@ -43,4 +48,4 @@ if ! session_alive || ! guest_booted; then
     fi
 fi
 
-exec python3 waydroid.py show-full-ui
+exec "${WAYDROID[@]}" show-full-ui

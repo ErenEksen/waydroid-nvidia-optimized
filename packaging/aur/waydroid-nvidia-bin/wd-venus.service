@@ -2,6 +2,12 @@
 Description=Venus vtest render server for waydroid-nvidia
 
 [Service]
+# Private, persistent renderer cache; no environment changes for the desktop.
+CacheDirectory=waydroid-nvidia
+CacheDirectoryMode=0700
+Environment=XDG_CACHE_HOME=%C/waydroid-nvidia
+Environment=__GL_SHADER_DISK_CACHE_PATH=%C/waydroid-nvidia/nvidia
+ExecStartPre=/usr/bin/mkdir -p %C/waydroid-nvidia/nvidia
 Environment=RENDER_SERVER_EXEC_PATH=/usr/lib/waydroid-nvidia/virgl_render_server
 Environment=LD_LIBRARY_PATH=/usr/lib/waydroid-nvidia
 ExecStart=/usr/lib/waydroid-nvidia/virgl_test_server --venus --multi-clients --socket-path /run/waydroid-venus/venus.sock

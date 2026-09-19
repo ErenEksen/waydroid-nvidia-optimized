@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Cold starts without implicit cache clearing or unreported warm-up."""
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import sys
+import subprocess
+import time
+from perf.metrics import activity_launch, display_size, focused_bounds, framestats, sf_period_ns
+from perf.runtime import DesktopProbe, HostCapture, clock_compatible, guest, metadata, resource_summary, run
+from perf.presentation import presentation
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--label", default="unlabeled", help="build/run identification, not an acceptance override")
+    p.add_argument("--desktop-output", required=True, help="actual output name hosting both windows, e.g. eDP-1; keep probe visible")
+    p.add_argument("--package", default="com.android.settings")
+    p.add_argument("--mode", choices=("app-cold", "warm", "session-cold"), default="app-cold")
+    p.add_argument("--runs", type=int, default=10)
+    p.add_argument("--duration", type=float, default=10)
+    p.add_argument("--output", type=Path, required=True)
+    args = p.parse_args()
+    if not re.fullmatch(r"[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+", args.package):
+        p.error("invalid Android package name")
+    if not 1 <= args.runs <= 100 or not 2 <= args.duration <= 300:
+        p.error("runs must be 1..100; duration must be 2..300 seconds")
+    if args.output.exists():
+        p.error("output already exists; use a fresh capture directory")
+    args.output.mkdir(parents=True)
+    report = {"schema_version": 2, "package": args.package, "mode": args.mode,
+              "label": args.label, "desktop_output": args.desktop_output, "metadata": metadata(),
+              "requested_runs": args.runs, "duration_s": args.duration, "runs": [], "complete": False}
+    try:
+        if args.mode == "warm":
+            component = resolve(args.package)
+            guest(f"am start -W -n {shlex.quote(component)}")
+            warm_pid = process_ids(args.package)
+            guest("input keyevent KEYCODE_HOME")
+            report["explicit_warmup"] = "one initial activity launch, warm mode only"
+        for i in range(args.runs):
+            trial = args.output / f"run-{i + 1:02d}"
+            trial.mkdir()
+            capture_wall = time.time()
+            with HostCapture(trial), DesktopProbe(trial) as probe:
+                session_ns = None
+                if args.mode == "session-cold":
+                    session_ns = time.monotonic_ns()
+                    run([str(Path(__file__).resolve().parent / "restart")], timeout=180,
+                        env={**os.environ, "NVWD_NO_UI": "1"})
+                same_clock = clock_compatible()
+                w, h = display_size(guest("wm size"))
+                period = sf_period_ns(guest("dumpsys SurfaceFlinger --latency"))
+                component = resolve(args.package)
+                if args.mode != "warm":
+                    guest(f"am force-stop {args.package}")
+                else:
+                    guest("input keyevent KEYCODE_HOME")
+                guest(f"dumpsys gfxinfo {args.package} reset; dumpsys SurfaceFlinger --timestats -clear -enable")
+                start = time.monotonic_ns()
+                # Collect WHILE am start waits, otherwise its wait can let the
+                # rolling ~120-frame buffer overwrite the very first draw.
+                captures = []
+                capture_times = [start]
+                def snapshot():
+                    value = guest(f"dumpsys gfxinfo {args.package} framestats")
+                    captures.append(value)
+                    with (trial/"framestats.txt").open("a") as raw_file:
+                        raw_file.write(value + "\n")
+                    capture_times.append(time.monotonic_ns())
+                with ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(guest, f"am start -W -n {shlex.quote(component)}", timeout=60)
+                    while not future.done():
+                        snapshot()
+                        time.sleep(0.05)
+                    launch = future.result()
+                (trial / "launch.txt").write_text(launch)
+                launch_info = activity_launch(launch)
+                pid = process_ids(args.package)
+                if args.mode == "warm" and pid != warm_pid:
+                    raise RuntimeError("warm process was replaced; refusing to label a cold launch as warm")
+                snapshot()
+                ranges = [[start, time.monotonic_ns()]]
+                window_dump = guest("dumpsys window windows")
+                (trial / "window.txt").write_text(window_dump)
+                l, t, r, b = focused_bounds(window_dump, args.package)
+                x, upper, lower = (l+r)//2, t+(b-t)//3, t+3*(b-t)//4
+                deadline = time.monotonic() + args.duration
+                while time.monotonic() < deadline:
+                    for y1, y2 in ((lower, upper), (upper, lower)):
+                        gesture_start = time.monotonic_ns()
+                        guest(f"input swipe {x} {y1} {x} {y2} 150")
+                        snapshot()
+                        ranges.append([gesture_start, time.monotonic_ns()])
+                end = time.monotonic_ns()
+                raw = "\n".join(captures)
+                (trial / "framestats.txt").write_text(raw)
+                (trial / "timestats.txt").write_text(guest("dumpsys SurfaceFlinger --timestats -dump"))
+            guest("dumpsys SurfaceFlinger --timestats -disable")
+            logs = run(["journalctl", "--user", "-u", "wd-venus.service", "--since", f"@{capture_wall:.6f}", "-o", "json", "--no-pager"]).stdout
+            (trial / "renderer.jsonl").write_text(logs)
+            stats = framestats(raw, start if same_clock else 0, end if same_clock else (1 << 63)-1,
+                               active_ranges=ranges if same_clock else None)
+            desktop = presentation((trial/'desktop.csv').read_text(), session_ns or start, end)
+            probe_log = (trial/'desktop.err').read_text()
+            desktop["clock_verified"] = "presentation_clock_id=1 host_clock_id=1" in probe_log
+            # Protocol ids are connection-local. Resolve to stable output names.
+            output_map = dict(re.findall(r"output_id=(\d+) name=([^\n]+)", probe_log))
+            ids = {line.rsplit(',', 1)[-1] for line in (trial/'desktop.csv').read_text().splitlines()[1:]
+                   if line.startswith('presented,') and not line.endswith(',0')}
+            desktop["output_names"] = sorted({output_map.get(i, 'unknown') for i in ids})
+            desktop["complete"] &= (desktop["clock_verified"] and probe.returncode == 0 and
+                                    desktop["output_names"] == [args.desktop_output])
+            if not same_clock:
+                stats["first_present_after_request_ms"] = None
+                stats["complete"] = False
+            sample = {"index": i+1, "start_ns": start, "end_ns": end,
+                      "shared_monotonic_clock": same_clock, "size": [w, h], "refresh_period_ns": period,
+                      "session_restart_to_launch_ms": (start-session_ns)/1e6 if session_ns else None,
+                      "activity_launch_wait": launch_info, "process_ids": pid, **stats, "active_ranges_ns": ranges,
+                      "focused_bounds": [l,t,r,b], "desktop": desktop}
+            sample["rolling_capture_max_gap_ns"] = max(b-a for a,b in zip(capture_times, capture_times[1:]))
+            sample["rolling_capture_overflow_possible"] = sample["rolling_capture_max_gap_ns"] > 120*period
+            sample["complete"] &= desktop["complete"] and not sample["rolling_capture_overflow_possible"]
+            sample["resources"] = resource_summary(trial)
+            sample["complete"] &= sample["resources"]["complete"]
+            health = run([str(Path(__file__).resolve().parent/'health'), '--since', f'@{capture_wall:.6f}'],
+                         timeout=120, check=False)
+            (trial/'health.json').write_text(health.stdout)
+            sample['health_ok'] = health.returncode == 0
+            sample['complete'] &= sample['health_ok']
+            report["runs"].append(sample)
+            (trial / "report.json").write_text(json.dumps(sample, indent=2) + "\n")
+            print(f"run {i+1}: work {stats['hwui_work']}; actual presentation {stats['presentation']}", flush=True)
+        report["complete"] = all(r["complete"] for r in report["runs"])
+    except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired, KeyboardInterrupt) as exc:
+        report["error"] = str(exc) or type(exc).__name__
+    finally:
+        try:
+            guest("dumpsys SurfaceFlinger --timestats -disable")
+        except Exception:
+            pass
+        (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
+    if not report["complete"]:
+        print("INCOMPLETE: inspect report.json; missing presentation data is not a pass", file=sys.stderr)
+        return 1
+    return 0
+
+
+def process_ids(package):
+    value = guest(f"pidof {package}").strip()
+    if not value or not all(p.isdigit() for p in value.split()):
+        raise RuntimeError("main process could not be identified; a same-process claim is not safe")
+    return sorted(map(int, value.split()))
+
+
+def resolve(package):
+    result = guest(f"cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.LAUNCHER {package}")
+    lines = [l.strip() for l in result.splitlines() if re.fullmatch(r"[\w.]+/[\w.$]+", l.strip())]
+    if not lines:
+        raise RuntimeError(f"no launcher activity found for {package}")
+    return lines[-1]
+
+
+if __name__ == "__main__":
+    sys.exit(main())

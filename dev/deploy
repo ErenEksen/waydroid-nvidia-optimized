@@ -36,10 +36,7 @@ case "${1:-}" in
         done
         warn "guest libs deployed — run dev/restart" ;;
     virgl)
-        # host-side renderer: runs from its build dir via the user unit.
-        say "restart $VENUS_UNIT (host renderer picks up the new build)"
-        systemctl --user restart "$VENUS_UNIT"
-        warn "renderer restarted — run dev/restart so the stack reconnects" ;;
+        die "refusing a restart-only host 'deploy': use dev/make-bundle and dev/install-bundle for a backed-up complete component set" ;;
     gralloc)
         sudo -n "$DEPLOY" guest-lib x86_64 gralloc \
             "$HWC_BUILD/out/libgbm_mesa_wrapper.so"

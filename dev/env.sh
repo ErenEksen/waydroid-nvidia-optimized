@@ -15,8 +15,14 @@ set -euo pipefail
 : "${REPO:=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 
 # --- external trees ---
-: "${WNV:=$HOME/repos/waydroid-nv}"
-: "${WAYDROID_SRC:=$HOME/repos/waydroid}"
+: "${WNV:=$REPO/.work}"
+: "${WAYDROID_SRC:=}"
+# A checkout is opt-in; normal installations use the packaged executable.
+if [[ -n "$WAYDROID_SRC" ]]; then
+    WAYDROID=(python3 "$WAYDROID_SRC/waydroid.py")
+else
+    WAYDROID=("${WAYDROID_BIN:-/usr/bin/waydroid}")
+fi
 
 : "${MESA_TREE:=$WNV/mesa}"
 : "${MESA_BUILD_X86_64:=${MESA_BUILD:-$MESA_TREE/build-android-x86_64}}"
@@ -32,22 +38,32 @@ set -euo pipefail
 : "${ANGLE_OUT_X86:=$ANGLE_TREE/out/AndroidX86}"
 
 # --- toolchain ---
-: "${NDK:=/opt/android-ndk}"
+source "$REPO/packaging/ci/pins.env"
+source "$REPO/packaging/ci/hwc-pins.env"
+: "${NDK:=$WNV/android-ndk-$NDK_VERSION}"
+: "${MINIGBM:=$WNV/minigbm}"
+if [[ -d "$WNV/link-rootfs" ]]; then : "${ROOTFS:=$WNV/link-rootfs}"; fi
+export MINIGBM
+[[ -z "${ROOTFS:-}" ]] || export ROOTFS
+# Do not put the build venv on PATH here. Packaged Waydroid uses
+# /usr/bin/env python3 and needs the distribution's dbus/PyGObject modules.
+# Only dev/build selects the isolated Python build tools.
+export NDK WNV
 : "${NDK_BIN:=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin}"
 : "${STRIP:=$NDK_BIN/llvm-strip}"
 
 # --- runtime ---
 : "${LXC:=-P /var/lib/waydroid/lxc -n waydroid}"
 : "${VENUS_UNIT:=wd-venus.service}"
-: "${CONTAINER_UNIT:=wd-container.service}"
+: "${CONTAINER_UNIT:=waydroid-container.service}"
 : "${SESSION_UNIT:=wd-session.service}"
 : "${DEPLOY:=/usr/local/sbin/wd-deploy}"
 
 # --- patch-regen anchors (verified ancestors; see dev/sync-patches) ---
-: "${MESA_BASE:=a8ce4d8}"
-: "${VIRGL_BASE:=dc35e4d}"
-: "${HWC_BASE:=7750307}"
-: "${WAYDROID_BASE:=a33a5c0}"
+: "${MESA_BASE:=$MESA_SHA}"
+: "${VIRGL_BASE:=$VIRGL_SHA}"
+: "${HWC_BASE:=$HWC_SHA}"
+: "${WAYDROID_BASE:=$WAYDROID_SHA}"
 
 # --- helpers ---
 say()  { printf '\033[1;36m== %s\033[0m\n' "$*"; }
@@ -63,9 +79,6 @@ guest() {
         < /dev/null 2> >(cat >&2) | cat
 }
 
-# The waydroid-dev sudoers allowlist grants NOPASSWD for exactly the commands
-# the loop uses (lxc-attach/lxc-info/systemctl wd-container/wd-deploy) — probe
-# one of those, NOT `sudo -n true`, which is not allowlisted and would demand
-# cached credentials the loop doesn't actually need.
+# Use the caller's authenticated terminal; do not install sudoers rules.
 have_sudo() { sudo -n lxc-info --version >/dev/null 2>&1; }
-need_sudo() { have_sudo || die "sudo -n unavailable — install the waydroid-dev sudoers allowlist or run 'sudo -v' first"; }
+need_sudo() { have_sudo || die "sudo -n unavailable — run this tool from your own terminal after sudo -v; do not add broad NOPASSWD rules"; }

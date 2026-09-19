@@ -20,6 +20,7 @@ static uint32_t *read_spirv(const char *path, size_t *sz) {
 }
 
 int main(int argc, char **argv) {
+    if (argc != 2) { fprintf(stderr, "usage: vnprobe shader.spv\n"); return 2; }
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo ici = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, NULL, 0, &app};
@@ -110,5 +111,18 @@ int main(int argc, char **argv) {
             return 1;
         }
     printf("PASS: %u elements computed correctly on '%s'\n", N, props.deviceName);
+    vkUnmapMemory(dev, mem);
+    vkDestroyFence(dev, fence, NULL);
+    vkDestroyCommandPool(dev, cp, NULL);
+    vkDestroyDescriptorPool(dev, dp, NULL);
+    vkDestroyPipeline(dev, pipe, NULL);
+    vkDestroyPipelineLayout(dev, pl, NULL);
+    vkDestroyDescriptorSetLayout(dev, dsl, NULL);
+    vkDestroyShaderModule(dev, sm, NULL);
+    free(spv);
+    vkDestroyBuffer(dev, buf, NULL);
+    vkFreeMemory(dev, mem, NULL);
+    vkDestroyDevice(dev, NULL);
+    vkDestroyInstance(inst, NULL);
     return 0;
 }

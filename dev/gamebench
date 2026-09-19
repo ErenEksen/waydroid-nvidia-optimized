@@ -20,13 +20,15 @@ source "$(dirname "$(readlink -f "$0")")/env.sh"
 need_sudo
 set +e +o pipefail
 
-NDK_CLANG="${NDK_CLANG:-/opt/android-ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang}"
-SRC="$WNV/tests/gpuload.c"
+NDK_CLANG="${NDK_CLANG:-$NDK_BIN/x86_64-linux-android34-clang}"
+SRC="$REPO/tests/gpuload.c"
+mkdir -p "$WNV/tests"
 BIN="$WNV/tests/gpuload-android"
 
 if [ "${1:-}" = "app" ]; then
     PKG="${2:?usage: dev/gamebench app <pkg> [secs]}"
     SECS="${3:-10}"
+    [[ "$PKG" =~ ^[A-Za-z0-9_.]+$ && "$SECS" =~ ^[1-9][0-9]*$ ]] || die "invalid package/duration"
     say "app fps: $PKG for ${SECS}s (SurfaceFlinger TimeStats; the legacy"
     say "--latency frame table is dead on Android 13)"
     guest "dumpsys SurfaceFlinger --timestats -clear -enable" >/dev/null
@@ -77,15 +79,23 @@ PYEOF
     exit $rc
 fi
 
-W="${1:-2560}" H="${2:-1440}" SECS="${3:-4}"
+read -r native_w native_h < <(guest 'wm size' | sed -n 's/.*size: \([0-9]*\)x\([0-9]*\).*/\1 \2/p' | tail -1)
+W="${1:-$native_w}" H="${2:-$native_h}" SECS="${3:-4}"
+[[ "$W" =~ ^[1-9][0-9]*$ && "$H" =~ ^[1-9][0-9]*$ && "$SECS" =~ ^[1-9][0-9]*$ ]] || die 'positive width/height/seconds required'
+(( W <= 8192 && H <= 8192 && SECS <= 120 )) || die 'benchmark dimensions/duration too large'
+push_probe() {
+    cat "$BIN" | sudo -n lxc-attach $LXC --clear-env -v PATH=/system/bin -- /system/bin/sh -c \
+        'cat > /data/local/tmp/gpuload-android && chmod 755 /data/local/tmp/gpuload-android' 2> >(cat >&2) | cat
+    return "${PIPESTATUS[1]}"
+}
 
 # rebuild + push when the source is newer than the guest copy
 if [ ! -f "$BIN" ] || [ "$SRC" -nt "$BIN" ]; then
     say "building gpuload ($NDK_CLANG)"
     "$NDK_CLANG" -O2 -o "$BIN" "$SRC" -lEGL -lGLESv2 -lm || exit 1
-    sudo -n /usr/local/sbin/wd-deploy push "$BIN" gpuload-android || exit 1
+    push_probe || exit 1
 elif ! guest "test -x /data/local/tmp/gpuload-android" 2>/dev/null; then
-    sudo -n /usr/local/sbin/wd-deploy push "$BIN" gpuload-android || exit 1
+    push_probe || exit 1
 fi
 
 say "gpuload: ${W}x${H}, ${SECS}s/scene (offscreen, ANGLE->Venus->host GPU)"

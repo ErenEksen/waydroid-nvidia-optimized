@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# Run in the user's authenticated terminal, NOT as root. Default is read-only.
+source "$(dirname "$(readlink -f "$0")")/env.sh"
+mode="${1:-}"; directory="${2:-}"
+[[ "$mode" == --check || "$mode" == --apply || "$mode" == --rollback ]] || die 'usage: dev/install-bundle --check|--apply BUNDLE | --rollback BACKUP'
+[[ -n "$directory" ]] || die 'bundle/backup path is required'
+if [[ "$mode" != --rollback ]]; then
+    PYTHONPATH="$REPO/dev" python3 - "$directory" <<'PY'
+import sys
+from perf.bundle import load_bundle
+manifest, _ = load_bundle(sys.argv[1])
+print('Validated complete checksummed set:', manifest['status'])
+PY
+fi
+[[ "$mode" != --check ]] || exit 0
+(( EUID != 0 )) || die 'run as your desktop user after sudo -v, not sudo dev/install-bundle'
+# Exercise the actual executable/interpreter before auth or any service change.
+# --check remains an offline bundle validation, independent of the host runtime.
+timeout 15 "${WAYDROID[@]}" --help >/dev/null || die 'Waydroid CLI preflight failed; installation/rollback not started. Check runtime Python/dependencies or CLI timeout; do not use the build venv for Waydroid.'
+need_sudo
+command -v lxc-info >/dev/null || die 'lxc-info required'
+[[ $(systemctl --user show "$VENUS_UNIT" -p ExecStart --value) == *'/usr/lib/waydroid-nvidia/virgl_test_server'* ]] || die 'custom renderer ExecStart; review deployment destinations first'
+session_was_active=0
+[[ $("${WAYDROID[@]}" prop get sys.boot_completed 2>/dev/null) == 1 ]] && session_was_active=1
+backup=
+stop_stack() {
+    "${WAYDROID[@]}" session stop || return
+    if systemctl --user is-active --quiet "$SESSION_UNIT"; then systemctl --user stop "$SESSION_UNIT" || return; fi
+    sudo -n systemctl stop "$CONTAINER_UNIT" || return
+    systemctl --user stop "$VENUS_UNIT"
+}
+recover() {
+    local rc=$?
+    (( rc != 0 )) || rc=1
+    trap - ERR INT TERM
+    warn 'candidate failed; stopping stack before restoring the previous complete set'
+    if stop_stack && [[ -n "$backup" ]] && sudo -n "$REPO/dev/install-set" restore "$backup"; then
+        systemctl --user daemon-reload
+        if (( session_was_active )); then timeout 180 "$REPO/dev/restart" || warn 'old set restored, but restart needs attention'
+        else systemctl --user start "$VENUS_UNIT"; fi
+        warn "previous set restored from $backup"
+    else
+        warn "Automatic recovery incomplete. Keep stack stopped; backup: ${backup:-none (installation did not start)}"
+    fi
+    exit "${rc:-1}"
+}
+stop_stack
+if [[ "$mode" == --rollback ]]; then
+    sudo -n "$REPO/dev/install-set" restore "$directory"
+    systemctl --user daemon-reload
+    timeout 180 "$REPO/dev/restart"
+    exec "$REPO/dev/health"
+fi
+trap recover ERR INT TERM
+backup=$(sudo -n "$REPO/dev/install-set" apply "$directory")
+since="@$(date +%s)"
+systemctl --user daemon-reload
+timeout 180 "$REPO/dev/restart"
+"$REPO/dev/health" --since "$since"
+trap - ERR INT TERM
+say "Candidate installed and smoke health passed. Backup: $backup"
+warn 'This is NOT performance acceptance: run the cold/warm/desktop/synthetic/30-minute comparison matrix.'

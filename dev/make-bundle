@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Stage a checksummed, complete candidate set without touching installed components."""
+import argparse
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+from perf.bundle import ARTIFACTS, load_bundle, sha256
+
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('output', type=Path)
+a = p.parse_args()
+repo = Path(__file__).resolve().parent.parent
+w = Path(os.environ.get('WNV', repo/'.work'))
+paths = {
+    'virgl_test_server': w/'virglrenderer/build/vtest/virgl_test_server',
+    'virgl_render_server': w/'virglrenderer/build/server/virgl_render_server',
+    'libvirglrenderer.so.1': w/'virglrenderer/build/src/libvirglrenderer.so.1',
+    'vulkan-x86_64.so': w/'mesa/build-android-x86_64/src/virtio/vulkan/libvulkan_virtio.so',
+    'vulkan-x86.so': w/'mesa/build-android-x86/src/virtio/vulkan/libvulkan_virtio.so',
+    'hwcomposer.waydroid.so': w/'hwc-build/out/hwcomposer.waydroid.stripped.so',
+    'libgbm_mesa_wrapper.so': w/'hwc-build/out/libgbm_mesa_wrapper.so',
+    '50-renderer-cache.conf': repo/'packaging/performance/50-renderer-cache.conf',
+}
+if a.output.exists():
+    p.error('output already exists; use a fresh directory')
+for src in paths.values():
+    if not src.is_file():
+        p.error(f'missing build artifact: {src}')
+a.output.mkdir(parents=True)
+manifest = {'schema_version': 1, 'status': 'candidate; live Android acceptance pending', 'files': {},
+    'source_head': subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
+    'source_dirty': bool(subprocess.check_output(['git', '-C', str(repo), 'status', '--porcelain'], text=True).strip()),
+    'pins': (repo/'packaging/ci/pins.env').read_text() + (repo/'packaging/ci/hwc-pins.env').read_text(),
+    'source_files': {}}
+for directory in ('build', 'dev', 'patches', 'src', 'packaging/performance'):
+    for f in sorted((repo/directory).rglob('*')):
+        if f.is_file() and not any(part in ('__pycache__', 'out') for part in f.parts) and f.suffix not in ('.pyc', '.so', '.o', '.a'):
+            manifest['source_files'][str(f.relative_to(repo))] = sha256(f.read_bytes())
+for role, src in paths.items():
+    dst = a.output/role
+    shutil.copyfile(src, dst)
+    if role in ('virgl_test_server', 'virgl_render_server', 'libvirglrenderer.so.1'):
+        subprocess.run(['patchelf', '--set-rpath', '$ORIGIN', str(dst)], check=True)
+    if ARTIFACTS[role][3]:
+        dynamic = subprocess.check_output(['readelf', '-dW', str(dst)], text=True)
+        if f'[{ARTIFACTS[role][3]}]' not in dynamic:
+            raise SystemExit(f'wrong/missing SONAME: {role}')
+    dst.chmod(0o755 if role in ('virgl_test_server', 'virgl_render_server') else 0o644)
+    manifest['files'][role] = {'sha256': sha256(dst.read_bytes()), 'size': dst.stat().st_size}
+(a.output/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')
+load_bundle(a.output)
+print(a.output.resolve())

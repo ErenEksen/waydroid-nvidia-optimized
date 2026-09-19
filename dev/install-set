@@ -1,0 +1,63 @@
+#!/usr/bin/env python3
+"""Root half of install-bundle. Fixed destinations, root-owned backups, no app data."""
+import argparse
+from datetime import datetime
+import json
+import os
+from pathlib import Path
+import pwd
+import subprocess
+import sys
+import uuid
+from perf.bundle import backup_set, destinations, install_set, load_bundle, no_symlinks, restore_set
+
+p = argparse.ArgumentParser(description=__doc__)
+p.add_argument('action', choices=('apply', 'restore'))
+p.add_argument('directory', type=Path)
+a = p.parse_args()
+if os.geteuid() != 0 or not os.environ.get('SUDO_USER') or os.environ['SUDO_USER'] == 'root':
+    p.error('invoke through sudo from the desktop user; do not create NOPASSWD rules')
+user = pwd.getpwnam(os.environ['SUDO_USER'])
+targets = destinations(Path(user.pw_dir))
+backup_root = Path('/var/lib/waydroid/nv/perf-backups')
+no_symlinks(backup_root)
+backup_root.mkdir(mode=0o700, exist_ok=True)
+if backup_root.stat().st_uid != 0 or backup_root.stat().st_mode & 0o077:
+    p.error('backup directory must be root-owned and mode 0700')
+state = subprocess.run(['lxc-info', '-P', '/var/lib/waydroid/lxc', '-n', 'waydroid', '-sH'], capture_output=True, text=True, check=True)
+if state.stdout.strip() != 'STOPPED':
+    p.error('stop the complete Waydroid stack before replacing or restoring its components')
+for path in targets.values():
+    no_symlinks(path)
+if a.action == 'restore':
+    directory = a.directory.resolve(strict=True)
+    if directory.parent != backup_root or directory.stat().st_uid != 0:
+        p.error('restore only an immediate child of the protected backup directory')
+    restore_set(directory, targets)
+    print(directory)
+else:
+    manifest, data = load_bundle(a.directory)
+    cfg = Path('/var/lib/waydroid/waydroid.cfg').read_text()
+    import re
+    if not re.search(r'^nvidia_guest_layout\s*=\s*2\s*$', cfg, re.M):
+        p.error('dual-ABI guest layout 2 is required; migration is outside this installer')
+    mounts = Path('/var/lib/waydroid/lxc/waydroid/config_nodes').read_text()
+    for role, target in targets.items():
+        if role != '50-renderer-cache.conf' and not target.is_file():
+            p.error(f'installed target missing: {target}')
+        if '/nv/guest/' in str(target):
+            rel = str(target).split('/nv/guest/', 1)[1]
+            if f'lxc.mount.entry = {target} {rel} ' not in mounts:
+                p.error(f'guest mount does not match: {target}')
+    directory = backup_root/(datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+uuid.uuid4().hex[:8])
+    backup_set(directory, targets)
+    for name, path in {'waydroid.cfg': '/var/lib/waydroid/waydroid.cfg',
+                       'config_nodes': '/var/lib/waydroid/lxc/waydroid/config_nodes'}.items():
+        (directory/name).write_bytes(Path(path).read_bytes())
+    (directory/'candidate.json').write_text(json.dumps(manifest, indent=2)+'\n')
+    try:
+        install_set(data, targets, user.pw_uid, user.pw_gid)
+    except BaseException:
+        restore_set(directory, targets)
+        raise
+    print(directory)

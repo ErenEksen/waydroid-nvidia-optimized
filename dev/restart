@@ -1,41 +1,36 @@
 #!/usr/bin/env bash
-# restart — the ONE allowed way to bounce the stack (never kill composer/SF
-# individually; SF zombies at flips=0). Full clean restart of the venus
-# renderer + container + session, operating on the runtime waydroid checkout.
-#   edit code/props -> dev/build+deploy -> dev/restart -> dev/measure
+# Controlled full restart; errors must not be hidden by sleeps or `|| true`.
 source "$(dirname "$(readlink -f "$0")")/env.sh"
 need_sudo
-cd "$WAYDROID_SRC"
-
-say "stopping session / container"
-systemctl --user stop "$SESSION_UNIT" 2>/dev/null || true
-python3 waydroid.py session stop 2>/dev/null || true
-sudo -n systemctl stop "$CONTAINER_UNIT" 2>/dev/null || true
-sleep 1
-
-say "restarting venus renderer ($VENUS_UNIT)"
+say "stopping session and container"
+"${WAYDROID[@]}" session stop
+if systemctl --user is-active --quiet "$SESSION_UNIT"; then
+    systemctl --user stop "$SESSION_UNIT"
+fi
+sudo -n systemctl stop "$CONTAINER_UNIT"
+say "restarting renderer"
 systemctl --user restart "$VENUS_UNIT"
-
-say "starting container ($CONTAINER_UNIT)"
-sudo -n systemctl restart "$CONTAINER_UNIT"
-sleep 2
-
-say "starting session (transient user unit, keeps Wayland env)"
+for ((i=0; i<100; i++)); do
+    [[ -S /run/waydroid-venus/venus.sock ]] && break
+    sleep 0.1
+done
+[[ -S /run/waydroid-venus/venus.sock ]] || die 'renderer socket not ready'
+sudo -n systemctl start "$CONTAINER_UNIT"
+if [[ -n $(systemctl --user show "$SESSION_UNIT" -p FragmentPath --value) && $(systemctl --user show "$SESSION_UNIT" -p Transient --value) != yes ]]; then
+    systemctl --user start "$SESSION_UNIT"
+else
 systemd-run --user --unit="${SESSION_UNIT%.service}" --collect \
-    --working-directory="$WAYDROID_SRC" \
     --setenv=WAYLAND_DISPLAY="${WAYLAND_DISPLAY:-wayland-0}" \
     --setenv=XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-    python3 waydroid.py session start
-sleep 1
-
-say "waiting for boot (max 120s)"
-booted=
-for i in $(seq 1 60); do
-    booted=$(python3 waydroid.py prop get sys.boot_completed 2>/dev/null | tr -d '\r')
-    [ "$booted" = 1 ] && { say "BOOTED after ~$((i*2))s"; break; }
-    sleep 2
+    "${WAYDROID[@]}" session start
+fi
+for ((i=0; i<120; i++)); do
+    if [[ $("${WAYDROID[@]}" prop get sys.boot_completed 2>/dev/null | tr -d '\r') == 1 ]]; then
+        say 'Android booted'
+        # Benchmarks request a boot without launching UI or pre-warming apps.
+        [[ ${NVWD_NO_UI:-0} == 1 ]] || "${WAYDROID[@]}" show-full-ui
+        exit 0
+    fi
+    sleep 1
 done
-[ "$booted" = 1 ] || warn "did not reach boot_completed=1 — check dev/logs"
-
-# map the window on the monitor
-python3 waydroid.py show-full-ui 2>/dev/null || true
+die 'Android did not boot within 120 seconds'

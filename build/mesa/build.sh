@@ -15,6 +15,8 @@ set -euo pipefail
 SRCDIR="${1:?usage: build.sh SRCDIR [BUILDDIR]}"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 
+source "$HERE/../profile.sh"
+
 ANDROID_ABI="${ANDROID_ABI:-x86_64}"
 ANDROID_API="${ANDROID_API:-34}"
 case "$ANDROID_API" in
@@ -73,11 +75,13 @@ else
         -e "s#@CPU@#$MESON_CPU#g" \
         "$HERE/android-cross.ini.in" > "$cross"
     meson setup "$BUILDDIR" "$SRCDIR" --cross-file "$cross" \
+        --buildtype="$MESON_BUILD_TYPE" -Db_ndebug=if-release \
         -Dplatforms=android -Dandroid-stub=true -Dandroid-libbacktrace=disabled \
         -Dvulkan-drivers=virtio -Dgallium-drivers= -Dshared-glapi=disabled \
         -Dgles1=disabled -Dgles2=disabled -Degl=disabled -Dopengl=false \
         -Dplatform-sdk-version="$ANDROID_API" -Dallow-fallback-for=libdrm
 fi
 
-ninja -C "$BUILDDIR" src/virtio/vulkan/libvulkan_virtio.so
+meson configure "$BUILDDIR" --buildtype="$MESON_BUILD_TYPE" -Db_ndebug=if-release
+ninja -j "$JOBS" -C "$BUILDDIR" src/virtio/vulkan/libvulkan_virtio.so
 echo "  -> $BUILDDIR/src/virtio/vulkan/libvulkan_virtio.so"

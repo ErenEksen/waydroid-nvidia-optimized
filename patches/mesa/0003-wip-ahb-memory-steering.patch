@@ -1424,10 +1424,20 @@ index c33f3cf..2c0c156 100644
        VkExternalMemoryHandleTypeFlagBits renderer_handle_type;
        VkExternalMemoryHandleTypeFlags supported_handle_types;
 diff --git a/src/virtio/vulkan/vn_queue.c b/src/virtio/vulkan/vn_queue.c
-index 4c337a3..3957600 100644
+index 4c337a3..a2c9b7a 100644
 --- a/src/virtio/vulkan/vn_queue.c
 +++ b/src/virtio/vulkan/vn_queue.c
-@@ -383,6 +383,9 @@ vn_fix_device_group_cmd_count(struct vn_queue_submission *submit,
+@@ -50,6 +50,9 @@ struct vn_queue_submission {
+    uint32_t pnext_count;
+    uint32_t dev_mask_count;
+    bool has_zink_sync_batch;
++   bool external_import_ordered;
++   uint64_t ring_wait_ns;
++   uint32_t imported_semaphores, cpu_waits;
+    struct vn_sync_payload_external external_payload;
+ 
+    /* Temporary storage allocation for submission
+@@ -383,6 +386,9 @@ vn_fix_device_group_cmd_count(struct vn_queue_submission *submit,
  static bool
  vn_semaphore_wait_external(struct vn_device *dev, struct vn_semaphore *sem);
  
@@ -1437,7 +1447,7 @@ index 4c337a3..3957600 100644
  static VkResult
  vn_queue_submission_fix_batch_semaphores(struct vn_queue_submission *submit,
                                           uint32_t batch_index)
-@@ -401,6 +404,33 @@ vn_queue_submission_fix_batch_semaphores(struct vn_queue_submission *submit,
+@@ -401,6 +407,45 @@ vn_queue_submission_fix_batch_semaphores(struct vn_queue_submission *submit,
        if (payload->type != VN_SYNC_TYPE_IMPORTED_SYNC_FD)
           continue;
  
@@ -1449,14 +1459,24 @@ index 4c337a3..3957600 100644
 +       */
 +      struct vn_renderer *renderer = dev->instance->renderer;
 +      if (renderer->info.has_semaphore_import && payload->fd >= 0) {
-+         /* the import travels over the socket while queue commands travel
-+          * over the ring: drain the ring first so an earlier submission
-+          * waiting this semaphore cannot consume the new payload
-+          */
-+         vn_ring_roundtrip(dev->primary_ring);
-+         if (renderer->ops.semaphore_import_sync_fd(
-+                renderer, dev->base.id, sem->base.id, payload->fd) ==
-+             VK_SUCCESS) {
++         /* Socket imports must not overtake ring object creation or earlier
++          * queue waits. vn_ring_roundtrip orders socket -> ring, NOT ring ->
++          * socket: it only enqueues an asynchronous wait. Wait for consumed
++          * ring commands once per submission; this is not GPU completion. */
++         if (!submit->external_import_ordered) {
++            VN_TRACE_SCOPE("nvwd_external_import_ring_wait");
++            const int64_t begin = renderer->info.nvwd_perf_stats ? os_time_get_nano() : 0;
++            vn_ring_wait_all(dev->primary_ring);
++            if (renderer->info.nvwd_perf_stats)
++               submit->ring_wait_ns += os_time_get_nano() - begin;
++            submit->external_import_ordered = true;
++         }
++         const VkResult imported = renderer->ops.semaphore_import_sync_fd(
++            renderer, dev->base.id, sem->base.id, payload->fd);
++         if (imported == VK_ERROR_DEVICE_LOST)
++            return imported;
++         if (imported == VK_SUCCESS) {
++            submit->imported_semaphores++;
 +            /* host owns the wait now; drop our copy and reset the guest-side
 +             * payload model (temporary import is consumed by the wait)
 +             */
@@ -1468,10 +1488,23 @@ index 4c337a3..3957600 100644
 +                "semaphore sync_fd import failed, using CPU wait");
 +      }
 +
++      if (payload->fd >= 0)
++         submit->cpu_waits++;
        if (!vn_semaphore_wait_external(dev, sem))
           return VK_ERROR_DEVICE_LOST;
  
-@@ -1853,6 +1883,7 @@ vn_create_sync_file(struct vn_device *dev,
+@@ -1072,6 +1117,10 @@ vn_queue_submit(struct vn_queue_submission *submit)
+       }
+    }
+ 
++   if (dev->renderer->info.nvwd_perf_stats &&
++       (submit->external_import_ordered || submit->cpu_waits))
++      mesa_logi("NVWD-PERF ring_wait_ns=%" PRIu64 " imports=%u cpu_waits=%u",
++                submit->ring_wait_ns, submit->imported_semaphores, submit->cpu_waits);
+    vn_queue_submission_cleanup(submit);
+ 
+    return VK_SUCCESS;
+@@ -1853,6 +1902,7 @@ vn_create_sync_file(struct vn_device *dev,
        .sync_values = &(const uint64_t){ 1 },
        .sync_count = 1,
        .ring_idx = external_payload->ring_idx,
@@ -1480,10 +1513,10 @@ index 4c337a3..3957600 100644
  
     uint32_t local_data[8];
 diff --git a/src/virtio/vulkan/vn_renderer.h b/src/virtio/vulkan/vn_renderer.h
-index fc5ff2c..d5c1150 100644
+index fc5ff2c..f476ace 100644
 --- a/src/virtio/vulkan/vn_renderer.h
 +++ b/src/virtio/vulkan/vn_renderer.h
-@@ -66,6 +66,11 @@ struct vn_renderer_info {
+@@ -66,6 +66,12 @@ struct vn_renderer_info {
  
     bool has_dma_buf_import;
     bool has_external_sync;
@@ -1492,10 +1525,11 @@ index fc5ff2c..d5c1150 100644
 +    * submissions wait it on the GPU instead of a guest-CPU sync_wait
 +    */
 +   bool has_semaphore_import;
++   bool nvwd_perf_stats; /* opt-in only; no timing calls on the normal path */
     bool has_timeline_sync;
     bool has_implicit_fencing;
     bool has_guest_vram;
-@@ -103,6 +108,15 @@ struct vn_renderer_submit_batch {
+@@ -103,6 +109,15 @@ struct vn_renderer_submit_batch {
     /* TODO allow NULL when syncs are all binary? */
     const uint64_t *sync_values;
     uint32_t sync_count;
@@ -1511,7 +1545,7 @@ index fc5ff2c..d5c1150 100644
  };
  
  struct vn_renderer_wait {
-@@ -128,6 +142,16 @@ struct vn_renderer_ops {
+@@ -128,6 +143,16 @@ struct vn_renderer_ops {
      */
     VkResult (*wait)(struct vn_renderer *renderer,
                      const struct vn_renderer_wait *wait);
@@ -1529,10 +1563,10 @@ index fc5ff2c..d5c1150 100644
  
  struct vn_renderer_shmem_ops {
 diff --git a/src/virtio/vulkan/vn_renderer_vtest.c b/src/virtio/vulkan/vn_renderer_vtest.c
-index 7aaebd2..7d47597 100644
+index 7aaebd2..b0758e7 100644
 --- a/src/virtio/vulkan/vn_renderer_vtest.c
 +++ b/src/virtio/vulkan/vn_renderer_vtest.c
-@@ -10,12 +10,16 @@
+@@ -10,12 +10,18 @@
  #include <errno.h>
  #include <netinet/in.h>
  #include <poll.h>
@@ -1544,12 +1578,14 @@ index 7aaebd2..7d47597 100644
 +#include <time.h>
  #include <unistd.h>
  
++#include <sys/time.h>
++
 +#include "drm-uapi/drm.h"
 +#include "util/log.h"
  #include "drm-uapi/virtgpu_drm.h"
  #include "util/os_file.h"
  #include "util/os_misc.h"
-@@ -44,6 +48,11 @@ struct vtest_bo {
+@@ -44,6 +50,11 @@ struct vtest_bo {
  
  struct vtest_sync {
     struct vn_renderer_sync base;
@@ -1561,7 +1597,7 @@ index 7aaebd2..7d47597 100644
  };
  
  struct vtest {
-@@ -57,6 +66,19 @@ struct vtest {
+@@ -57,6 +68,20 @@ struct vtest {
     uint32_t protocol_version;
     uint32_t max_timeline_count;
     bool has_venus_sync_fd;
@@ -1577,11 +1613,12 @@ index 7aaebd2..7d47597 100644
 +      int node_fd;         /* -1 = unsupported/disabled */
 +      uint32_t handle;     /* timeline syncobj handle on node_fd */
 +      uint64_t next_point; /* guarded by sock_mutex */
++      uint32_t ring_idx;   /* timeline points must belong to ONE ordered queue */
 +   } timeline;
  
     struct {
        uint32_t id;
-@@ -80,7 +102,10 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
+@@ -80,7 +105,10 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
  
     sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (sock < 0) {
@@ -1593,7 +1630,7 @@ index 7aaebd2..7d47597 100644
        return -1;
     }
  
-@@ -89,7 +114,9 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
+@@ -89,11 +117,21 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
     memcpy(un.sun_path, path, strlen(path));
  
     if (connect(sock, (struct sockaddr *)&un, sizeof(un)) == -1) {
@@ -1604,11 +1641,83 @@ index 7aaebd2..7d47597 100644
        close(sock);
        return -1;
     }
-@@ -532,6 +559,39 @@ vtest_vcmd_resource_import_blob(struct vtest *vtest, uint64_t size, int fd)
+ 
++   /* A dead renderer must not leave a guest thread in an unbounded socket
++    * wait. No protocol change, no busy polling, and no host scheduling knobs. */
++   const struct timeval timeout = { .tv_sec = 30 };
++   if (setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) ||
++       setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout))) {
++      close(sock);
++      return -1;
++   }
+    return sock;
+ }
+ 
+@@ -102,8 +140,10 @@ vtest_read(struct vtest *vtest, void *buf, size_t size)
+ {
+    do {
+       const ssize_t ret = read(vtest->sock_fd, buf, size);
+-      if (unlikely(ret < 0)) {
+-         vn_log(vtest->instance,
++      if (ret < 0 && errno == EINTR)
++         continue;
++      if (unlikely(ret <= 0)) {
++         mesa_loge(
+                 "lost connection to rendering server on %zu read %zi %d",
+                 size, ret, errno);
+          abort();
+@@ -130,14 +170,18 @@ vtest_receive_fd(struct vtest *vtest)
+       .msg_controllen = sizeof(cmsg_buf),
+    };
+ 
+-   if (recvmsg(vtest->sock_fd, &msg, 0) < 0) {
++   ssize_t received;
++   do {
++      received = recvmsg(vtest->sock_fd, &msg, MSG_CMSG_CLOEXEC);
++   } while (received < 0 && errno == EINTR);
++   if (received <= 0 || (msg.msg_flags & (MSG_CTRUNC | MSG_TRUNC))) {
+       vn_log(vtest->instance, "recvmsg failed: %s", strerror(errno));
+       abort();
+    }
+ 
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+    if (!cmsg || cmsg->cmsg_level != SOL_SOCKET ||
+-       cmsg->cmsg_type != SCM_RIGHTS) {
++       cmsg->cmsg_type != SCM_RIGHTS || cmsg->cmsg_len != CMSG_LEN(sizeof(int))) {
+       vn_log(vtest->instance, "invalid cmsghdr");
+       abort();
+    }
+@@ -166,7 +210,9 @@ vtest_send_fd(struct vtest *vtest, int fd)
+    cmsg->cmsg_len = CMSG_LEN(sizeof(fd));
+    memcpy(CMSG_DATA(cmsg), &fd, sizeof(fd));
+ 
+-   const ssize_t ret = sendmsg(vtest->sock_fd, &msg, MSG_NOSIGNAL);
++   ssize_t ret;
++   do { ret = sendmsg(vtest->sock_fd, &msg, MSG_NOSIGNAL); }
++   while (ret < 0 && errno == EINTR);
+    return ret > 0 ? 0 : -ECONNRESET;
+ }
+ 
+@@ -174,9 +220,11 @@ static void
+ vtest_write(struct vtest *vtest, const void *buf, size_t size)
+ {
+    do {
+-      const ssize_t ret = write(vtest->sock_fd, buf, size);
+-      if (unlikely(ret < 0)) {
+-         vn_log(vtest->instance,
++      const ssize_t ret = send(vtest->sock_fd, buf, size, MSG_NOSIGNAL);
++      if (ret < 0 && errno == EINTR)
++         continue;
++      if (unlikely(ret <= 0)) {
++         mesa_loge(
+                 "lost connection to rendering server on %zu write %zi %d",
+                 size, ret, errno);
+          abort();
+@@ -532,6 +580,39 @@ vtest_vcmd_resource_import_blob(struct vtest *vtest, uint64_t size, int fd)
     return res_id;
  }
  
-+/* on success returns 0 and sets *out_syncobj_fd/*out_node_fd (caller owns) */
++/* on success returns 0 and sets *out_syncobj_fd and *out_node_fd (caller owns) */
 +static int
 +vtest_vcmd_timeline_get(struct vtest *vtest, int *out_syncobj_fd, int *out_node_fd)
 +{
@@ -1644,7 +1753,7 @@ index 7aaebd2..7d47597 100644
  static int
  vtest_vcmd_sync_export_sync_file(struct vtest *vtest,
                                   uint32_t sync_id,
-@@ -581,11 +641,31 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
+@@ -581,11 +662,34 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
     if (!total_size)
        return;
  
@@ -1655,7 +1764,10 @@ index 7aaebd2..7d47597 100644
 +    * unrelated work (see vn_renderer_submit_batch::external_fence).
 +    */
 +   uint64_t point = 0;
-+   if (vtest->timeline.handle && batch->external_fence && batch->sync_count) {
++   if (vtest->timeline.handle && batch->external_fence && batch->sync_count &&
++       batch->ring_idx && (!vtest->timeline.ring_idx ||
++                           vtest->timeline.ring_idx == batch->ring_idx)) {
++      vtest->timeline.ring_idx = batch->ring_idx;
 +      point = ++vtest->timeline.next_point;
 +      struct vtest_sync *last =
 +         (struct vtest_sync *)batch->syncs[batch->sync_count - 1];
@@ -1678,7 +1790,7 @@ index 7aaebd2..7d47597 100644
     /* write batch count and batch headers */
     const uint32_t batch_count = 1;
     size_t sync_offset = header_size + batch->cs_size;
-@@ -658,6 +738,59 @@ vtest_sync_reset(struct vn_renderer *renderer,
+@@ -658,6 +762,59 @@ vtest_sync_reset(struct vn_renderer *renderer,
     return vtest_sync_write(renderer, sync, initial_val);
  }
  
@@ -1738,7 +1850,7 @@ index 7aaebd2..7d47597 100644
  static int
  vtest_sync_export_syncobj(struct vn_renderer *renderer,
                            struct vn_renderer_sync *_sync,
-@@ -670,6 +803,14 @@ vtest_sync_export_syncobj(struct vn_renderer *renderer,
+@@ -670,6 +827,14 @@ vtest_sync_export_syncobj(struct vn_renderer *renderer,
     if (!sync_file || !vtest->has_venus_sync_fd)
        return -ENOTSUP;
  
@@ -1753,7 +1865,7 @@ index 7aaebd2..7d47597 100644
     /* Resolve the (binary) sync's signal point to the pending submit's
      * VkFence on the server and export a sync_file from it.  -1 means the
      * point already retired (already-signaled sync_file convention).
-@@ -1032,6 +1173,44 @@ vtest_submit(struct vn_renderer *renderer,
+@@ -1032,6 +1197,44 @@ vtest_submit(struct vn_renderer *renderer,
     return VK_SUCCESS;
  }
  
@@ -1798,15 +1910,16 @@ index 7aaebd2..7d47597 100644
  static void
  vtest_init_renderer_info(struct vtest *vtest)
  {
-@@ -1042,6 +1221,7 @@ vtest_init_renderer_info(struct vtest *vtest)
+@@ -1042,6 +1245,8 @@ vtest_init_renderer_info(struct vtest *vtest)
  
     info->has_dma_buf_import = vtest->has_venus_sync_fd;
     info->has_external_sync = vtest->has_venus_sync_fd;
 +   info->has_semaphore_import = vtest->has_semaphore_import;
++   info->nvwd_perf_stats = debug_get_bool_option("VTEST_PERF_STATS", false);
     info->has_implicit_fencing = false;
  
     const struct virgl_renderer_capset_venus *capset = &vtest->capset.data;
-@@ -1078,6 +1258,12 @@ vtest_destroy(struct vn_renderer *renderer,
+@@ -1078,6 +1283,12 @@ vtest_destroy(struct vn_renderer *renderer,
        close(vtest->sock_fd);
     }
  
@@ -1819,7 +1932,7 @@ index 7aaebd2..7d47597 100644
     mtx_destroy(&vtest->sock_mutex);
     util_sparse_array_finish(&vtest->shmem_array);
     util_sparse_array_finish(&vtest->bo_array);
-@@ -1172,11 +1358,39 @@ vtest_init(struct vtest *vtest)
+@@ -1172,11 +1383,39 @@ vtest_init(struct vtest *vtest)
  
     vtest_vcmd_context_init(vtest, vtest->capset.id);
  
@@ -1859,6 +1972,168 @@ index 7aaebd2..7d47597 100644
  
     vtest->base.shmem_ops.create = vtest_shmem_create;
     vtest->base.shmem_ops.destroy = vtest_shmem_destroy;
+diff --git a/src/virtio/vulkan/vn_ring.c b/src/virtio/vulkan/vn_ring.c
+index ff72774..7c3830c 100644
+--- a/src/virtio/vulkan/vn_ring.c
++++ b/src/virtio/vulkan/vn_ring.c
+@@ -17,6 +17,12 @@
+ 
+ #define VN_RING_IDLE_TIMEOUT_NS (1ull * 1000 * 1000)
+ 
++/* Cache only retired CPU bookkeeping, never in-flight records or GPU buffers.
++ * Seven capacity classes (2..128 references), at most 16 records per class.
++ */
++#define VN_RING_SUBMIT_POOL_CLASSES 7
++#define VN_RING_SUBMIT_POOL_LIMIT 16
++
+ static_assert(ATOMIC_INT_LOCK_FREE == 2 && sizeof(atomic_uint) == 4,
+               "vn_ring_shared requires lock-free 32-bit atomic_uint");
+ 
+@@ -55,7 +61,8 @@ struct vn_ring {
+    struct vn_cs_encoder upload;
+ 
+    struct list_head submits;
+-   struct list_head free_submits;
++   struct list_head free_submits[VN_RING_SUBMIT_POOL_CLASSES];
++   uint32_t free_submit_count[VN_RING_SUBMIT_POOL_CLASSES];
+ 
+    /* to synchronize renderer/ring */
+    mtx_t roundtrip_mutex;
+@@ -72,6 +79,8 @@ struct vn_ring_submit {
+ 
+    /* BOs to keep alive (TODO make sure shmems are pinned) */
+    uint32_t shmem_count;
++   /* Allocation capacity is immutable; shmem_count is the current payload. */
++   uint32_t shmem_capacity;
+    struct vn_renderer_shmem *shmems[];
+ };
+ 
+@@ -156,6 +165,35 @@ vn_ring_ge_seqno(const struct vn_ring *ring, uint32_t a, uint32_t b)
+       return ring->cur >= a && ring->cur < b;
+ }
+ 
++/* All pool operations are protected by ring->mutex (or exclusive teardown).
++ * Large one-off records are not cached. Common records have O(1) lookup;
++ * list lengths cannot grow with the lifetime of a game process.
++ */
++static uint32_t
++vn_ring_submit_pool_class(uint32_t shmem_count)
++{
++   uint32_t bucket = 0;
++   while (bucket < VN_RING_SUBMIT_POOL_CLASSES &&
++          shmem_count > (2u << bucket))
++      bucket++;
++   return bucket;
++}
++
++static void
++vn_ring_recycle_submit(struct vn_ring *ring, struct vn_ring_submit *submit)
++{
++   const uint32_t bucket = vn_ring_submit_pool_class(submit->shmem_capacity);
++   list_del(&submit->head);
++   if (bucket == VN_RING_SUBMIT_POOL_CLASSES ||
++       ring->free_submit_count[bucket] == VN_RING_SUBMIT_POOL_LIMIT) {
++      free(submit);
++      return;
++   }
++
++   list_add(&submit->head, &ring->free_submits[bucket]);
++   ring->free_submit_count[bucket]++;
++}
++
+ static void
+ vn_ring_retire_submits(struct vn_ring *ring, uint32_t seqno)
+ {
+@@ -168,7 +206,7 @@ vn_ring_retire_submits(struct vn_ring *ring, uint32_t seqno)
+       for (uint32_t i = 0; i < submit->shmem_count; i++)
+          vn_renderer_shmem_unref(renderer, submit->shmems[i]);
+ 
+-      list_move_to(&submit->head, &ring->free_submits);
++      vn_ring_recycle_submit(ring, submit);
+    }
+ }
+ 
+@@ -323,7 +361,10 @@ vn_ring_create(struct vn_instance *instance,
+                       VN_CS_ENCODER_STORAGE_SHMEM_ARRAY, 1 * 1024 * 1024);
+ 
+    list_inithead(&ring->submits);
+-   list_inithead(&ring->free_submits);
++   for (uint32_t i = 0; i < VN_RING_SUBMIT_POOL_CLASSES; i++) {
++      list_inithead(&ring->free_submits[i]);
++      ring->free_submit_count[i] = 0;
++   }
+ 
+    mtx_init(&ring->roundtrip_mutex, mtx_plain);
+    ring->roundtrip_next = 1;
+@@ -397,9 +438,11 @@ vn_ring_destroy(struct vn_ring *ring)
+    vn_ring_retire_submits(ring, ring->cur);
+    assert(list_is_empty(&ring->submits));
+ 
+-   list_for_each_entry_safe(struct vn_ring_submit, submit,
+-                            &ring->free_submits, head)
+-      free(submit);
++   for (uint32_t i = 0; i < VN_RING_SUBMIT_POOL_CLASSES; i++) {
++      list_for_each_entry_safe(struct vn_ring_submit, submit,
++                              &ring->free_submits[i], head)
++         free(submit);
++   }
+ 
+    vn_cs_encoder_fini(&ring->upload);
+    vn_renderer_shmem_unref(ring->instance->renderer, ring->shmem);
+@@ -418,18 +461,28 @@ vn_ring_get_id(struct vn_ring *ring)
+ static struct vn_ring_submit *
+ vn_ring_get_submit(struct vn_ring *ring, uint32_t shmem_count)
+ {
+-   list_for_each_entry_safe(struct vn_ring_submit, submit,
+-                            &ring->free_submits, head) {
+-      if (submit->shmem_count >= shmem_count) {
+-         list_del(&submit->head);
+-         return submit;
+-      }
++   const uint32_t bucket = vn_ring_submit_pool_class(shmem_count);
++   const bool cacheable = bucket < VN_RING_SUBMIT_POOL_CLASSES;
++   if (cacheable && !list_is_empty(&ring->free_submits[bucket])) {
++      struct vn_ring_submit *submit = list_first_entry(
++         &ring->free_submits[bucket], struct vn_ring_submit, head);
++      list_del(&submit->head);
++      ring->free_submit_count[bucket]--;
++      assert(submit->shmem_capacity >= shmem_count);
++      return submit;
+    }
+ 
+-   const uint32_t min_shmem_count = 2;
+-   const size_t submit_size = offsetof(
+-      struct vn_ring_submit, shmems[MAX2(shmem_count, min_shmem_count)]);
+-   return malloc(submit_size);
++   const size_t capacity = cacheable ? (2u << bucket) : shmem_count;
++   if (capacity > (SIZE_MAX - sizeof(struct vn_ring_submit)) /
++                     sizeof(struct vn_renderer_shmem *))
++      return NULL;
++
++   const size_t submit_size = sizeof(struct vn_ring_submit) +
++                             capacity * sizeof(struct vn_renderer_shmem *);
++   struct vn_ring_submit *submit = malloc(submit_size);
++   if (submit)
++      submit->shmem_capacity = capacity;
++   return submit;
+ }
+ 
+ static bool
+diff --git a/src/virtio/vulkan/vn_wsi.c b/src/virtio/vulkan/vn_wsi.c
+index b35db64..f89d557 100644
+--- a/src/virtio/vulkan/vn_wsi.c
++++ b/src/virtio/vulkan/vn_wsi.c
+@@ -446,7 +446,9 @@ vn_wsi_fence_wait(struct vn_device *dev, struct vn_queue *queue)
+ void
+ vn_wsi_sync_wait(struct vn_device *dev, int fd)
+ {
+-   if (dev->renderer->info.has_implicit_fencing)
++   /* A successfully exported -1 sync_fd is already signaled. poll() ignores
++    * negative descriptors and would otherwise wait forever on this payload. */
++   if (fd == -1 || dev->renderer->info.has_implicit_fencing)
+       return;
+ 
+    const pid_t tid = vn_gettid();
 diff --git a/src/vulkan/runtime/meson.build b/src/vulkan/runtime/meson.build
 index 7da99c8..05cee35 100644
 --- a/src/vulkan/runtime/meson.build

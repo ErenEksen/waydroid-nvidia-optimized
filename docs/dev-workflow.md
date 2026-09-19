@@ -1,138 +1,114 @@
 # Development workflow
 
-How to hack on the stack with a fast edit → build → deploy → measure loop.
-For one-off builds see [`building.md`](building.md); this page is for
-iterating.
+Use a disposable `.work/` directory and keep the downloaded original intact.
+`dev/env.sh` defaults to the packaged `/usr/bin/waydroid` and
+`waydroid-container.service`. `WAYDROID_SRC` is an optional explicit checkout,
+not a prerequisite. There is no required passwordless-sudo configuration.
 
-## One-time setup
-
-### 1. Working trees
-
-The dev loop builds from persistent upstream checkouts (incremental builds),
-not fresh clones. Default layout (every path overridable via `dev/env.sh`
-environment variables):
+## Reproducible build inputs
 
 ```sh
-WNV=~/repos/waydroid-nv          # prereq/tree root
-git clone https://gitlab.freedesktop.org/mesa/mesa.git            $WNV/mesa
-git clone https://gitlab.freedesktop.org/virgl/virglrenderer.git  $WNV/virglrenderer
-git clone https://github.com/waydroid/android_hardware_waydroid   $WNV/hwcomposer-src
-git clone https://github.com/waydroid/waydroid                    ~/repos/waydroid
+dev/bootstrap sources           # exact upstream SHAs, local edits never overwritten
+dev/bootstrap ndk               # pinned NDK archive + SHA256 verification
+dev/bootstrap python            # pinned Python build dependencies
+source dev/env.sh
+PATH="$WNV/venv/bin:$PATH" build/hwcomposer/provision.sh "$WNV" "$HWC_TREE"
+# ROOTFS must contain compatible image link libraries; see building.md.
+# A read-only extraction may be supplied instead of starting/mounting Android.
+BUILD_PROFILE=release JOBS=12 dev/build all
+BUILD_PROFILE=release dev/build mesa-host   # native test ICD, never installed in Android
 ```
 
-Check each out at its pinned base (`patches/*/BASE`, full SHAs in
-`packaging/ci/pins.env`) and apply the matching `patches/` series. For the
-hwcomposer prerequisites (AOSP headers, hidl-gen, static deps, image libs),
-run the same script CI uses:
+`release` and `diagnostic` select Meson's `release` and `debugoptimized` with
+`b_ndebug=if-release`. Use **separate build directories** for profiling if you
+need to retain both artifacts. Default jobs are capped at 12, with no changes
+to host priority/governors. ANGLE and SurfaceFlinger are not rebuilt by `all`.
+The host renderer already used release builds; this is not a standalone FPS fix.
+
+The build virtualenv is selected only by `dev/build` (or by the explicit,
+command-local `PATH` in the provisioning example). Sourcing `dev/env.sh` does
+not activate it. Runtime commands must use a Python installation that has the
+system Waydroid dependencies, including `dbus` and PyGObject; do not activate
+`.work/venv` to install or run Waydroid. The installer checks `waydroid --help`
+before authentication/service changes and refuses to continue if the CLI fails.
+An offline `--check` validates only the bundle, not these runtime dependencies.
+
+`src/` is canonical for the allocator and guest wrapper. Edit Mesa, renderer,
+and HWC in their upstream working trees, then regenerate patches:
 
 ```sh
-build/hwcomposer/provision.sh "$WNV" "$WNV/hwcomposer-src"
+dev/sync-patches
+python3 tests/check-patches.py
+python3 -m unittest discover -s tests/python -v
+SYNC_ROUNDS=1000 tests/run-sync-regression.sh
+python3 tests/run-fault-regression.py
 ```
 
-You also need the Android NDK (`NDK`, default `/opt/android-ndk`) and, for
-SurfaceFlinger work, a LineageOS 20 tree (`build/lineage-20/sync.sh` — ~150 GB;
-sync with `-j4`, the mirrors throttle higher parallelism).
+The tests start **private temporary renderer sockets**, never the installed
+service. A native Vulkan loader/GPU is needed for integration tests. Fault tests
+use a test-only forwarding Vulkan-loader shim; it must never be installed.
+A test timeout, absent GPU, or absent measurement is not a pass.
 
-### 2. Privileged helper (recommended)
+## Candidate installation and rollback
 
-Deploying guest libraries needs root writes into `/var/lib/waydroid`. Rather
-than broad sudo rules, install the validating helper and allow only it:
+Read `performance-smoothness.md` and capture the installed baseline **first**.
+The original `dev/deploy virgl` merely restarted the installed daemon; it now
+refuses this misleading operation. For this coupled guest/host change, use a
+complete set rather than component-at-a-time replacement:
 
 ```sh
-sudo install -Dm755 packaging/host/wd-deploy /usr/local/sbin/wd-deploy
+dev/make-bundle .work/artifacts/candidate
+dev/install-bundle --check .work/artifacts/candidate  # no writes to installed paths
+sudo -v                                           # your terminal, never share a password
+dev/install-bundle --apply .work/artifacts/candidate
+# On demand, use the exact backup path printed by the installer:
+dev/install-bundle --rollback /var/lib/waydroid/nv/perf-backups/EXACT_BACKUP_NAME
 ```
 
-Before the first `dev/deploy` of a guest library, install the current patched
-Waydroid package and run `sudo waydroid-nvidia-setup` once. That selects
-`nvidia_guest_layout=2` and regenerates `config_nodes` with the path-preserving
-`vendor/lib` and `vendor/lib64` mounts. The helper checks both settings and
-rejects a deploy that would otherwise write to an inactive path.
+The user-level coordinator stops session → container → renderer. The privileged
+helper refuses a running LXC container, wrong ELF ABI, incomplete component set,
+checksum mismatch, wrong layout/mount, or symlink destination. It snapshots the
+previous set (including the changed cache override) into a root-owned 0700
+backup directory, then atomically replaces individual files while everything
+is stopped. `waydroid.cfg` and `config_nodes` are copied for context, not changed.
+A failed file transaction restores the old files; a failed post-restart health
+check triggers restoration of the old complete set. If shutdown/rollback itself
+fails, it reports the backup path and leaves recovery to the operator rather
+than claiming success. A power loss/SIGKILL can require explicit `--rollback`.
 
-sudoers pattern (via `visudo -f /etc/sudoers.d/waydroid-dev`):
+No image, app database, app cache, user content, driver, kernel, sudoers, global
+graphics environment, resolution, refresh setting or animation scale is changed.
+The package manager still owns the binary paths; a later package upgrade can
+replace this local candidate. Root installation has unit-tested file primitives
+but must also be validated on the actual running system.
 
-```
-yourname ALL=(root) NOPASSWD: /usr/local/sbin/wd-deploy *
-yourname ALL=(root) NOPASSWD: /usr/bin/lxc-attach -P /var/lib/waydroid/lxc -n waydroid *
-yourname ALL=(root) NOPASSWD: /usr/bin/lxc-info *
-yourname ALL=(root) NOPASSWD: /usr/bin/systemctl start waydroid-container.service, \
-    /usr/bin/systemctl stop waydroid-container.service, \
-    /usr/bin/systemctl restart waydroid-container.service
-```
-
-Deliberately **not** passwordless: `waydroid upgrade` (executes repo code as
-root) and anything with wildcard filesystem writes — `wd-deploy` exists
-precisely so `cp`/`chmod`/`systemd-run` wildcards aren't needed (those are
-trivial arbitrary-root escalations).
-
-## The loop
+## Measurements and diagnostics
 
 ```sh
-dev/build <mesa|virgl|hwc|gralloc>   # incremental build via build/<comp>/build.sh
-dev/deploy <component>               # push into /var/lib/waydroid via wd-deploy
-dev/restart                          # full stack restart (see rule below)
-dev/health                           # window exists, GLES on Venus, 0 crashes, 0 KWin errors
-dev/measure                          # canonical launcher-fling bench (frame percentiles)
-dev/iter                             # all of the above in sequence
-dev/status | dev/logs [gfx|units]    # quick state / filtered logs
-dev/sync-patches                     # regenerate patches/ + src/ from the trees
+dev/present-probe --build-only
+sudo -v
+dev/bench-startup --package com.android.settings --mode app-cold --runs 10 \
+  --desktop-output eDP-1 --output .work/reports/before-app-cold
+dev/cache-audit --guest > .work/reports/cache-metadata.json
+dev/health
+dev/status
+dev/logs units
 ```
 
-Iron rules learned the hard way:
+`dev/measure` is now an alias of `dev/bench-startup` (same required arguments),
+not the old hardcoded-coordinate/warm-up benchmark. `dev/gamebench` remains an
+**offscreen steady-state GLES workload**, not evidence for cold-start smoothness.
+`dev/iter none --output DIR --desktop-output OUTPUT` is an explicit restart/
+health/measurement shortcut. It refuses unbacked per-component deployment.
 
-- **Always restart the whole stack** (`dev/restart`); never kill
-  composer/SurfaceFlinger individually — SF zombies with `flips=0`.
-- **After deploying any guest `.so`, a full container restart is mandatory** —
-  bind-mounted libraries keep their old inode for running processes.
-- Bind-mount targets must be real files in the image, never symlinks.
-- New mounts/props go into the *generators* (`lxc.py`,
-  `waydroid.cfg [properties]`) — anything hand-edited into `config_nodes` or
-  `waydroid_base.prop` is silently lost on `waydroid upgrade`.
-- One change at a time → restart → measure; claims need numbers or a guest
-  screencap (`waydroid shell screencap`), not "looks fine".
-- `patches/` is generated output (`dev/sync-patches`) — never hand-edit;
-  `src/` is canonical even where build scripts copy it into the trees.
+Detailed capture contract, limitations, comparison gates and current test results
+are in `performance-smoothness.md` and `performance-validation-2026-09-19.md`.
 
-## Useful recipes
+### Venus submit-pool regression
 
-Run commands inside the guest:
-
-```sh
-sudo lxc-attach -P /var/lib/waydroid/lxc -n waydroid --clear-env \
-  -v PATH=/system/bin -- /system/bin/sh -c 'getprop ro.hardware.gralloc'
-```
-
-Health checklist after a restart:
-
-```sh
-sudo waydroid shell dumpsys SurfaceFlinger | grep GLES        # ANGLE .. Venus .. NVIDIA
-sudo waydroid shell -- logcat -d -b crash | grep -c Cmdline   # 0
-journalctl --user -t kwin_wayland | grep -c GL_INVALID        # 0
-journalctl --user -u wd-venus -f                              # client connections live
-```
-
-Canonical smoothness bench (numbers go in your notes, compare
-before/after):
-
-```sh
-sudo waydroid shell -- sh -c '
-  dumpsys gfxinfo com.android.launcher3 reset >/dev/null
-  for i in 1 2 3 4 5; do input swipe 2000 700 500 700 100; sleep 0.5; \
-    input swipe 500 700 2000 700 100; sleep 0.5; done
-  dumpsys gfxinfo com.android.launcher3 | grep -E "Total frames|Janky|50th|90th|99th"'
-```
-
-Guest test binaries (host-side probes live in `tests/`):
-
-```sh
-$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android34-clang \
-  -O1 -o out-android test.c -lEGL -lGLESv2 -landroid -llog
-$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/i686-linux-android34-clang \
-  -O1 -o out-android32 test.c -lEGL -lGLESv2 -landroid -llog
-# deliver via: cp out-android ~/.local/share/waydroid/data/local/tmp/  (= guest /data/local/tmp)
-```
-
-`dev/build mesa` and `dev/build angle` build both ABIs. Append `-x86` or
-`-x86_64` to build or deploy just one, for example `dev/deploy mesa-x86`.
-
-Grow the guest log buffer per boot (`persist.logd.size` does not stick):
-`sudo waydroid shell -- logcat -G 16M`.
+`python3 tests/test-ring-submit-pool.py` extracts the actual pool and retirement
+functions from the patched Mesa tree and tests them with ASan/UBSan/LSan. Run
+outside ptrace-restricted sandboxes if LeakSanitizer refuses to operate; do not
+silence a failed sanitizer run. `python3 tests/bench-ring-submit-pool.py` compares
+actual pre-WIP (`HEAD`) and patched bookkeeping on a mixed zero/one-reference
+workload. Its times are not game FPS or physical presentation measurements.

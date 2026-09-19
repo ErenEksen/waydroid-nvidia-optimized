@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+OUT="$REPO/.work/present-probe"
+mkdir -p "$OUT"
+GEN="$REPO/build/hwcomposer/gen"
+cc -O2 -Wall -Wextra -Werror -I"$GEN" $(pkg-config --cflags wayland-client) \
+    "$REPO/tests/present-probe.c" "$GEN/xdg-shell-protocol.c" \
+    "$GEN/presentation-time-protocol.c" $(pkg-config --libs wayland-client) -o "$OUT/probe"
+if [[ ${1:-} == --build-only ]]; then exit 0; fi
+exec "$OUT/probe" "${1:-10}"

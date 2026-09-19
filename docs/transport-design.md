@@ -14,22 +14,24 @@ vtest set it false. HWUI hard-requires `VK_KHR_external_semaphore_fd`
 **Host (virglrenderer):**
 - `RENDER_CONTEXT_OP_EXPORT_FENCE {fence_id}` → reply `{found}` + one fd.
 - vkr dispatch: lock queues, find the pending sync by `fence_id`,
-  `vkGetFenceFdKHR(SYNC_FD)` (copy-transference semantics, safe vs the waiter
-  thread), reply. Not found ⇒ already retired ⇒ `found=0` (guest returns fd −1 =
-  "already signaled", spec-legal).
+  duplicate the retained sync-file payload, reply. The payload is exported
+  once before retirement begins; the waiter polls that fd, never the reset
+  VkFence. Export/import errors are not equivalent to already signaled.
 - Public API `virgl_renderer_context_export_fence(ctx, fence_id, &fd)` (bypasses
   the DRM/GL-only fence table).
 - vtest: `VCMD_SYNC_EXPORT_SYNC_FILE` + `VCMD_PARAM_HAS_VENUS_SYNC_FD`.
 
 **Guest (mesa `vn_renderer_vtest.c`):** query the param → `has_external_sync =
-true`; implement `export_syncobj` (fd, or −1 on SIGNALED). `vn_queue.c` needs no
-changes (all transport-side). `vn_create_sync_file` accepts fd == −1.
+true`; implement `export_syncobj` (fd, or −1 on SIGNALED). `vn_create_sync_file`
+accepts fd == −1, and the WSI wait must not poll that sentinel. Socket semaphore
+imports in `vn_queue.c` wait for preceding ring consumption once per submission.
 
 **Gotcha:** exporting a fence SYNC_FD **resets the fence** (copy-transference) —
 never wait on the fence after export.
 
-Verified host-side (`tests/`): sync_fd through the socket signals in 0.67 ms,
-identical to direct NVIDIA.
+Historical latency figures are not current acceptance evidence. For the current
+build/fault-test matrix and missing live Android measurements see
+`performance-validation-2026-09-19.md`.
 
 ## 2. dma_buf import over vtest (`VK_ANDROID_external_memory_android_hardware_buffer`)
 
