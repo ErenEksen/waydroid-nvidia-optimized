@@ -1,13 +1,9 @@
 # Waydroid NVIDIA Optimized
 
 **Compared with [Shiro836/waydroid-nvidia](https://github.com/Shiro836/waydroid-nvidia):**
-this fork fixes Venus semaphore ordering/error handling and an unbounded submit-record
-list scan, caches allocator/HWC state, and adds a persistent renderer-only shader cache.
-It includes profiling tools, regression tests, and checksummed upgrades with rollback.
-**Resolution, visual quality and refresh rate are not reduced.** Desktop smoothness
-improved in local use; the measured Mesa CPU hotspot disappeared, but Epic Seven's
-periodic long frames remain. This is an **experimental optimization release**, not a
-promise of higher FPS in every game.
+Performance optimizations for smoother desktop animations and lower CPU usage,
+without reducing graphics quality or refresh rate. Includes easy installation
+and rollback. Some games may still stutter; improvements vary by game and system.
 
 ## Install / update (existing NVIDIA installation)
 
