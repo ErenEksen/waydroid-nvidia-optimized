@@ -1,0 +1,88 @@
+From: Waydroid NVIDIA integration maintainers
+Subject: [PATCH] BlobCache: reset size accounting whenever entries are cleared
+
+A driver identity change makes HWUI ShaderCache clear a populated BlobCache.
+The entries disappear while mTotalSize remains nonzero. A later insertion can
+enter clean() with an empty vector and divide by zero choosing an eviction.
+Reset the counter in clear(), and use that operation for unflatten replacement
+and error paths. Add regressions for all three cases.
+
+Base: frameworks/native 2fe7eddf185ecb63223eeadc58804f9bf6cbd426
+Guest reproduction: libhwui build ID 65cccbf3bb7c1b5bb4a28c26a7ba2615,
+BlobCache::clean()+130, after changing Vulkan driver identity.
+
+--- a/opengl/libs/EGL/BlobCache.h
++++ b/opengl/libs/EGL/BlobCache.h
+@@ -117,7 +117,10 @@
+
+     // clear flushes out all contents of the cache then the BlobCache, leaving
+     // it in an empty state.
+-    void clear() { mCacheEntries.clear(); }
++    void clear() {
++        mCacheEntries.clear();
++        mTotalSize = 0;
++    }
+
+ protected:
+     // mMaxTotalSize is the maximum size that all cache entries can occupy. This
+--- a/opengl/libs/EGL/BlobCache.cpp
++++ b/opengl/libs/EGL/BlobCache.cpp
+@@ -231,7 +231,7 @@
+
+ int BlobCache::unflatten(void const* buffer, size_t size) {
+     // All errors should result in the BlobCache being in an empty state.
+-    mCacheEntries.clear();
++    clear();
+
+     // Read the cache header
+     if (size < sizeof(Header)) {
+@@ -258,7 +258,7 @@
+     size_t numEntries = header->mNumEntries;
+     for (size_t i = 0; i < numEntries; i++) {
+         if (byteOffset + sizeof(EntryHeader) > size) {
+-            mCacheEntries.clear();
++            clear();
+             ALOGE("unflatten: not enough room for cache entry headers");
+             return -EINVAL;
+         }
+@@ -270,7 +270,7 @@
+
+         size_t totalSize = align4(entrySize);
+         if (byteOffset + totalSize > size) {
+-            mCacheEntries.clear();
++            clear();
+             ALOGE("unflatten: not enough room for cache entry headers");
+             return -EINVAL;
+         }
+--- a/opengl/libs/EGL/BlobCache_test.cpp
++++ b/opengl/libs/EGL/BlobCache_test.cpp
+@@ -47,6 +47,29 @@
+     std::unique_ptr<BlobCache> mBC;
+ };
+
++// Clearing entries must also clear their accounting. Otherwise a later set()
++// can try to evict a random entry from an empty vector (division by zero).
++TEST_F(BlobCacheTest, ClearResetsSizeAccounting) {
++    ASSERT_EQ(BlobCache::InsertResult::kInserted, mBC->set("ab", 2, "12345678", 8));
++    mBC->clear();
++    ASSERT_EQ(BlobCache::InsertResult::kInserted, mBC->set("cd", 2, "12345678", 8));
++}
++
++TEST_F(BlobCacheTest, RepeatedUnflattenReplacesSizeAccounting) {
++    ASSERT_EQ(BlobCache::InsertResult::kInserted, mBC->set("ab", 2, "1234", 4));
++    std::vector<uint8_t> data(mBC->getFlattenedSize());
++    ASSERT_EQ(0, mBC->flatten(data.data(), data.size()));
++    ASSERT_EQ(0, mBC->unflatten(data.data(), data.size()));
++    ASSERT_EQ(0, mBC->unflatten(data.data(), data.size()));
++    ASSERT_EQ(size_t(4), mBC->get("ab", 2, nullptr, 0));
++}
++
++TEST_F(BlobCacheTest, FailedUnflattenResetsSizeAccounting) {
++    ASSERT_EQ(BlobCache::InsertResult::kInserted, mBC->set("ab", 2, "12345678", 8));
++    ASSERT_EQ(-EINVAL, mBC->unflatten(nullptr, 0));
++    ASSERT_EQ(BlobCache::InsertResult::kInserted, mBC->set("cd", 2, "12345678", 8));
++}
++
+ TEST_F(BlobCacheTest, CacheSingleValueSucceeds) {
+     unsigned char buf[4] = {0xee, 0xee, 0xee, 0xee};
+     ASSERT_EQ(BlobCache::InsertResult::kInserted, mBC->set("abcd", 4, "efgh", 4));

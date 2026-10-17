@@ -1,91 +1,66 @@
-# Manual installation (non-Arch distros)
+# Installer options, installed files, uninstall
 
-The release binaries install anywhere systemd + Waydroid's dependencies exist.
-Host binaries are CI-built on Ubuntu 24.04 (glibc ≥ 2.39) and link `libepoxy`,
-`libdrm`, `libgbm`, `libX11`, `expat`, plus the Vulkan loader at runtime.
-
-From a checkout of this repo:
-
-## 1. Patched waydroid
-
-Two small patches: the config generator emits this stack's bind-mounts (so
-`waydroid upgrade` keeps working), a venus-socket preflight at session start,
-and `suspend_action = none` support.
+`packaging/install.sh` installs the same files as the AUR package, on any systemd distro.
 
 ```sh
-git clone https://github.com/waydroid/waydroid.git && cd waydroid
-git checkout a33a5c0b31d89d6ce687381104b30aff4dd2d330   # patches/waydroid/BASE
-git apply ../patches/waydroid/0001-nvidia-integration.patch
-sudo make install USE_NFTABLES=1     # =0 if your firewall is iptables
-cd ..
-```
-
-## 2. Download and verify the release binaries
-
-```sh
-V=vX.Y.Z  # use the first release tag that includes the dual-ABI guest layout
-B=https://github.com/Shiro836/waydroid-nvidia/releases/download/$V
-curl -LO $B/waydroid-nvidia-host-x86_64-$V.tar.zst
-curl -LO $B/waydroid-nvidia-guest-android-x86_64-$V.tar.zst
-curl -LO $B/waydroid-nvidia-guest-prebuilts-$V.tar.zst
-curl -LO $B/SHA256SUMS
-sha256sum -c --ignore-missing SHA256SUMS
-```
-
-`SHA256SUMS` covers integrity. For **provenance** — proof an asset was built
-by this repo's CI from this source — every tarball carries a SLSA attestation
-(since v0.1.1; the surfaceflinger inside `guest-prebuilts` builds on the
-maintainer's registered self-hosted runner, and its provenance says so):
-
-```sh
-gh attestation verify waydroid-nvidia-host-x86_64-$V.tar.zst --repo Shiro836/waydroid-nvidia
-gh attestation verify waydroid-nvidia-guest-prebuilts-$V.tar.zst --repo Shiro836/waydroid-nvidia
-```
-
-## 3. Install the binaries
-
-Paths must match the unit/setup script:
-
-```sh
-sudo mkdir -p /usr/lib/waydroid-nvidia/guest
-sudo tar --zstd -xf waydroid-nvidia-host-x86_64-$V.tar.zst          -C /usr/lib/waydroid-nvidia
-sudo tar --zstd -xf waydroid-nvidia-guest-android-x86_64-$V.tar.zst -C /usr/lib/waydroid-nvidia/guest
-sudo tar --zstd -xf waydroid-nvidia-guest-prebuilts-$V.tar.zst      -C /usr/lib/waydroid-nvidia/guest
-```
-
-Dual-ABI release tarballs retain Android-relative paths below that guest
-directory. Before running setup, both
-`guest/vendor/lib/hw/vulkan.virtio.so` (ELF32) and
-`guest/vendor/lib64/hw/vulkan.virtio.so` (ELF64) must exist; the setup helper
-checks every ANGLE/Venus ELF before changing the Waydroid configuration.
-
-## 4. Units, tmpfiles, udev rule, setup helper
-
-```sh
-P=packaging/aur/waydroid-nvidia-bin
-sudo install -Dm644 $P/wd-venus.service        /etc/systemd/user/wd-venus.service
-sudo install -Dm644 $P/waydroid-venus.tmpfiles /etc/tmpfiles.d/waydroid-venus.conf
-sudo install -Dm644 $P/waydroid-nvidia.rules   /etc/udev/rules.d/70-waydroid-nvidia.rules
-sudo install -Dm755 $P/waydroid-nvidia-setup   /usr/local/bin/waydroid-nvidia-setup
-sudo systemd-tmpfiles --create /etc/tmpfiles.d/waydroid-venus.conf
-sudo udevadm control --reload && sudo udevadm trigger /dev/udmabuf
-```
-
-The udev rule grants the seated desktop user access to `/dev/udmabuf`
-(CPU-mappable buffers — cursors, screenshots). Re-log-in once after
-installing it.
-
-## 5. Initialize and start
-
-Same as the AUR steps from `waydroid init` onward — the container unit is
-`waydroid-container.service`, installed by `make install` in step 1:
-
-```sh
-waydroid init
-sudo waydroid-nvidia-setup           # add --refresh <hz> to match your monitor
-sudo systemctl enable --now waydroid-container.service
-systemctl --user enable --now wd-venus.service
+curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
+sudo waydroid-nvidia-setup
 waydroid session start
 ```
 
-If anything misbehaves, see [`troubleshooting.md`](troubleshooting.md).
+Pass options after `bash -s --`, for example `... | sudo bash -s -- --check`.
+
+| Option | Effect |
+|---|---|
+| `--tag vX.Y.Z[-rcN]` | install that release instead of the newest one |
+| `--check` | download and verify only |
+| `--from DIR` | use release assets you already downloaded into `DIR` |
+| `--no-deps` | do not install distro packages (the needed tools are still checked) |
+| `--uninstall` | restore the official vendor image, then remove every installed file |
+
+Before installing, the script checks each asset against `SHA256SUMS` and its build provenance (with `cosign`
+2.4.3 or newer, or a logged-in `gh`; without either it says provenance was not checked). It refuses to overwrite
+files owned by a distro package. If `python3-gbinder` is missing, add the Waydroid repository first:
+`curl -fsSL https://repo.waydro.id | sudo bash`.
+
+Dependency lists for apt, dnf and pacman are in `packaging/install.sh`. On other distros install the equivalents
+and pass `--no-deps`: lxc, python3 with gi/dbus/gbinder, nftables, dnsmasq, binutils, e2fsprogs, util-linux, zstd,
+curl, git, make, patch, and for Venus mode libepoxy, libdrm, libgbm, libX11, expat and the Vulkan loader.
+
+## What gets installed
+
+| Path | What |
+|---|---|
+| `/usr/lib/waydroid`, `/usr/bin/waydroid` | Waydroid with our patches |
+| `/usr/lib/waydroid-nvidia/vendor/` | our Android vendor image and its update channel |
+| `/usr/lib/waydroid-nvidia/native/` | the driver bundle, its test programs and the setup tools |
+| `/usr/lib/waydroid-nvidia/guest/`, `virgl_*` | ANGLE, hwcomposer and the Venus mode files |
+| `/usr/bin/waydroid-nvidia-setup` | the setup command |
+
+`waydroid-nvidia-setup` keeps your official vendor image in `/var/lib/waydroid-nvidia/vendor-image/official/`,
+writes test logs to `/var/lib/waydroid-nvidia/gate-<time>/`, and backs up the previous `waydroid.cfg` to
+`/var/lib/waydroid/before-vendor-image-<time>/`. Every container start checks that the running vendor image is the
+one setup tested, on the loaded kernel module.
+
+Android system updates (`waydroid upgrade`) stay official. Our vendor image changes only with this package.
+
+## Uninstall
+
+```sh
+sudo /usr/lib/waydroid-nvidia/install.sh --uninstall      # Arch package: sudo pacman -R waydroid-nvidia-bin
+sudo rm -rf /var/lib/waydroid-nvidia
+```
+
+Both put the official vendor image and a stock `waydroid.cfg` back first. If the saved official image was
+deleted, that step stops and tells you to run `sudo waydroid init -f`. Installs of earlier release candidates may
+also have left `/var/lib/waydroid/nvidia-source-native-*` and `/var/lib/waydroid/nvidia-prolapse`; you can delete
+them.
+
+To verify a downloaded asset by hand (releases from v0.2.0-rc2 on carry the bundles):
+
+```sh
+COSIGN_MAX_ATTACHMENT_SIZE=300000000 cosign verify-blob-attestation \
+  --bundle <asset>.sigstore.json --type slsaprovenance1 \
+  --certificate-identity https://github.com/Shiro836/waydroid-nvidia/.github/workflows/build.yml@refs/tags/<tag> \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com <asset>
+```

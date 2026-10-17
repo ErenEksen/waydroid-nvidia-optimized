@@ -1,0 +1,75 @@
+/* SPDX-License-Identifier: MIT
+ * media_codecs_c2.xml: generated only from caps, validated structurally (python3 -I
+ * test/validate_xml.py checks it against Codec2InfoBuilder/MediaCodecsXmlParser rules),
+ * and --check rejects a stale file.
+ */
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+
+#include "nvc2_caps.h"
+#include "nv_video_stub.h"
+
+int nvc2_xmlgen_main(int argc, char **argv);
+
+static int g_fail = 0;
+#define CHECK(c)                                                                 \
+    do {                                                                         \
+        if (!(c)) {                                                              \
+            fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #c); \
+            g_fail++;                                                            \
+        }                                                                        \
+    } while (0)
+
+int main()
+{
+    g_stub = StubControl{};
+    /* VP9 + HEVC + H.264 supported, AV1 not (e.g. Turing) */
+    for (int c : {NV_VIDEO_CODEC_VP9, NV_VIDEO_CODEC_HEVC, NV_VIDEO_CODEC_H264}) {
+        g_stub.caps[c].supported = 1;
+        g_stub.caps[c].min_width = 33;
+        g_stub.caps[c].min_height = 17;
+        g_stub.caps[c].max_width = c == NV_VIDEO_CODEC_H264 ? 4096 : 8192;
+        g_stub.caps[c].max_height = c == NV_VIDEO_CODEC_H264 ? 4096 : 8192;
+        g_stub.caps[c].bit_depth_mask = 1u << 8 | (c == NV_VIDEO_CODEC_H264 ? 0 : 1u << 10);
+    }
+    NvVideoDevice *dev;
+    nv_video_device_open(&dev, nullptr);
+    std::string err;
+    auto e = nvc2::supported_codecs(dev, &err);
+    CHECK(err.empty());
+    CHECK(e.size() == 3);
+    std::string xml = nvc2::media_codecs_xml(e);
+    CHECK(xml.find("c2.nvprolapse.av1.decoder") == std::string::npos);
+    CHECK(xml.find("c2.nvprolapse.vp9.decoder") != std::string::npos);
+    CHECK(xml.find("min=\"34x18\" max=\"8192x8192\"") != std::string::npos);
+    CHECK(xml.find("max=\"4096x4096\"") != std::string::npos);
+
+    /* inconsistent caps are an error, not a partial list */
+    g_stub.caps[NV_VIDEO_CODEC_AV1].supported = 1;
+    auto bad = nvc2::supported_codecs(dev, &err);
+    CHECK(bad.empty() && err.find("unusable") != std::string::npos);
+    g_stub.caps[NV_VIDEO_CODEC_AV1].supported = 0;
+    nv_video_device_close(dev);
+
+    const char *path = "out/host/media_codecs_c2.xml";
+    {
+        char a0[] = "x", a1[] = "-o";
+        char *argv[] = {a0, a1, (char *)path};
+        CHECK(nvc2_xmlgen_main(3, argv) == 0);
+    }
+    {
+        char a0[] = "x", a1[] = "--check";
+        char *argv[] = {a0, a1, (char *)path};
+        CHECK(nvc2_xmlgen_main(3, argv) == 0);
+        g_stub.caps[NV_VIDEO_CODEC_HEVC].max_width = 4096; /* driver/GPU changed */
+        CHECK(nvc2_xmlgen_main(3, argv) == 1);
+    }
+    if (g_fail) {
+        fprintf(stderr, "xml_test: %d check(s) FAILED\n", g_fail);
+        return 1;
+    }
+    printf("xml_test: all checks passed (%s)\n", path);
+    return 0;
+}

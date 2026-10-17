@@ -1,0 +1,156 @@
+---
+# Waydroid VENDOR image built from source (LineageOS 20 + Waydroid's device/hardware/vendor trees) on the
+# maintainer's self-hosted runner (label: lineage), which carries the persistent synced lineage-20 tree.
+# The official SYSTEM image stays as is (Treble split): users keep the official system OTAs.
+#
+# Heavy job: runs only on manual dispatch (gh workflow run vendor-image.yml --ref <branch>) and as part of build.yml
+# on v* tags (workflow_call: the release attaches the nvidia-prolapse image built from that run's own native bundle
+# and ANGLE), never on branch pushes or pull_request (no untrusted PR code on the self-hosted runner; fork-PR
+# workflow runs need maintainer approval anyway, all_external_contributors).
+# The tree is shared with build.yml's surfaceflinger job: one runner serialises jobs, and each job puts the tree in
+# its own stamped state (pinned manifest + Waydroid patches + its patch layer), skipping the reset when the stamp
+# still holds and otherwise resetting only the projects that differ (build-vendor.sh, "Tree state").
+#
+# Stages and pins: vendor-image/build-vendor.sh, vendor-image/pins.env, vendor-image/notes.md.
+name: vendor-image
+
+on:
+  workflow_dispatch:
+    inputs:
+      compare:
+        description: compare the built vendor.img with the official image of the same date
+        type: boolean
+        default: true
+  # build.yml (v* tags): only the nvidia-prolapse image, its prebuilts from the calling run's artifacts
+  workflow_call:
+    inputs:
+      prebuilts-from-this-run:
+        description: take guest-native and guest-angle from the calling workflow run (build.yml) and skip the stock reproduction
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  vendor-l20:
+    name: vendor image lineage-20 (self-hosted, lineage tree)
+    if: inputs.prebuilts-from-this-run != true && github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, lineage]
+    # the job level, so that it also holds when build.yml calls this workflow (one lineage tree, one build at a time)
+    concurrency:
+      group: lineage-tree-${{ github.repository }}
+      cancel-in-progress: false
+    timeout-minutes: 360
+    env:
+      # empty = build-vendor.sh's default ~/repos/waydroid-nv/lineage-20 (the tree build.yml's SF job uses)
+      LINEAGE_TREE: ${{ vars.LINEAGE_TREE }}
+      GIT_AUTHOR_NAME: waydroid-nvidia CI
+      GIT_AUTHOR_EMAIL: ci@waydroid-nvidia
+      GIT_COMMITTER_NAME: waydroid-nvidia CI
+      GIT_COMMITTER_EMAIL: ci@waydroid-nvidia
+    steps:
+      - uses: actions/checkout@v4
+      - name: Preflight (tree, tools, disk)
+        run: vendor-image/build-vendor.sh preflight
+      - name: Pin the tree (pinned manifest + Waydroid patches)
+        run: vendor-image/build-vendor.sh checkout lunch
+      - name: m vendorimage
+        run: vendor-image/build-vendor.sh build
+      - name: Collect
+        env:
+          STAGE_DIR: ${{ github.workspace }}/stage-vendor
+        run: vendor-image/build-vendor.sh collect
+      - name: Compare with the official image
+        if: github.event_name != 'workflow_dispatch' || inputs.compare
+        env:
+          STAGE_DIR: ${{ github.workspace }}/stage-vendor
+        run: vendor-image/build-vendor.sh compare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendor-image-lineage-20
+          path: stage-vendor/
+          if-no-files-found: error
+          retention-days: 14
+
+  # Waydroid's product + the nvidia-prolapse vendor modules (vendor-image/product, vendor-image/patches).
+  # Driver prebuilts are never built here: called from build.yml (release tags) they are that run's own guest-native
+  # and guest-angle artifacts; otherwise they come from the newest successful build.yml run on the same branch (its
+  # native job = packaging/native/collect.py bundle, its angle job = pinned ANGLE + angle/patches), or from the run
+  # L20_NATIVE_RUN_ID in vendor-image/pins.env pins. No such run -> the job fails and names the remedy.
+  # The image records which bundle it carries (ro.vendor.nvidia_prolapse.build_record); the release job refuses an
+  # image whose bundle is not the release's.
+  vendor-l20-prolapse:
+    name: vendor image lineage-20 + nvidia-prolapse (self-hosted, lineage tree)
+    needs: vendor-l20
+    if: always() && (needs.vendor-l20.result == 'success' || (inputs.prebuilts-from-this-run == true && needs.vendor-l20.result == 'skipped'))
+    runs-on: [self-hosted, lineage]
+    concurrency:
+      group: lineage-tree-${{ github.repository }}
+      cancel-in-progress: false
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      actions: read
+    env:
+      LINEAGE_TREE: ${{ vars.LINEAGE_TREE }}
+      VENDOR_PRODUCT: prolapse
+      NATIVE_BUNDLE: ${{ github.workspace }}/inputs/native
+      ANGLE_DIR: ${{ github.workspace }}/inputs/angle
+      GIT_AUTHOR_NAME: waydroid-nvidia CI
+      GIT_AUTHOR_EMAIL: ci@waydroid-nvidia
+      GIT_COMMITTER_NAME: waydroid-nvidia CI
+      GIT_COMMITTER_EMAIL: ci@waydroid-nvidia
+    steps:
+      - uses: actions/checkout@v4
+      - name: Take the native bundle and ANGLE from this build.yml run
+        if: inputs.prebuilts-from-this-run == true
+        uses: actions/download-artifact@v4
+        with:
+          name: guest-native
+          path: inputs/native
+      - if: inputs.prebuilts-from-this-run == true
+        uses: actions/download-artifact@v4
+        with:
+          name: guest-angle
+          path: inputs/angle
+      - if: inputs.prebuilts-from-this-run == true
+        run: echo "prebuilts from this build.yml run ${{ github.run_id }}" | tee inputs/SOURCE
+      - name: Fetch the native bundle and ANGLE from build.yml
+        if: inputs.prebuilts-from-this-run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          . vendor-image/pins.env
+          run=${L20_NATIVE_RUN_ID:-$(gh run list -R "$GITHUB_REPOSITORY" --workflow build.yml --branch "$GITHUB_REF_NAME" \
+                --status success --limit 1 --json databaseId --jq '.[0].databaseId')}
+          if [ -z "$run" ]; then
+            echo "::error::no successful build.yml run on $GITHUB_REF_NAME provides guest-native + guest-angle; dispatch build.yml on this ref first (or pin L20_NATIVE_RUN_ID)"
+            exit 1
+          fi
+          rm -rf inputs && mkdir -p inputs
+          gh run download "$run" -R "$GITHUB_REPOSITORY" -n guest-native -D inputs/native
+          gh run download "$run" -R "$GITHUB_REPOSITORY" -n guest-angle -D inputs/angle
+          echo "prebuilts from build.yml run $run" | tee inputs/SOURCE
+      - name: Preflight (tree, tools, disk)
+        run: vendor-image/build-vendor.sh preflight
+      - name: Pin the tree, apply our patches, install the product layer
+        run: vendor-image/build-vendor.sh checkout product lunch
+      - name: m vendorimage
+        run: vendor-image/build-vendor.sh build
+      - name: Collect
+        env:
+          STAGE_DIR: ${{ github.workspace }}/stage-vendor-prolapse
+        run: |
+          vendor-image/build-vendor.sh collect
+          cp inputs/SOURCE stage-vendor-prolapse/
+      - name: Compare with the official image (what our product changes)
+        env:
+          STAGE_DIR: ${{ github.workspace }}/stage-vendor-prolapse
+        run: vendor-image/build-vendor.sh compare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vendor-image-lineage-20-nvidia-prolapse
+          path: stage-vendor-prolapse/
+          if-no-files-found: error
+          retention-days: 14

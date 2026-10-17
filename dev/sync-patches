@@ -27,8 +27,7 @@ diffto "$VIRGL_TREE" "$REPO/patches/virglrenderer/0004-wip-gpu-alloc-and-global-
 cp "$VIRGL_TREE/vtest/vtest_gpu_alloc.c" "$REPO/src/virglrenderer-vtest/"
 cp "$VIRGL_TREE/vtest/vtest_gpu_alloc.h" "$REPO/src/virglrenderer-vtest/"
 
-say "hwcomposer: 0001-wip-nvidia-fixes (all uncommitted)"
-diffto "$HWC_TREE" "$REPO/patches/hwcomposer/0001-wip-nvidia-fixes.patch"
+# hwcomposer: the series lives in hwcomposer/patches/ (git format-patch from a hwcomposer/build.sh tree)
 
 say "waydroid: 0001-nvidia-integration (uncommitted gpu.py + lxc.py + hardware_manager.py + session_manager.py)"
 diffto "$WAYDROID_SRC" "$REPO/patches/waydroid/0001-nvidia-integration.patch" \

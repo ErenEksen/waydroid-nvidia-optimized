@@ -1,0 +1,149 @@
+From a3bb0244f1111564dcfaa4607fa698e4ac7e8a80 Mon Sep 17 00:00:00 2001
+From: waydroid-nvidia-prolapse <build@local>
+Date: Fri, 16 Oct 2026 18:12:50 +0300
+Subject: [PATCH] hwcomposer: never send a display hotplug from the present
+ path
+
+hwc_set() called procs->hotplug(0, 1) whenever an xdg_toplevel configure
+(resize, or a state change such as activation) had set needHotplug. Older
+HWC2On1Adapters dropped display-0 hotplugs, so this was a no-op. The
+lineage-20.0 20260927 vendor image carries Waydroid's "hwc2on1: Handle
+primary hotplugs" patch, which forwards it as CONNECTED. IComposerCallback
+onHotplug is synchronous, so the callback is a nested binder call that
+runs on SurfaceFlinger's main thread, which is inside
+HWComposer::presentAndGetReleaseFences. SurfaceFlinger handles a
+main-thread hotplug at once (processDisplayHotplugEventsLocked ->
+processDisplayChangesLocked -> Display::disconnect ->
+HWComposer::disconnectDisplay -> mDisplayData.erase), then dereferences
+the erased DisplayData for getReleaseFences(): SEGV at
+presentAndGetReleaseFences+807 (core of 2026-10-16 17:15:45: the frame's
+DisplayData node is freed and zeroed, mDisplayData holds a new node for
+the same display). The composer also purged that display's buffer cache
+(ComposerClient cleanDisplayResources) in the middle of its own present.
+
+The display's configs are fixed at calibration (build_display_modes runs
+once), so the hotplug carried no information. Drop it and needHotplug;
+do_hotplug() keeps its touch-pipe/property work and the invalidate nudge.
+
+Regression guard: #pragma GCC poison hotplug in hwcomposer.cpp and
+wayland-hwc.cpp (the two files that hold hwc_procs_t) makes any new
+procs->hotplug call a build error.
+---
+ hwcomposer/hwcomposer.cpp  | 26 ++++++++++++++++++++------
+ hwcomposer/wayland-hwc.cpp | 19 ++++++++++++++-----
+ hwcomposer/wayland-hwc.h   |  5 ++---
+ 3 files changed, 36 insertions(+), 14 deletions(-)
+
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index 9d60732..9fb0034 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -62,6 +62,11 @@
+ #include "modes/multi-window.h"
+ #include "modes/single-window.h"
+ 
++/* Regression guard (SurfaceFlinger crash 2026-10-16, see hwc_set()): this HAL
++ * must never call hwc_procs_t::hotplug. Any use of the identifier after this
++ * point fails the build. */
++#pragma GCC poison hotplug
++
+ using ::android::hardware::configureRpcThreadpool;
+ using ::android::hardware::joinRpcThreadpool;
+ 
+@@ -652,12 +657,21 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+         refit_windows_to_display(pdev);
+     }
+ 
+-    if (pdev->display->needHotplug && pdev->procs && pdev->procs->hotplug) {
+-        pdev->procs->hotplug(pdev->procs, 0, 1);
+-        /* No buffer_map.clear(): the buffers stay valid across a hotplug, and
+-         * prune_stale_cached_buffers() drops the ones that stop being used. */
+-        pdev->display->needHotplug = false;
+-    }
++    /* No procs->hotplug() here, ever. This function runs inside
++     * SurfaceFlinger's presentDisplay call: the HWC2On1Adapter (with
++     * Waydroid's "hwc2on1: Handle primary hotplugs" patch, in vendor images
++     * since 20260927) forwards a display-0 hotplug as CONNECTED, the HIDL
++     * callback is a nested binder call that lands on SurfaceFlinger's main
++     * thread, which is blocked in HWComposer::presentAndGetReleaseFences,
++     * and SurfaceFlinger processes a main-thread hotplug immediately:
++     * processDisplayChangesLocked() recreates the display and erases the
++     * HWComposer::DisplayData that presentAndGetReleaseFences still holds a
++     * reference to. It then calls getReleaseFences() through the freed entry
++     * (SEGV in presentAndGetReleaseFences, 2026-10-16).
++     * The display's configs never change after calibration
++     * (build_display_modes() runs once), so a hotplug would carry no new
++     * information anyway; resolution changes go through display modes
++     * (match_display_mode_to_window). See do_hotplug(). */
+     return 0;
+ }
+ 
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index d56c55f..d5f5a06 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -85,6 +85,11 @@
+ #include "fractional-scale-v1-client-protocol.h"
+ #include "xdg-decoration-unstable-v1-client-protocol.h"
+ 
++/* Regression guard (SurfaceFlinger crash 2026-10-16, see hwc_set()): this HAL
++ * must never call hwc_procs_t::hotplug. Any use of the identifier after this
++ * point fails the build. */
++#pragma GCC poison hotplug
++
+ using ::android::hardware::hidl_string;
+ 
+ /* See display::last_input_serial: keyboard and pointer events do not reach the
+@@ -262,8 +267,10 @@ do_hotplug(struct display *display) {
+         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
+         chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
+     }
++    /* Despite the name, no HWC hotplug is sent: the configs SurfaceFlinger
++     * read at startup stay valid (see hwc_set()). The window geometry changed,
++     * so ask SurfaceFlinger for a frame that re-positions the layers. */
+     if (display->procs && display->procs->invalidate) {
+-        display->needHotplug = true;
+         /* See display::creatingWindow — calling into SurfaceFlinger here while
+          * the composer thread is blocked in window::create() deadlocks both. */
+         if (!display->creatingWindow.load(std::memory_order_acquire))
+@@ -291,10 +298,12 @@ toplevel_has_state(struct wl_array *states, uint32_t wanted)
+  *
+  * Android hot-resizes its display all the time — it is how foldables switch
+  * panels (DisplayFoldController -> WindowManagerInternal::setForcedDisplaySize).
+- * What is NOT available to us is the hwc route: do_hotplug()'s
+- * procs->hotplug(0, 1) would make SurfaceFlinger re-read the display
+- * attributes, but the HWC2On1Adapter discards hotplug for display 0
+- * ("Received hotplug for non-external display"). WindowManager's shell command
++ * What is NOT available to us is the hwc route: a display-0 procs->hotplug(0, 1)
++ * is dropped by older HWC2On1Adapters ("Received hotplug for non-external
++ * display") and, with Waydroid's primary-hotplug adapter patch, makes
++ * SurfaceFlinger tear down and recreate the whole display (which crashed it
++ * when sent from inside present; hwc never sends one, see hwc_set()).
++ * WindowManager's shell command
+  * is the entry point a vendor HAL can actually reach; setForcedDisplaySize
+  * requires WRITE_SECURE_SETTINGS, which this process (uid 1000, system) holds.
+  *
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 44f9cd3..b13c2b6 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -536,14 +536,13 @@ struct display {
+     sp<IWaydroidTask> task;
+ 
+     const hwc_procs_t *procs;
+-    bool needHotplug;
+     /* Set while the composer thread is inside window::create(), which blocks
+      * waiting for the compositor's first configure. do_hotplug() must not call
+      * procs->invalidate() during that window: invalidate re-enters
+      * SurfaceFlinger, which comes back into hwc on the very thread that is
+      * blocked, and both threads wedge (composer in wl_display_roundtrip_queue,
+-     * Wayland thread in do_hotplug). needHotplug still gets set, and hwc_set
+-     * consumes it on the next frame, so nothing is lost by skipping the nudge. */
++     * Wayland thread in do_hotplug). Skipping the nudge loses nothing: the
++     * next frame SurfaceFlinger presents re-positions the layers anyway. */
+     std::atomic<bool> creatingWindow;
+ };
+ 
+-- 
+2.56.0
+

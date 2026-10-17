@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# build-waydroid — assemble the patched waydroid tree this project runs from.
+#
+#   dev/build-waydroid            -> build/waydroid (pinned upstream + baseline patch + ours)
+#
+# Pinned upstream sha = the baseline's patches/waydroid/BASE (this repo), so the
+# baseline's 0001-nvidia-integration.patch applies unchanged and our
+# waydroid/0001-lxc-nvidia-native-mounts.patch (lxc.py hook + tools/helpers/nvidia_native.py)
+# goes on top. Nothing under /usr is touched: run the result as
+#
+#   sudo python3 build/waydroid/waydroid.py upgrade -o      # regenerate config_nodes
+#
+# exactly as the baseline's dev loop does with its own clone (its LXC config's post-stop hook
+# points into that clone for the same reason). Idempotent: an existing clone at the right sha
+# is reset and re-patched; a clone at another sha is an error, not silently reused.
+set -euo pipefail
+REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+BASELINE=${BASELINE:-$REPO}   # the Venus baseline patches live in this repo
+UPSTREAM=https://github.com/waydroid/waydroid.git
+SHA=a33a5c0b31d89d6ce687381104b30aff4dd2d330   # == patches/waydroid/BASE of the baseline (a33a5c0)
+TREE=$REPO/build/waydroid
+die() { echo "build-waydroid: $*" >&2; exit 1; }
+[ -f "$BASELINE/patches/waydroid/0001-nvidia-integration.patch" ] || die "baseline patch not found under $BASELINE (set BASELINE=)"
+grep -q "base-commit: ${SHA:0:7}" "$BASELINE/patches/waydroid/BASE" || die "baseline BASE moved away from ${SHA:0:7}; update SHA here and re-check both patches"
+mkdir -p "$REPO/build"
+if [ ! -d "$TREE/.git" ]; then
+    git clone -q --filter=blob:none "$UPSTREAM" "$TREE"
+fi
+git -C "$TREE" fetch -q origin "$SHA" 2>/dev/null || true
+git -C "$TREE" cat-file -e "$SHA^{commit}" || die "sha $SHA not in the clone"
+git -C "$TREE" reset -q --hard "$SHA"
+# __pycache__ is excluded: `sudo python3 build/waydroid/waydroid.py ...` leaves root-owned
+# bytecode dirs this user cannot delete. Stale .pyc files are harmless (Python revalidates them
+# against the source's mtime/size), everything else untracked is removed.
+git -C "$TREE" clean -qfdx -e __pycache__
+git -C "$TREE" apply "$BASELINE/patches/waydroid/0001-nvidia-integration.patch" || die "baseline patch failed"
+git -C "$TREE" apply "$REPO/waydroid/0001-lxc-nvidia-native-mounts.patch" || die "our patch failed"
+cmp -s "$REPO/waydroid/nvidia_native.py" "$TREE/tools/helpers/nvidia_native.py" \
+    || die "waydroid/nvidia_native.py differs from the copy inside the patch; regenerate the patch"
+python3 -c "import ast,sys; [ast.parse(open(f).read()) for f in sys.argv[1:]]" \
+    "$TREE/tools/helpers/lxc.py" "$TREE/tools/helpers/nvidia_native.py"
+echo "build-waydroid: $TREE at $(git -C "$TREE" rev-parse --short HEAD) + baseline + native-mounts patches"
+echo "next: sudo python3 $TREE/waydroid.py upgrade -o   (container stopped)"

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- hwuiapp: a plain Java activity drawn by HWUI; see src/.../MainActivity.java. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="dev.nvprolapse.hwuiapp" android:versionCode="1" android:versionName="1.0">
+    <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="33" />
+    <application android:label="hwuiapp" android:hardwareAccelerated="true" android:extractNativeLibs="true">
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

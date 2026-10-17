@@ -1,0 +1,1321 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<manifest>
+  <remote name="aosp" fetch="https://android.googlesource.com" review="android-review.googlesource.com" revision="refs/tags/android-13.0.0_r75" />
+  <remote name="ghub" fetch="https://github.com/" />
+  <remote name="github" fetch=".." review="review.lineageos.org" />
+  <remote name="gitlab" fetch="https://gitlab.com/" />
+  <remote name="private" fetch="ssh://git@github.com" />
+  
+  <default remote="github" revision="refs/heads/lineage-20.0" sync-j="4" sync-c="true" />
+  
+  <project name="LineageOS/android" path="android" revision="0d12a657c699970c9f0a82361eb170aa9ccaeb59" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_bionic" path="bionic" groups="pdk" revision="998f94cdcddfd9b5134bbdaf4b0752156fd89ab4" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_bootable_recovery" path="bootable/recovery" groups="pdk" revision="4c1835f494be558f71c84e3abceb3d773f6c6369" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_build" path="build/make" groups="pdk" revision="f3bb11d8739b84a311a40a3069dc4cfca688be22" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0">
+    <linkfile src="CleanSpec.mk" dest="build/CleanSpec.mk" />
+    <linkfile src="buildspec.mk.default" dest="build/buildspec.mk.default" />
+    <linkfile src="core" dest="build/core" />
+    <linkfile src="envsetup.sh" dest="build/envsetup.sh" />
+    <linkfile src="target" dest="build/target" />
+    <linkfile src="tools" dest="build/tools" />
+  </project>
+  <project name="LineageOS/android_build_soong" path="build/soong" groups="pdk,tradefed" revision="c80e6e3b82f2c0fded69b44b514d4c4d5519c9b5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0">
+    <linkfile src="root.bp" dest="Android.bp" />
+    <linkfile src="bootstrap.bash" dest="bootstrap.bash" />
+  </project>
+  <project name="LineageOS/android_cts" path="cts" groups="cts,pdk-cw-fs,pdk-fs" revision="8bf2685f6af7a873390b2c2a8dfb306a34f08fd9" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_development" path="development" groups="developers,pdk-cw-fs,pdk-fs" revision="54eb99247de9fea35238a51d3851a9e0eb75265b" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_generic_common" path="device/generic/common" groups="pdk" revision="62abffc498581cef1b846e5cf41b6e00a6de37a8" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_google_atv" path="device/google/atv" groups="broadcom_pdk,device,generic_fs,pdk" revision="bec7fb5c5ce8ee6c8aa407cfdff42998adf11335" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_google_contexthub" path="device/google/contexthub" groups="device,pdk" revision="6ceb9c74d343bafaa40a55977849a6bc4c8f5969" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_lineage_atv" path="device/lineage/atv" revision="7be0f03ca2e671765f3435ad1021204d5e4b1d91" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_lineage_car" path="device/lineage/car" revision="b588ae4550fcc9dec7427bfdba498826d8ced50c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_lineage_sepolicy" path="device/lineage/sepolicy" revision="ca9c8a7317af82df281432d1146b9be79fd7e359" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_qcom_sepolicy" path="device/qcom/sepolicy" groups="qcom,qssi" revision="54b7abd8fcca916646ea6f8bc0e5e696ac9f39c7" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_qcom_sepolicy" path="device/qcom/sepolicy-legacy-um" revision="49b7b27b732acd197ce6bba700812047f988dff7" groups="qcom,sdm660" upstream="refs/heads/lineage-20.0-legacy-um" dest-branch="refs/heads/lineage-20.0-legacy-um" />
+  <project name="LineageOS/android_device_qcom_sepolicy_vndr" path="device/qcom/sepolicy_vndr" groups="qcom,waipio-vendor" revision="a20d7fd7cf744cd1fdedb0ae638746f07c079826" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_device_qcom_sepolicy_vndr" path="device/qcom/sepolicy_vndr-legacy-um" revision="ad27d810f0c96353204a7841e57eef0eacbc776a" groups="lahaina,qcom" upstream="refs/heads/lineage-20.0-legacy-um" dest-branch="refs/heads/lineage-20.0-legacy-um" />
+  <project name="LineageOS/android_external_android-nn-driver" path="external/android-nn-driver" groups="pdk-gs-arm,pdk-lassen" revision="239af543488d8f1df799d63ad0c021ea4f54c5ad" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_ant-wireless_ant_client" path="external/ant-wireless/ant_client" groups="qcom,sdm660" revision="846dbb2d61e119b9fd8faa0dfafe5a4f33bbd785" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_ant-wireless_ant_native" path="external/ant-wireless/ant_native" groups="qcom,sdm660" revision="6e176b725fbae9db85a4ef5d04598264c637d47e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_ant-wireless_ant_service" path="external/ant-wireless/ant_service" groups="qcom,sdm660" revision="fa22f5cec501b961afbfa0a15a64d52fa2d57e8c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_ant-wireless_hidl" path="external/ant-wireless/hidl" groups="qcom,qssi" revision="ce589dc08e4215b063bfac73eb7b9b52cf46d944" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_armnn" path="external/armnn" groups="pdk-gs-arm,pdk-lassen" revision="99622dfb30039a7c13b772690605a59520eb3819" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_avb" path="external/avb" groups="pdk" revision="ba9d77598670f4e221490aa0e7aa9b27564cf2fb" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_bash" path="external/bash" revision="9f59ea3199a83697b4e1adcd4ac35484ac824c67" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_chromium-webview_patches" path="external/chromium-webview/patches" revision="c90965b7fc332c0f0fcb115dfcbfbda5fcc6381b" groups="pdk" upstream="refs/heads/main" dest-branch="refs/heads/main">
+    <linkfile src="os_pickup.mk" dest="external/chromium-webview/Android.mk" />
+    <linkfile src="CleanSpec.mk" dest="external/chromium-webview/CleanSpec.mk" />
+    <linkfile src="README" dest="external/chromium-webview/README" />
+  </project>
+  <project name="LineageOS/android_external_chromium-webview_prebuilt_arm" path="external/chromium-webview/prebuilt/arm" revision="fd29391aab3891a79dd62cac080916a1642bb84c" groups="pdk" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/android_external_chromium-webview_prebuilt_arm64" path="external/chromium-webview/prebuilt/arm64" revision="394b243c2796e36580dd8bae7822609e1c01b1ff" groups="pdk" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/android_external_chromium-webview_prebuilt_x86" path="external/chromium-webview/prebuilt/x86" revision="79bba097efc5212af8082a938865798b2c200f7d" groups="pdk" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/android_external_chromium-webview_prebuilt_x86_64" path="external/chromium-webview/prebuilt/x86_64" revision="32aceaa88cb4d8925f9d7ea14d848982f06da1ab" groups="pdk" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/android_external_cldr" path="external/cldr" groups="pdk" revision="7ddd001c3d87ba01fc57dc814f58ae60dba475c5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_dng_sdk" path="external/dng_sdk" groups="pdk" revision="2d4fcefa228d6c9e50079303c24348ab15619958" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_dtc" path="external/dtc" groups="pdk" revision="301cc869850c55304faa0315aea678ca9d643197" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_e2fsprogs" path="external/e2fsprogs" groups="pdk" revision="1a200621324ac25c6153daea64acfe51d6f2f9a7" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_exfatprogs" path="external/exfatprogs" revision="4cc25735fe0c9b9d012c970b35b2beeb48a94790" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_expat" path="external/expat" groups="pdk" revision="cd2ea5b3573e26d047d5e4a444e452ec51fb2be2" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_freetype" path="external/freetype" groups="pdk" revision="d173cef5dabf6a6d3afc27c694e07fe847028e68" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_giflib" path="external/giflib" groups="pdk,qcom_msm8x26" revision="d06cd8e025ef2a654b855429b7e9abcc202d3acd" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_gptfdisk" path="external/gptfdisk" groups="pdk" revision="7d31ef5b2f691839237ebd05011558968999bfe6" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_htop" path="external/htop" revision="a7cad314ca4607545f802dd47f700574f633564b" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_icu" path="external/icu" groups="pdk" revision="2dd70731f1e288b3ab22c914e9f76fd453b21cc5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_json-c" path="external/json-c" groups="qcom,qssi" revision="b6704a11c8ec5a928e921fdff4e6a2d239caf55c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_libcxx" path="external/libcxx" groups="pdk" revision="0eab991b37dfa2342b7f0a1d2307241954dd226f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_libjpeg-turbo" path="external/libjpeg-turbo" groups="pdk" revision="97a06ea3763b647a8b69c3fa43516eb910258f76" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_libncurses" path="external/libncurses" revision="2d87040ef56d93aa0ac4331fc3dfafdfdc5e9f8a" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_libpng" path="external/libpng" groups="pdk" revision="a137dc2f6cdc8464d3d68a337edac13598def652" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_libvpx" path="external/libvpx" groups="pdk" revision="3538d4ccbaf97504cde49ee53bdc496bcf110ba1" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_libxml2" path="external/libxml2" groups="libxml2,pdk" revision="be61fdb3f15d4b025dfac35ecd24092216cba722" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_mksh" path="external/mksh" groups="pdk" revision="6a241e5bd9c6bea1d50cdd759beaf1938f9b04cb" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_nano" path="external/nano" revision="0ec7ba4a70fcbc4937f0a0058f38543a69566c0e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_ntfs-3g" path="external/ntfs-3g" revision="7471d6403640f1cd0878cc2c87279571a497bcb7" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_openssh" path="external/openssh" groups="pdk" revision="e6133bc90c2ea5d44cff82e2a241f01e98fbf0c2" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_pdfium" path="external/pdfium" groups="pdk" revision="6b985fb05c3d179d39c59aac051f2f3320f31175" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_rsync" path="external/rsync" revision="cdb7e988d31d769ecfc20633467952528e0e5707" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_setupcompat" path="external/setupcompat" groups="pdk" revision="9627624f21f073bf6d0974b07d0df47ae8618b24" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_skia" path="external/skia" groups="pdk,qcom_msm8x26" revision="926265bb27ce32debf57f0343f29a187f79cb92f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_sonivox" path="external/sonivox" groups="pdk" revision="ef0e6882c25e5c9012d2dd25b8ab24c4ea7e475e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_sqlite" path="external/sqlite" groups="pdk" revision="94da535738c69fdc3775fab50d82e0dba0f25187" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_tinycompress" path="external/tinycompress" groups="pdk" revision="d155968a7181a24bc457de9e01b510ed15f2cdcb" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_unrar" path="external/unrar" revision="33790f0663cc9e3323f0cd21cd8873301ed1cd79" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_vim" path="external/vim" revision="f295b0c918c7669c68ef2dbaab4f26148cf54c2e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_webp" path="external/webp" groups="pdk,qcom_msm8x26" revision="67e8c06198ca64e771386999fb2830bad721bc30" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_wpa_supplicant_8" path="external/wpa_supplicant_8" groups="pdk" revision="c20541a034613ed850ca93f82365aac52aa153b9" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_external_zstd" path="external/zstd" revision="e6a035a8df42f375160f2acabe3caa283a0184d7" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_av" path="frameworks/av" groups="pdk" revision="673733ea38f2fae2552b43ff0b01338c6393b5d2" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_base" path="frameworks/base" groups="pdk-cw-fs,pdk-fs" revision="dcb1f2392ebd1a883fb8653e00796259c99b91b8" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_libs_systemui" path="frameworks/libs/systemui" groups="pdk-cw-fs,pdk-fs" revision="cb18bf8f4bcc3f4eb56925621bba09ef93a6bcc1" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_native" path="frameworks/native" groups="pdk" revision="915ad642e331e0f8ea107b5f5519f2c6f1e7e01c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_opt_calendar" path="frameworks/opt/calendar" groups="pdk-cw-fs,pdk-fs" revision="6b2351efb995e95d66699dd6bca75980a0733ed9" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_opt_colorpicker" path="frameworks/opt/colorpicker" groups="pdk-cw-fs,pdk-fs" revision="9a5f228322342b43474b8319f1750dc551dd72b4" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_opt_telephony" path="frameworks/opt/telephony" groups="pdk" revision="15007cf4fbd89fab42da53bd2c49d64a857474fa" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_frameworks_opt_timezonepicker" path="frameworks/opt/timezonepicker" groups="pdk-cw-fs,pdk-fs" revision="51d72010349d97e3eaefe462896201b199b11670" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_broadcom_libbt" path="hardware/broadcom/libbt" groups="pdk" revision="d7332ad3e98187f9a6a91a167708a7df4d4ee64d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_google_gchips" path="hardware/google/gchips" groups="pdk-gs-arm,pdk-lassen" revision="ccb045d6f2acf61a08678f7859d58fa32a5afb6e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_google_graphics_common" path="hardware/google/graphics/common" groups="pdk-gs-arm,pdk-lassen" revision="a8122598e56e15c77fbf6652c71ae2a397fbb97b" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_google_pixel" path="hardware/google/pixel" groups="generic_fs,pixel" revision="474509cc44ed62f49a40905db76ee14698ece09f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_google_pixel-sepolicy" path="hardware/google/pixel-sepolicy" groups="generic_fs,pixel" revision="eec446aa4fb152d6651c90de682cf73f8e202bd4" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_interfaces" path="hardware/interfaces" groups="pdk" revision="2f83e1bda9536aaf406352c868a8192cc3526a69" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_libhardware" path="hardware/libhardware" groups="pdk" revision="0eb202d7ebd7d2410eb2f62c908c0341964a4829" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_libhardware_legacy" path="hardware/libhardware_legacy" groups="pdk" revision="50d9f52f7a7d4c70f10d6a9dca9a1f83a16c85ca" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_lineage_compat" path="hardware/lineage/compat" revision="015d90baa57a65c5bdeed20997dfdede50e65ca7" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_lineage_interfaces" path="hardware/lineage/interfaces" revision="56bf43755bdc4045ec56b4c02eaaaf9894f91003" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_lineage_livedisplay" path="hardware/lineage/livedisplay" revision="3e298771b18d6c0e28350f50c7204c3c036662b8" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom-caf_common" path="hardware/qcom-caf/common" groups="qcom" revision="b7371b2235ec060d226a56729cf29db0e54423a2" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0">
+    <linkfile src="os_pickup_aosp.mk" dest="hardware/qcom/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/msm8953/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/msm8953/Android.mk" />
+    <linkfile src="os_pickup.bp" dest="hardware/qcom-caf/msm8996/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/msm8996/Android.mk" />
+    <linkfile src="os_pickup.bp" dest="hardware/qcom-caf/msm8998/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/msm8998/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/sdm660/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/sdm660/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/sdm845/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/sdm845/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/sm8150/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/sm8150/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/sm8250/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/sm8250/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/sm8350/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/sm8350/Android.mk" />
+    <linkfile src="os_pickup_audio-ar.mk" dest="hardware/qcom-caf/sm8450/audio/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/sm8450/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/sm8450/Android.mk" />
+    <linkfile src="os_pickup_audio-ar.mk" dest="hardware/qcom-caf/sm8550/audio/Android.mk" />
+    <linkfile src="os_pickup_qssi.bp" dest="hardware/qcom-caf/sm8550/Android.bp" />
+    <linkfile src="os_pickup.mk" dest="hardware/qcom-caf/sm8550/Android.mk" />
+    <linkfile src="os_pickup.bp" dest="kernel/google/gs201/private/google-modules/Android.bp" />
+  </project>
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom/audio" groups="pdk-qcom,qcom,qcom_audio" revision="7f80cf1d4880f8946250dd20f158985123934fee" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/msm8953/audio" revision="ce1101464db91d4219c9e6b356dce26a6c656151" groups="msm8953,qcom" upstream="refs/heads/lineage-20.0-caf-msm8953" dest-branch="refs/heads/lineage-20.0-caf-msm8953" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/msm8996/audio" revision="7c22b529080bb6f94a76a5a4f8adc073cf77e097" groups="legacy-qcom,qcom" upstream="refs/heads/lineage-20.0-caf-msm8996" dest-branch="refs/heads/lineage-20.0-caf-msm8996" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/msm8998/audio" revision="7dc584f64fd4d582438f21ce9a20762687b03320" groups="legacy-qcom,qcom" upstream="refs/heads/lineage-20.0-caf-msm8998" dest-branch="refs/heads/lineage-20.0-caf-msm8998" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/sdm660/audio" revision="b60e29407f1c44a47879c068abf076c636d64e0e" groups="qcom,sdm660" upstream="refs/heads/lineage-20.0-caf-sdm660" dest-branch="refs/heads/lineage-20.0-caf-sdm660" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/sdm845/audio" revision="d3b73e96c65cca33a0f376b34fa7c9f9345c7ac3" groups="qcom,sdm845" upstream="refs/heads/lineage-20.0-caf-sdm845" dest-branch="refs/heads/lineage-20.0-caf-sdm845" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/sm8150/audio" revision="cac0846c9d8200268474449586978ac2cc581b33" groups="msmnile,qcom" upstream="refs/heads/lineage-20.0-caf-sm8150" dest-branch="refs/heads/lineage-20.0-caf-sm8150" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/sm8250/audio" revision="13d4b369baa0605b0eb5078978e2ba52fb9b5718" groups="kona,qcom" upstream="refs/heads/lineage-20.0-caf-sm8250" dest-branch="refs/heads/lineage-20.0-caf-sm8250" />
+  <project name="LineageOS/android_hardware_qcom_audio" path="hardware/qcom-caf/sm8350/audio" revision="38a54430a6f4c60dd09effccefd5baa748b3a702" groups="lahaina,qcom" upstream="refs/heads/lineage-20.0-caf-sm8350" dest-branch="refs/heads/lineage-20.0-caf-sm8350" />
+  <project name="LineageOS/android_hardware_qcom_audio-ar" path="hardware/qcom-caf/sm8450/audio/primary-hal" revision="47a02565036aaaee08ae2c6b146a457fcd21ffeb" groups="qcom,waipio-vendor" upstream="refs/heads/lineage-20.0-caf-sm8450" dest-branch="refs/heads/lineage-20.0-caf-sm8450" />
+  <project name="LineageOS/android_hardware_qcom_audio-ar" path="hardware/qcom-caf/sm8550/audio/primary-hal" revision="af377b078cdda3ee4af77f5bbe15010306adc702" groups="kailua-audio,qcom" upstream="refs/heads/lineage-20.0-caf-sm8550" dest-branch="refs/heads/lineage-20.0-caf-sm8550" />
+  <project name="LineageOS/android_hardware_qcom_bootctrl" path="hardware/qcom-caf/bootctrl" revision="e4868c89bd6433a5d14df4b33f66b2003bddb7ad" groups="qcom,waipio-vendor" upstream="refs/heads/lineage-20.0-caf" dest-branch="refs/heads/lineage-20.0-caf" />
+  <project name="LineageOS/android_hardware_qcom_bt" path="hardware/qcom-caf/bt" revision="b7218e4c89817079546f035f3cfe5f99b4730d43" groups="legacy-qcom,qcom" upstream="refs/heads/lineage-20.0-caf" dest-branch="refs/heads/lineage-20.0-caf" />
+  <project name="LineageOS/android_hardware_qcom_camera" path="hardware/qcom/camera" groups="pdk-qcom,qcom,qcom_camera" revision="f491593e7d8f54454d1b63c731df5d6518808648" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_data_ipacfg-mgr" path="hardware/qcom/data/ipacfg-mgr" groups="pdk-qcom,qcom" revision="0d3429a66dec823bdae9d7a065ee5a54d5788f42" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom/display" groups="pdk-qcom,qcom,qcom_display" revision="ef09d590fba34c1b5004109bf2c3132e297c6ce5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/msm8953/display" revision="a64efb5ee2951caceff4981416d7156cd5eec89b" groups="qcom" upstream="refs/heads/lineage-20.0-caf-msm8953" dest-branch="refs/heads/lineage-20.0-caf-msm8953" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/msm8996/display" revision="1df14a71b27fd266fa7b9d54ceb54431ab3b66e9" groups="legacy-qcom,qcom" upstream="refs/heads/lineage-20.0-caf-msm8996" dest-branch="refs/heads/lineage-20.0-caf-msm8996" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/msm8998/display" revision="13a4965f3a1771bf66b0a3dfbd9b2eea1b0b37ed" groups="legacy-qcom,qcom" upstream="refs/heads/lineage-20.0-caf-msm8998" dest-branch="refs/heads/lineage-20.0-caf-msm8998" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/sdm660/display" revision="d5f439c25d3d79923b0571b91d66ee61a54d6a90" groups="qcom" upstream="refs/heads/lineage-20.0-caf-sdm660" dest-branch="refs/heads/lineage-20.0-caf-sdm660" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/sdm845/display" revision="bf38af8ea1e8ae1140e865ab8526aae7abf70876" groups="qcom" upstream="refs/heads/lineage-20.0-caf-sdm845" dest-branch="refs/heads/lineage-20.0-caf-sdm845" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/sm8150/display" revision="9c4bbce5b42dd2c63546da080f98138f2b52a243" groups="qcom" upstream="refs/heads/lineage-20.0-caf-sm8150" dest-branch="refs/heads/lineage-20.0-caf-sm8150" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/sm8250/display" revision="bcb540306d47d1000ef361146972cbd1d81c6c64" groups="qcom" upstream="refs/heads/lineage-20.0-caf-sm8250" dest-branch="refs/heads/lineage-20.0-caf-sm8250" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/sm8350/display" revision="c52f2a277043d46f2f647ce1624c3955eeb2dd11" groups="qcom" upstream="refs/heads/lineage-20.0-caf-sm8350" dest-branch="refs/heads/lineage-20.0-caf-sm8350" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/sm8450/display" revision="93805316fcb934e18715d14c8806494bf7e464da" groups="qcom" upstream="refs/heads/lineage-20.0-caf-sm8450" dest-branch="refs/heads/lineage-20.0-caf-sm8450" />
+  <project name="LineageOS/android_hardware_qcom_display" path="hardware/qcom-caf/sm8550/display" revision="d5f57380e8c920f851919c52599ec8ed81251bd5" groups="qcom" upstream="refs/heads/lineage-20.0-caf-sm8550" dest-branch="refs/heads/lineage-20.0-caf-sm8550" />
+  <project name="LineageOS/android_hardware_qcom_gps" path="hardware/qcom/gps" groups="pdk-qcom,qcom,qcom_gps" revision="7ae2be18fe035a98df39537036d0e4543e8722df" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom/media" groups="pdk-qcom,qcom" revision="12862eab9d90466a1ef87fba78737b9f7bfe766c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/msm8953/media" revision="da80d54287e6a871bcf8aaa13b92af5e54e1387d" groups="msm8953,qcom" upstream="refs/heads/lineage-20.0-caf-msm8953" dest-branch="refs/heads/lineage-20.0-caf-msm8953" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/msm8996/media" revision="201a5e8f4f170830925ac9417a7969783c36c46d" groups="legacy-qcom,qcom" upstream="refs/heads/lineage-20.0-caf-msm8996" dest-branch="refs/heads/lineage-20.0-caf-msm8996" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/msm8998/media" revision="4f25bfc904a3e0f8b45094f9a248d3923a4fd382" groups="legacy-qcom,qcom" upstream="refs/heads/lineage-20.0-caf-msm8998" dest-branch="refs/heads/lineage-20.0-caf-msm8998" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/sdm660/media" revision="f452036fef29c7526f43738785b9e07cf9862caa" groups="qcom,sdm660" upstream="refs/heads/lineage-20.0-caf-sdm660" dest-branch="refs/heads/lineage-20.0-caf-sdm660" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/sdm845/media" revision="c46985599e48b232f21d90ad0a440b3801906707" groups="qcom,sdm845" upstream="refs/heads/lineage-20.0-caf-sdm845" dest-branch="refs/heads/lineage-20.0-caf-sdm845" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/sm8150/media" revision="e409d08d99edf99db16d52813538665ac4d40ebc" groups="msmnile,qcom" upstream="refs/heads/lineage-20.0-caf-sm8150" dest-branch="refs/heads/lineage-20.0-caf-sm8150" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/sm8250/media" revision="5f5421ed11919263ccb15a1e2eaef7a85f5baee5" groups="kona,qcom" upstream="refs/heads/lineage-20.0-caf-sm8250" dest-branch="refs/heads/lineage-20.0-caf-sm8250" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/sm8350/media" revision="a1f5ec8ca22a24a4df703d354d0b66cde885ca6c" groups="lahaina,qcom" upstream="refs/heads/lineage-20.0-caf-sm8350" dest-branch="refs/heads/lineage-20.0-caf-sm8350" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/sm8450/media" revision="fdd06e10393d5c831bcb69b1a59c4509d5923f62" groups="qcom,waipio-vendor" upstream="refs/heads/lineage-20.0-caf-sm8450" dest-branch="refs/heads/lineage-20.0-caf-sm8450" />
+  <project name="LineageOS/android_hardware_qcom_media" path="hardware/qcom-caf/sm8550/media" revision="b87ee8e8658dd462a10a39e402ae1402308465dc" groups="kailua-vendor,qcom" upstream="refs/heads/lineage-20.0-caf-sm8550" dest-branch="refs/heads/lineage-20.0-caf-sm8550" />
+  <project name="LineageOS/android_hardware_qcom_sdm845_display" path="hardware/qcom/sdm845/display" groups="generic_fs,qcom,qcom_sdm845" revision="e048fed32b7331376399b4241971e3f7899c1099" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_sdm845_gps" path="hardware/qcom/sdm845/gps" groups="generic_fs,qcom,qcom_sdm845" revision="6b5ed6d7f3562f85dce879ca7f6e60550602b9f1" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_sdm845_media" path="hardware/qcom/sdm845/media" groups="generic_fs,qcom,qcom_sdm845" revision="92d1e5daa17780566eae10ee2c9a9afed74efa2c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_sm7250_display" path="hardware/qcom/sm7250/display" groups="qcom,qcom_sm7250" revision="322ddd1327c0fe8946795e919aceb3e794b6fe3f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_sm7250_gps" path="hardware/qcom/sm7250/gps" groups="qcom,qcom_sm7250" revision="8001cf88db9c2c1afa31de0267f5ee4356ea56eb" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0">
+    <linkfile src="os_pickup.mk" dest="hardware/qcom/sm7250/Android.mk" />
+    <linkfile src="os_pickup.bp" dest="hardware/qcom/sm7250/Android.bp" />
+  </project>
+  <project name="LineageOS/android_hardware_qcom_sm7250_media" path="hardware/qcom/sm7250/media" groups="qcom,qcom_sm7250" revision="1d3ad83f627ccf411c6a75f538e12dc17069ed6f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_sm8150_data_ipacfg-mgr" path="hardware/qcom/sm8150/data/ipacfg-mgr" groups="qcom,qcom_sm8150" revision="a64e60dcd2123675800bd1bbb307e81a4ead022b" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0">
+    <linkfile src="os_pickup.mk" dest="hardware/qcom/sm8150/Android.mk" />
+    <linkfile src="os_pickup.bp" dest="hardware/qcom/sm8150/Android.bp" />
+  </project>
+  <project name="LineageOS/android_hardware_qcom_sm8150_display" path="hardware/qcom/sm8150/display" groups="qcom,qcom_sm8150" revision="7a489c81ff334e52ae2a24ec5b34c1e74adeea4e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_sm8150_gps" path="hardware/qcom/sm8150/gps" groups="qcom,qcom_sm8150" revision="1c11e166dd5c8a0de7895e91df1561c55b7d3cfa" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_sm8150_media" path="hardware/qcom/sm8150/media" groups="qcom,qcom_sm8150" revision="69367a362bf17477e93d8c74547274dce6626ffd" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_thermal" path="hardware/qcom-caf/thermal" groups="qcom,waipio-vendor" revision="1b6692a6bda27fc27d97640f88281b61f093064d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_vr" path="hardware/qcom-caf/vr" groups="qcom,sdm660" revision="d7c051add89a45090250c8f6c16c5c86f82be6b8" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_wlan" path="hardware/qcom/wlan" groups="pdk-qcom,qcom,qcom_wlan" revision="5d9edb7febcccde673bcf58cd2606e87115c6e2f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_qcom_wlan" path="hardware/qcom-caf/wlan" revision="b93dc5e7fcfeb2e89f593025d39386e77d5272bc" groups="qcom,waipio-vendor" upstream="refs/heads/lineage-20.0-caf" dest-branch="refs/heads/lineage-20.0-caf" />
+  <project name="LineageOS/android_hardware_ril" path="hardware/ril" groups="pdk" revision="ff9403ff624c153bfd1e4b68d5fc396c8bd64c8e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_hardware_st_nfc" path="hardware/st/nfc" groups="pdk" revision="fbe0d1661ee7539bcdd199866b7f705fca15fbca" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_kernel_configs" path="kernel/configs" groups="pdk,vts" revision="02e3cb83128fedf3d8edcf9d78475b14483ec03d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_libcore" path="libcore" groups="pdk" revision="5c42796ae5d8986486a878c0c40d89a4335f740d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_lineage-sdk" path="lineage-sdk" revision="e2c5bd211e09c2481456f0713b2e137ee99d3934" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Aperture" path="packages/apps/Aperture" revision="8fa490c1cfaf7a5892b903d5238e77f9bebde579" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_AudioFX" path="packages/apps/AudioFX" revision="5faefddde6e4cc359de1a6d2c413e493a9923462" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Backgrounds" path="packages/apps/Backgrounds" revision="e8e224501e7a2869d920935354581d800d664200" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Camera2" path="packages/apps/Camera2" groups="pdk-fs" revision="f04b4a92ec480d7810fab7af5efcc9ad1afae589" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Car_Settings" path="packages/apps/Car/Settings" groups="pdk-fs" revision="431abc3ef955147090638be9c09dc0cffcac4265" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_CellBroadcastReceiver" path="packages/apps/CellBroadcastReceiver" groups="pdk-cw-fs,pdk-fs" revision="3d7340eeac82125cd9091fc368a031e98f4db7fd" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_CertInstaller" path="packages/apps/CertInstaller" groups="pdk-cw-fs,pdk-fs" revision="7988d220a2c262557e523dcbd6447f98fc711be3" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Contacts" path="packages/apps/Contacts" groups="pdk-fs" revision="2540efc75760c7151fb42f8c0ba35498dd7e248c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_DeskClock" path="packages/apps/DeskClock" groups="pdk-fs" revision="d0338a645b4121762a1da9cd3141ebf36852b8fb" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Dialer" path="packages/apps/Dialer" groups="pdk-fs" revision="b9bf5cf569d9d594e5b2d61b18aaee0b4cb36296" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_DocumentsUI" path="packages/apps/DocumentsUI" groups="pdk-cw-fs,pdk-fs" revision="63602308fa4611f6dc3e6d6c93fcb4e6fa087884" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Eleven" path="packages/apps/Eleven" revision="e9e8ae1bb10b86bec7a43dbcdd8072d67a89e9ae" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_EmergencyInfo" path="packages/apps/EmergencyInfo" groups="pdk-fs" revision="e8fe444bd8f8d9b807ed9da969d4147896af6142" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Etar" path="packages/apps/Etar" revision="e37a1438e3661b61f49afc22f4f025edb9d2e351" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_ExactCalculator" path="packages/apps/ExactCalculator" revision="92dd1417a6af570904e0d8c422f5a961ec693754" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_FMRadio" path="packages/apps/FMRadio" revision="1d304d4bb6c4b0d53758622cd7ce2d71795e1dbe" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_FlipFlap" path="packages/apps/FlipFlap" revision="3450046074349f0c0b5c935e66efed507289eb41" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Gallery2" path="packages/apps/Gallery2" groups="pdk-fs" revision="bca6838e1944f5b80e04cc90a85213270cf3477c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Jelly" path="packages/apps/Jelly" revision="e9990a1a25ce305c1ac24a46c81b39231ed23381" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_KeyChain" path="packages/apps/KeyChain" groups="pdk-fs" revision="61e5b9334d50b82625a773eb5e41f422b1e49c5e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_LineageCustomizer" path="packages/apps/LineageCustomizer" revision="6d78f750ddfe8b7b5821a9ce83860755491b8bd8" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_LineageParts" path="packages/apps/LineageParts" revision="e0d89984e95a1963b7e029c573b7309f194835f5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_ManagedProvisioning" path="packages/apps/ManagedProvisioning" groups="pdk-fs" revision="a0ae5bf2aa8795149da8b155f59ecd5592648d59" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Messaging" path="packages/apps/Messaging" groups="pdk-fs" revision="3fd0450cd18777d63766484d13515545e337b7a5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Nfc" path="packages/apps/Nfc" groups="apps_nfc,pdk-fs" revision="4b4a42756e62e386976890131cc6e06854e1d06a" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Profiles" path="packages/apps/Profiles" revision="45b49ad447d57e6bebcdefdb0465c55bc498adea" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Recorder" path="packages/apps/Recorder" revision="2afe9082aff4c9bb5dd7cd81fa510723bf4b44cf" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Seedvault" path="packages/apps/Seedvault" revision="e03ad756817631611b7497d9fe7b2173e2756b9d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Settings" path="packages/apps/Settings" groups="pdk-fs" revision="f6680acb4aff16738a9ac6bb33495bef0532eedb" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_SettingsIntelligence" path="packages/apps/SettingsIntelligence" groups="pdk-fs" revision="4ef92f41721f25bbdec5c0b2433547ef323e72ac" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_SimpleDeviceConfig" path="packages/apps/SimpleDeviceConfig" revision="82d31b18dd2550e05f89248f128cb571eecc863a" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_SimpleSettingsConfig" path="packages/apps/SimpleSettingsConfig" revision="f5620aa22a44ac3a9794d0fda5c146efd7e0a11e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Stk" path="packages/apps/Stk" groups="apps_stk,pdk-fs" revision="9cbb287404fb15a3a13c63f15b73962cdd18529d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Tag" path="packages/apps/Tag" groups="pdk-fs" revision="2e6b762fba6b10af7c003f801c1f6fd8f1962038" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_ThemePicker" path="packages/apps/ThemePicker" groups="pdk-fs" revision="b55b970ea09cfa0266e469b5026d48b6f998dcac" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Trebuchet" path="packages/apps/Trebuchet" groups="pdk-fs" revision="966aeecfe27ed312d94aa5ac955c559a5028b846" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_TvSettings" path="packages/apps/TvSettings" groups="pdk-fs" revision="a6e8f7b3b12a52ac9d9d359385c2fa3dc6a19db4" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_Updater" path="packages/apps/Updater" revision="5811a037b0c5e34752cef86428699f224af67eb0" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_apps_WallpaperPicker2" path="packages/apps/WallpaperPicker2" groups="pdk-fs" revision="87e1441dc8743a3518d92f941e6f784c9eedc5c1" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_inputmethods_LatinIME" path="packages/inputmethods/LatinIME" groups="pdk-fs" revision="148e5dbdb8c6633b0eeb493567f7982bdda63c0e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_inputmethods_LeanbackIME" path="packages/inputmethods/LeanbackIME" groups="pdk-fs" revision="945d4dc0f957bd3538a286b41babd93002d93d5c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_Bluetooth" path="packages/modules/Bluetooth" groups="pdk" revision="f149c2c7cd36358454166f4c2c614e80922a6da5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_CellBroadcastService" path="packages/modules/CellBroadcastService" groups="pdk" revision="25c8391214c8de50cf7b6e530677c3fced30eef2" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_Connectivity" path="packages/modules/Connectivity" groups="pdk-cw-fs,pdk-fs" revision="205270f5728b3c1fda246ec413ee39e83a73df03" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_DnsResolver" path="packages/modules/DnsResolver" groups="pdk-cw-fs,pdk-fs" revision="a2278b64b7ff1ebfaec134a459215301f5a64558" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_IntentResolver" path="packages/modules/IntentResolver" groups="pdk" revision="552e8f6cbb6042a279838d6b62b93e8a1e959330" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_NeuralNetworks" path="packages/modules/NeuralNetworks" groups="pdk-cw-fs,pdk-fs" revision="99d8a8b1e6d508cae01fa74b54b938ad6c4c9097" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_Permission" path="packages/modules/Permission" groups="pdk-cw-fs,pdk-fs" revision="f7843d869579b97176dc303952efa16ec93d4354" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_StatsD" path="packages/modules/StatsD" groups="pdk-cw-fs,pdk-fs" revision="83f9161fe2d3140f56cb00141e170a0d3eb52c33" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_Virtualization" path="packages/modules/Virtualization" groups="pdk" revision="48e19513a8735ad26eb2f899a8a97d5764596b9f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_Wifi" path="packages/modules/Wifi" groups="pdk-cw-fs,pdk-fs" revision="4b25fba7916185d55c4031e5019e020b8fdb8649" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_adb" path="packages/modules/adb" groups="pdk" revision="9b0be735145dfdb1517788da79d30981b96fbfb7" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_modules_common" path="packages/modules/common" groups="pdk-cw-fs,pdk-fs" revision="b13938ae21c0e2eee14b83743a42ecea229a6c26" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_overlays_Lineage" path="packages/overlays/Lineage" revision="6958fdb99eafb6ae54d2781d3e7fba31695cd9bc" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_BlockedNumberProvider" path="packages/providers/BlockedNumberProvider" groups="pdk-fs" revision="5fd5892f21e3ec501fd0cf9e75098d183da97368" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_BookmarkProvider" path="packages/providers/BookmarkProvider" groups="pdk-fs" revision="6decb4dda8bdd12bdd468d8d3adf8f1cbf405a5d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_CalendarProvider" path="packages/providers/CalendarProvider" groups="pdk-cw-fs,pdk-fs" revision="d3e7b7e388e965f93eebcbd0eb55a01bb066825f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_CallLogProvider" path="packages/providers/CallLogProvider" groups="pdk-fs" revision="6b1f75f22f42379ae507ca1f958e8c83b5448a36" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_ContactsProvider" path="packages/providers/ContactsProvider" groups="pdk-cw-fs,pdk-fs" revision="85c7212293808c6a3cb044067ab7f6459128a6ef" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_DownloadProvider" path="packages/providers/DownloadProvider" groups="pdk-cw-fs,pdk-fs" revision="631e158846950ee8229e632356a43fbb7b37256c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_MediaProvider" path="packages/providers/MediaProvider" groups="pdk-cw-fs,pdk-fs" revision="b18ce63bc580fa7fd0903b3632f6759e1615a7be" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_providers_TelephonyProvider" path="packages/providers/TelephonyProvider" groups="pdk-cw-fs,pdk-fs" revision="05d5e7f26fde982746f79ade89612eb077250688" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_resources_devicesettings" path="packages/resources/devicesettings" revision="53b13c8bf1cda00ab88dffd7d12ebfd327437018" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_screensavers_PhotoTable" path="packages/screensavers/PhotoTable" groups="pdk-fs" revision="d5a731373f32b698776402bae8ff09a9676b6bb1" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_services_Car" path="packages/services/Car" groups="pdk-cw-fs,pdk-fs" revision="3167ee3d53228763fb34aad4c5adb7c122124d74" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_services_Mms" path="packages/services/Mms" groups="pdk-cw-fs,pdk-fs" revision="d2f1fe688be2d0dc07f3b6443e05e1d82887e42e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_services_Telecomm" path="packages/services/Telecomm" groups="pdk-cw-fs,pdk-fs" revision="7ff4765f8b3afa3018ef924c128234a39e3f4b28" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_services_Telephony" path="packages/services/Telephony" groups="pdk-cw-fs,pdk-fs" revision="051cbcadbd9fc321c45600b038ab2901608e18dd" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_packages_wallpapers_LivePicker" path="packages/wallpapers/LivePicker" groups="pdk-fs" revision="66c64bcedc62dadc173a0a27e93b7a519e6e6921" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_prebuilts_build-tools" path="prebuilts/build-tools" groups="pdk" clone-depth="1" revision="a82c39b06eff0dc470221953f455a4e756dfe469" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r416183b" path="prebuilts/clang/kernel/linux-x86/clang-r416183b" clone-depth="1" revision="54220fd601050b350b2af7adc913089ebf0e7aed" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_prebuilts_extract-tools" path="prebuilts/extract-tools" clone-depth="1" revision="a6ac20e2085466f505d60c330efa7a58ac5bc83a" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9" path="prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9" revision="5e030eafe024784a73cdf47e6936ac0dbfc763dc" groups="arm,linux,pdk" clone-depth="1" upstream="refs/heads/lineage-19.1" dest-branch="refs/heads/lineage-19.1" />
+  <project name="LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9" path="prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9" revision="111258a10e017f067b27e6cfcea7619d753f3309" groups="arm,linux,pdk" clone-depth="1" upstream="refs/heads/lineage-19.1" dest-branch="refs/heads/lineage-19.1" />
+  <project name="LineageOS/android_prebuilts_gcc_linux-x86_x86_x86_64-linux-android-4.9" path="prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9" revision="5c8aca3781d423cc450c1c05b6ff0813812d65bc" groups="linux,pdk,x86" clone-depth="1" upstream="refs/heads/lineage-19.1" dest-branch="refs/heads/lineage-19.1" />
+  <project name="LineageOS/android_prebuilts_tools-lineage" path="prebuilts/tools-lineage" clone-depth="1" revision="c9a8dd0c7404cb107af0b941442cfba7eda2071a" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_apex" path="system/apex" groups="pdk" revision="769a5fe1ca60d957cd2e1ad4ca175721433a373c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_ca-certificates" path="system/ca-certificates" groups="pdk" revision="d3ca0597845854fb6ae628ae99fc8e2b9dbb8f2f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_core" path="system/core" groups="pdk" revision="c0500ffe2cc283d61f1e3db1b2c979bfbd9beb8c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_extras" path="system/extras" groups="pdk" revision="5cf17c20bc8fe2fea5531ec877ea825bab2bec7a" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_keymaster" path="system/keymaster" groups="pdk" revision="febe227b9fab219cf5118211c2bf6092cd137e0e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_libfmq" path="system/libfmq" groups="pdk" revision="ff605a50aac58180f9c3a2268ef999d82abc836c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_libhidl" path="system/libhidl" groups="pdk" revision="e4f4132ed6926d07d1945495deb732a79950c50a" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_libziparchive" path="system/libziparchive" groups="pdk" revision="a9b515a0108bbd4d22f391317eb7a934b5808abd" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_logging" path="system/logging" groups="pdk" revision="373d54e772f303c441faf2e584a2edf3601b4181" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_media" path="system/media" groups="pdk" revision="41c2d1ab132fd5388d39418507263e77483fe987" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_memory_lmkd" path="system/memory/lmkd" groups="pdk" revision="f0efa130377e7e067e203e66c17d8ef87b9e6768" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_netd" path="system/netd" groups="pdk" revision="43d137e94717639b96f5020607920f734433be92" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_security" path="system/security" groups="pdk" revision="152f7b0b83647e9c3b74c47fd6bfc423fd2ffe7f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_sepolicy" path="system/sepolicy" groups="pdk" revision="60f5720f939213f8e20ec4eaab49d5348576c70d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_timezone" path="system/timezone" groups="pdk" revision="66c7905195e9dbf317d4405a2b45e01c43b40f07" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_tools_mkbootimg" path="system/tools/mkbootimg" groups="pdk" revision="40a19c4c5ffe8b86c6c61318c8aa4ffe35d6e7ad" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_update_engine" path="system/update_engine" groups="pdk" revision="e096c52322ef05fe11095b0b28bbb44b9375f6a5" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_system_vold" path="system/vold" groups="pdk" revision="2711bf7059318aa6a61e37392a0aee6263bff0a0" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_tools_apksig" path="tools/apksig" groups="pdk,tradefed" revision="6447768c0e8ab4385a47e7bb85e6bdba0085dced" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_tools_extract-utils" path="tools/extract-utils" revision="d3a36605d6d70758ae5dffb2269ae05d1b5a2108" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_apn" path="vendor/apn" revision="6e73ba90cc9438d1aefb4c323289b281b006a59a" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/android_vendor_codeaurora_telephony" path="vendor/codeaurora/telephony" groups="qcom,qssi" revision="ebdb27e3a6d9f94aed27dee2819829a3d656ad20" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_crowdin" path="vendor/crowdin" revision="d1b4b601d55defe25f68ba8f3ff6a90297a7ee8e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_lineage" path="vendor/lineage" revision="e855b46998626f60c437e3db091f009ba6ec4252" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_nxp_nfc" path="vendor/nxp/nfc" groups="nxp" revision="7cfaa9b365f43eef984d0c3c11a14ceffdd7c666" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_nxp_secure_element" path="vendor/nxp/secure_element" groups="nxp" revision="c1327d2dc2f1119a0e226c4a97d039ffc874b023" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_nxp_secure_element_extns" path="vendor/nxp/secure_element_extns" groups="nxp" revision="9794c73f5a5b37116d6a161c4252c82c7ecf0ba0" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_agm" path="hardware/qcom-caf/sm8450/audio/agm" revision="58ad601101323d435ab1181752062021e65035cc" groups="qcom,waipio-vendor" upstream="refs/heads/lineage-20.0-caf-sm8450" dest-branch="refs/heads/lineage-20.0-caf-sm8450" />
+  <project name="LineageOS/android_vendor_qcom_opensource_agm" path="hardware/qcom-caf/sm8550/audio/agm" revision="c74b6b53b756143c4bae2c9602a7dcbb43113d11" groups="kailua-audio,qcom" upstream="refs/heads/lineage-20.0-caf-sm8550" dest-branch="refs/heads/lineage-20.0-caf-sm8550" />
+  <project name="LineageOS/android_vendor_qcom_opensource_arpal-lx" path="hardware/qcom-caf/sm8450/audio/pal" revision="6917e559728fc5ec8b6fcff5eaa092c538ef3898" groups="qcom,waipio-vendor" upstream="refs/heads/lineage-20.0-caf-sm8450" dest-branch="refs/heads/lineage-20.0-caf-sm8450" />
+  <project name="LineageOS/android_vendor_qcom_opensource_arpal-lx" path="hardware/qcom-caf/sm8550/audio/pal" revision="be0aabdcf87bbf2cf7192440e7e4c1094db42c8e" groups="kailua-audio,qcom" upstream="refs/heads/lineage-20.0-caf-sm8550" dest-branch="refs/heads/lineage-20.0-caf-sm8550" />
+  <project name="LineageOS/android_vendor_qcom_opensource_audio-hal_st-hal" path="vendor/qcom/opensource/audio-hal/st-hal" groups="lahaina,qcom" revision="7e8ea6f50994572bc5b93dc54b17cb8eeeaa5e6c" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_audio-hal_st-hal-ar" path="vendor/qcom/opensource/audio-hal/st-hal-ar" groups="qcom,waipio-vendor" revision="3e200da845a7a986b91c6c2d81381ba1a3f0bce2" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_core-utils-sys" path="vendor/qcom/opensource/core-utils-sys" groups="qcom,qssi" revision="5208eb34ee39a7514d10b7b109d1824b23564e85" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_core-utils-vendor" path="vendor/qcom/opensource/core-utils-vendor" groups="qcom,waipio-vendor" revision="0068492427e4d69b46450a8e48a19704f77e1007" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_data-ipa-cfg-mgr" path="vendor/qcom/opensource/data-ipa-cfg-mgr" groups="qcom,waipio-vendor" revision="3c0a7c4a067323d92e1091429e5f6bb6e099473f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_data-ipa-cfg-mgr" path="vendor/qcom/opensource/data-ipa-cfg-mgr-legacy-um" revision="bb0df39c52503c687d39903155b44e85c32708aa" groups="lahaina,qcom" upstream="refs/heads/lineage-20.0-legacy-um" dest-branch="refs/heads/lineage-20.0-legacy-um" />
+  <project name="LineageOS/android_vendor_qcom_opensource_dataservices" path="vendor/qcom/opensource/dataservices" groups="qcom,waipio-vendor" revision="c8adc2a4daddce3176b928661fb7e83b72dd2423" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_display" path="vendor/qcom/opensource/display" groups="qcom" revision="69f7b0550973a0f6bfb3ff9a244b75dfe008c781" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_display-commonsys" path="vendor/qcom/opensource/commonsys/display" groups="qcom,qssi" revision="7827f3a07ad19d10082c7f8c07f1452bae331ab6" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_display-commonsys-intf" path="vendor/qcom/opensource/commonsys-intf/display" groups="qcom,qssi" revision="17ef14f5da298e137bba894525fbe181efdefa96" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_fm-commonsys" path="vendor/qcom/opensource/fm-commonsys" groups="qcom,qssi" revision="0b75e673f64b17d3117f95615eff0228e2cc5bbd" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_healthd-ext" path="vendor/qcom/opensource/healthd-ext" groups="qcom,waipio-vendor" revision="398ea4b554fffbed4a59294b51085b7eba8b5f5d" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_interfaces" path="vendor/qcom/opensource/interfaces" groups="qcom,qssi" revision="7e41eeb480578966fd87d42f439aa0b4fb4188c9" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_libfmjni" path="vendor/qcom/opensource/libfmjni" groups="qcom" revision="e33227ed63c6b8e7df0b638f556bf14fa99acd83" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_power" path="vendor/qcom/opensource/power" groups="qcom,waipio-vendor" revision="d916de9f7a9b5bc6ef39786752b90836ab026813" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_thermal-engine" path="vendor/qcom/opensource/thermal-engine" groups="qcom,waipio-vendor" revision="0815f34094ebc952c8e1dd3619e384c7f9d1195b" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_usb" path="vendor/qcom/opensource/usb" groups="qcom,waipio-vendor" revision="1fa4ba4ddd947671b6235573b4bcc67afc781ed6" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_vibrator" path="vendor/qcom/opensource/vibrator" groups="qcom,waipio-vendor" revision="ab699eb513dbb9391c2141314e2e244b27b71b59" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/android_vendor_qcom_opensource_wfd-commonsys" path="vendor/qcom/opensource/wfd-commonsys" groups="qcom,waipio-video" revision="4f66ba2111d00c81b77675b64e12be1e34b0283e" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="LineageOS/charter" path="lineage/charter" revision="8d37f70d3e032650fd89f8c087c7311ca9675c03" groups="infra" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/cm_crowdin" path="lineage/crowdin" revision="ad586f0d49b2c50ce4320e18217c3cac499df1ed" groups="infra" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/contributors-cloud-generator" path="lineage/contributors-cloud-generator" revision="68b3aa8a899337047ef18b22baa91dea54d9bb18" groups="tools" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/hudson" path="lineage/hudson" revision="c26f1eed9f86fe519864c47c397dfdcd5b6dc516" groups="infra" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/lineage_wiki" path="lineage/wiki" revision="896c3b36aacbdf7ccccaf762c0cb779a7f72853b" groups="infra" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/mirror" path="lineage/mirror" revision="e0c823ff6e53af8f3f74c83dc6354fc6fe5c198d" groups="infra" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/scripts" path="lineage/scripts" revision="e81615b64084478eae6af876908e77371bd08660" groups="tools" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="LineageOS/www" path="lineage/website" revision="cae5e9e3b212568716b865d7d532da72cb24c23b" groups="infra" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="WayDroid/android_device_waydroid_waydroid" path="device/waydroid/waydroid" remote="ghub" revision="2234f4b75220be7065546a2a23f9a4091b8c77d4" groups="local::02-waydroid" upstream="refs/heads/lineage-20" dest-branch="refs/heads/lineage-20" />
+  <project name="WayDroid/android_external_alsa-lib" path="external/alsa-lib" remote="ghub" revision="8a1eff33a2430b29ea2fc11f32a0a349e90c1c93" groups="local::02-waydroid" upstream="refs/heads/lineage-17.1" dest-branch="refs/heads/lineage-17.1" />
+  <project name="WayDroid/android_external_alsa-plugins" path="external/alsa-plugins" remote="ghub" revision="fcc0a2c3002ab0e68694896ded9c76dcd4cc1352" groups="local::02-waydroid" upstream="refs/heads/lineage-17.1" dest-branch="refs/heads/lineage-17.1" />
+  <project name="WayDroid/android_external_libdrm" path="external/libdrm" remote="ghub" revision="6bfcfc725fbe0ece0918535556d61ee567b1ffff" groups="local::02-waydroid" upstream="refs/heads/lineage-18.1" dest-branch="refs/heads/lineage-18.1" />
+  <project name="WayDroid/android_external_libsndfile" path="external/libsndfile" remote="ghub" revision="a98ebd6db43760db0130997e3b0141e00222d582" groups="local::02-waydroid" upstream="refs/heads/lineage-17.1" dest-branch="refs/heads/lineage-17.1" />
+  <project name="WayDroid/android_external_llvm-project" path="external/llvm-project" remote="ghub" revision="c80bd6ca1ba872244717345d3176d9f4d63cc43e" groups="local::02-waydroid" upstream="refs/heads/lineage-18.1" dest-branch="refs/heads/lineage-18.1" />
+  <project name="WayDroid/android_external_mesa3d" path="external/mesa" remote="ghub" revision="a6685db972baaa1484b91bffdd9e9dc07942fd9f" groups="local::02-waydroid" upstream="refs/heads/lineage-18.1" dest-branch="refs/heads/lineage-18.1" />
+  <project name="WayDroid/android_external_minigbm" path="external/minigbm" remote="ghub" revision="e5a7769a4892cd1b6c61c56a8bedfc9b93584704" groups="local::02-waydroid" upstream="refs/heads/lineage-18.1" dest-branch="refs/heads/lineage-18.1" />
+  <project name="WayDroid/android_external_pulseaudio" path="external/pulseaudio" remote="ghub" revision="c680b1eec38d618062c0e903cbeacda37297a0b2" groups="local::02-waydroid" upstream="refs/heads/lineage-17.1" dest-branch="refs/heads/lineage-17.1" />
+  <project name="WayDroid/android_hardware_waydroid" path="hardware/waydroid" remote="ghub" revision="6e898e9d18f442873305f4992df6e6148aa1e693" groups="local::02-waydroid" upstream="refs/heads/lineage-20" dest-branch="refs/heads/lineage-20" />
+  <project name="WayDroid/android_packages_apps_WaydroidUpdater" path="packages/apps/WaydroidUpdater" remote="ghub" revision="6f4b54b90d8747aede5882718216a5a5b31be947" groups="local::02-waydroid" upstream="refs/heads/lineage-20" dest-branch="refs/heads/lineage-20" />
+  <project name="WayDroid/android_prebuilts_mesa-tools" path="prebuilts/mesa-tools" remote="ghub" revision="b5de4e0af2f1e76b53b000fb70c18f1757c7e28f" groups="local::02-waydroid,pdk" clone-depth="1" upstream="refs/heads/main" dest-branch="refs/heads/main" />
+  <project name="WayDroid/android_prebuilts_vndk_v28" path="prebuilts/vndk/v28" remote="ghub" revision="d5756439604b4e6c72417c5f95a5c0009ca0c1d9" groups="local::02-waydroid,pdk" clone-depth="1" upstream="refs/heads/lineage-20" dest-branch="refs/heads/lineage-20" />
+  <project name="WayDroid/android_prebuilts_vndk_v29" path="prebuilts/vndk/v29" remote="ghub" revision="ef0283719cf05d7b0a79b62ad9464f98ce99b65f" groups="local::02-waydroid,pdk" clone-depth="1" upstream="refs/heads/lineage-20" dest-branch="refs/heads/lineage-20" />
+  <project name="WayDroid/android_prebuilts_vndk_v30" path="prebuilts/vndk/v30" remote="ghub" revision="168a8caece8579177b7c4d19fc05f77113d4805f" groups="local::02-waydroid,pdk" clone-depth="1" upstream="refs/heads/lineage-20" dest-branch="refs/heads/lineage-20" />
+  <project name="WayDroid/android_vendor_waydroid" path="vendor/extra" remote="ghub" revision="1b95b85221f4faaa357932fa5e93eacb7430f636" groups="local::02-waydroid" upstream="refs/heads/lineage-20" dest-branch="refs/heads/lineage-20" />
+  <project name="device/common" remote="aosp" groups="pdk,pdk-cw-fs" />
+  <project name="device/generic/arm64" remote="aosp" groups="pdk" />
+  <project name="device/generic/armv7-a-neon" remote="aosp" groups="pdk" />
+  <project name="device/generic/art" remote="aosp" groups="pdk" />
+  <project name="device/generic/car" remote="aosp" groups="pdk" />
+  <project name="device/generic/goldfish" remote="aosp" groups="pdk" />
+  <project name="device/generic/goldfish-opengl" remote="aosp" groups="pdk" />
+  <project name="device/generic/mini-emulator-arm64" remote="aosp" groups="pdk" />
+  <project name="device/generic/mini-emulator-armv7-a-neon" remote="aosp" groups="pdk" />
+  <project name="device/generic/mini-emulator-x86" remote="aosp" groups="pdk" />
+  <project name="device/generic/mini-emulator-x86_64" remote="aosp" groups="pdk" />
+  <project name="device/generic/qemu" remote="aosp" groups="pdk" />
+  <project name="device/generic/trusty" remote="aosp" groups="pdk" />
+  <project name="device/generic/uml" remote="aosp" groups="device,pdk" />
+  <project name="device/generic/vulkan-cereal" remote="aosp" groups="pdk" />
+  <project name="device/generic/x86" remote="aosp" groups="pdk" />
+  <project name="device/generic/x86_64" remote="aosp" groups="pdk" />
+  <project name="device/google/cuttlefish" remote="aosp" groups="device,pdk" />
+  <project name="device/google/cuttlefish_prebuilts" remote="aosp" groups="device,pdk" clone-depth="1" />
+  <project name="device/google/gs-common" remote="aosp" groups="bluejay,device,pdk-gs-arm,slider" />
+  <project name="device/google/vrservices" remote="aosp" groups="pdk" />
+  <project name="device/sample" remote="aosp" groups="pdk" />
+  <project name="kernel/devices/google/bluejay" path="kernel/google/gs201/private/devices/google/bluejay" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/devices/google/felix" path="kernel/google/gs201/private/devices/google/felix" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/devices/google/lynx" path="kernel/google/gs201/private/devices/google/lynx" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/devices/google/tangorpro" path="kernel/google/gs201/private/devices/google/tangorpro" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/amplifiers" path="kernel/google/gs201/private/google-modules/amplifiers" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/aoc" path="kernel/google/gs201/private/google-modules/aoc" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/aoc-ipc" path="kernel/google/gs201/private/google-modules/aoc_ipc" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/bluetooth/broadcom" path="kernel/google/gs201/private/google-modules/bluetooth/broadcom" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/bluetooth/qcom" path="kernel/google/gs201/private/google-modules/bluetooth/qcom" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/bluetooth/synaptics" path="kernel/google/gs201/private/google-modules/bluetooth/synaptics" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/bms" path="kernel/google/gs201/private/google-modules/bms" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/display" path="kernel/google/gs201/private/google-modules/display" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/edgetpu/abrolhos" path="kernel/google/gs201/private/google-modules/edgetpu/abrolhos" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/edgetpu/janeiro" path="kernel/google/gs201/private/google-modules/edgetpu/janeiro" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/fingerprint/fpc" path="kernel/google/gs201/private/google-modules/fingerprint/fpc" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/gpu" path="kernel/google/gs201/private/google-modules/gpu" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/gxp/gs201" path="kernel/google/gs201/private/google-modules/gxp/gs201" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/lwis" path="kernel/google/gs201/private/google-modules/lwis" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/nfc" path="kernel/google/gs201/private/google-modules/nfc" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/power/reset" path="kernel/google/gs201/private/google-modules/power/reset" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/sensors/hall_sensor" path="kernel/google/gs201/private/google-modules/sensors/hall_sensor" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/touch/common" path="kernel/google/gs201/private/google-modules/touch/common" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/touch/focaltech_touch" path="kernel/google/gs201/private/google-modules/touch/focaltech" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/touch/fts_touch" path="kernel/google/gs201/private/google-modules/touch/fts" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/touch/goodix_touch" path="kernel/google/gs201/private/google-modules/touch/goodix" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/touch/novatek_touch" path="kernel/google/gs201/private/google-modules/touch/novatek" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/touch/sec_touch" path="kernel/google/gs201/private/google-modules/touch/sec" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/touch/synaptics_touch" path="kernel/google/gs201/private/google-modules/touch/synaptics" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/uwb" path="kernel/google/gs201/private/google-modules/uwb" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/video/gchips" path="kernel/google/gs201/private/google-modules/video/gchips" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/wlan/bcmdhd/bcm4389" path="kernel/google/gs201/private/google-modules/wlan/bcmdhd4389" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/wlan/qcom/wcn6740/cnss2" path="kernel/google/gs201/private/google-modules/wlan/wcn6740/cnss2" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/wlan/qcom/wcn6740/wlan" path="kernel/google/gs201/private/google-modules/wlan/wcn6740/wlan" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/wlan/syna/dhd43752p" path="kernel/google/gs201/private/google-modules/wlan/dhd43752p" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/google-modules/wlan/wlan_ptracker" path="kernel/google/gs201/private/google-modules/wlan/wlan_ptracker" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" groups="pixel-extra" />
+  <project name="kernel/prebuilts/4.19/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/5.10/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/5.10/x86-64" path="kernel/prebuilts/5.10/x86_64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/5.15/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/5.15/x86-64" path="kernel/prebuilts/5.15/x86_64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/5.4/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/5.4/x86-64" path="kernel/prebuilts/5.4/x86_64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/build-tools" path="prebuilts/kernel-build-tools" remote="aosp" revision="refs/tags/android-13.0.0_r0.117" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/4.19/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/4.19/x86-64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/5.10/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/5.10/x86-64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/5.15/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/5.15/x86-64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/5.4/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/5.4/x86-64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/mainline/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/common-modules/virtual-device/mainline/x86-64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/mainline/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/prebuilts/mainline/x86-64" path="kernel/prebuilts/mainline/x86_64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="kernel/tests" remote="aosp" groups="pdk,vts" />
+  <project name="platform/art" path="art" remote="aosp" groups="pdk" />
+  <project name="platform/bootable/libbootloader" path="bootable/libbootloader" remote="aosp" groups="pdk,vts" />
+  <project name="platform/build/bazel" path="build/bazel" remote="aosp" groups="pdk">
+    <linkfile src="bazel.WORKSPACE" dest="WORKSPACE" />
+    <linkfile src="bazel.sh" dest="tools/bazel" />
+    <linkfile src="bazel.BUILD" dest="BUILD" />
+  </project>
+  <project name="platform/build/bazel_common_rules" path="build/bazel_common_rules" remote="aosp" groups="pdk" />
+  <project name="platform/build/blueprint" path="build/blueprint" remote="aosp" groups="pdk,tradefed" />
+  <project name="platform/build/pesto" path="build/pesto" remote="aosp" groups="pdk" />
+  <project name="platform/dalvik" path="dalvik" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/developers/build" path="developers/build" remote="aosp" groups="developers,pdk" />
+  <project name="platform/external/ComputeLibrary" path="external/ComputeLibrary" remote="aosp" groups="pdk-gs-arm,pdk-lassen" />
+  <project name="platform/external/FP16" path="external/FP16" remote="aosp" groups="pdk" />
+  <project name="platform/external/FXdiv" path="external/FXdiv" remote="aosp" groups="pdk" />
+  <project name="platform/external/ImageMagick" path="external/ImageMagick" remote="aosp" groups="pdk" />
+  <project name="platform/external/OpenCL-CTS" path="external/OpenCL-CTS" remote="aosp" />
+  <project name="platform/external/OpenCSD" path="external/OpenCSD" remote="aosp" groups="pdk" />
+  <project name="platform/external/Reactive-Extensions/RxCpp" path="external/Reactive-Extensions/RxCpp" remote="aosp" groups="pdk" />
+  <project name="platform/external/TestParameterInjector" path="external/TestParameterInjector" remote="aosp" groups="pdk" />
+  <project name="platform/external/XNNPACK" path="external/XNNPACK" remote="aosp" groups="pdk" />
+  <project name="platform/external/aac" path="external/aac" remote="aosp" groups="pdk" />
+  <project name="platform/external/abseil-cpp" path="external/abseil-cpp" remote="aosp" groups="pdk" />
+  <project name="platform/external/android-clat" path="external/android-clat" remote="aosp" groups="pdk" />
+  <project name="platform/external/androidplot" path="external/androidplot" remote="aosp" groups="pdk" />
+  <project name="platform/external/angle" path="external/angle" remote="aosp" groups="pdk" />
+  <project name="platform/external/ant-glob" path="external/ant-glob" remote="aosp" groups="pdk" />
+  <project name="platform/external/antlr" path="external/antlr" remote="aosp" groups="pdk" />
+  <project name="platform/external/apache-commons-bcel" path="external/apache-commons-bcel" remote="aosp" groups="pdk" />
+  <project name="platform/external/apache-commons-compress" path="external/apache-commons-compress" remote="aosp" groups="pdk" />
+  <project name="platform/external/apache-commons-math" path="external/apache-commons-math" remote="aosp" groups="pdk" />
+  <project name="platform/external/apache-harmony" path="external/apache-harmony" remote="aosp" groups="pdk" />
+  <project name="platform/external/apache-http" path="external/apache-http" remote="aosp" groups="pdk" />
+  <project name="platform/external/apache-xml" path="external/apache-xml" remote="aosp" groups="pdk" />
+  <project name="platform/external/arm-neon-tests" path="external/arm-neon-tests" remote="aosp" groups="vendor" />
+  <project name="platform/external/arm-optimized-routines" path="external/arm-optimized-routines" remote="aosp" groups="pdk" />
+  <project name="platform/external/arm-trusted-firmware" path="external/arm-trusted-firmware" remote="aosp" groups="pdk" />
+  <project name="platform/external/auto" path="external/auto" remote="aosp" groups="pdk" />
+  <project name="platform/external/autotest" path="external/autotest" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/bazel-skylib" path="external/bazel-skylib" remote="aosp" groups="pdk" />
+  <project name="platform/external/bazelbuild-rules_android" path="external/bazelbuild-rules_android" remote="aosp" groups="pdk" />
+  <project name="platform/external/bc" path="external/bc" remote="aosp" groups="pdk" />
+  <project name="platform/external/bcc" path="external/bcc" remote="aosp" groups="pdk" />
+  <project name="platform/external/blktrace" path="external/blktrace" remote="aosp" groups="pdk" />
+  <project name="platform/external/boringssl" path="external/boringssl" remote="aosp" groups="pdk" />
+  <project name="platform/external/bouncycastle" path="external/bouncycastle" remote="aosp" groups="pdk" />
+  <project name="platform/external/bpftool" path="external/bpftool" remote="aosp" groups="pdk" />
+  <project name="platform/external/brotli" path="external/brotli" remote="aosp" groups="pdk" />
+  <project name="platform/external/bsdiff" path="external/bsdiff" remote="aosp" groups="pdk" />
+  <project name="platform/external/bzip2" path="external/bzip2" remote="aosp" groups="pdk" />
+  <project name="platform/external/caliper" path="external/caliper" remote="aosp" groups="pdk" />
+  <project name="platform/external/capstone" path="external/capstone" remote="aosp" groups="pdk" />
+  <project name="platform/external/catch2" path="external/catch2" remote="aosp" groups="pdk" />
+  <project name="platform/external/cblas" path="external/cblas" remote="aosp" groups="pdk" />
+  <project name="platform/external/cbor-java" path="external/cbor-java" remote="aosp" groups="pdk" />
+  <project name="platform/external/chromium-trace" path="external/chromium-trace" remote="aosp" groups="pdk" />
+  <project name="platform/external/clang" path="external/clang" remote="aosp" groups="pdk" />
+  <project name="platform/external/cn-cbor" path="external/cn-cbor" remote="aosp" groups="pdk" />
+  <project name="platform/external/compiler-rt" path="external/compiler-rt" remote="aosp" groups="pdk" />
+  <project name="platform/external/connectedappssdk" path="external/connectedappssdk" remote="aosp" groups="pdk" />
+  <project name="platform/external/conscrypt" path="external/conscrypt" remote="aosp" groups="pdk" />
+  <project name="platform/external/cpu_features" path="external/cpu_features" remote="aosp" groups="pdk" />
+  <project name="platform/external/cpuinfo" path="external/cpuinfo" remote="aosp" groups="pdk" />
+  <project name="platform/external/crcalc" path="external/crcalc" remote="aosp" groups="pdk" />
+  <project name="platform/external/cros/system_api" path="external/cros/system_api" remote="aosp" groups="pdk" />
+  <project name="platform/external/crosvm" path="external/crosvm" remote="aosp" groups="pdk" />
+  <project name="platform/external/curl" path="external/curl" remote="aosp" groups="pdk" />
+  <project name="platform/external/dagger2" path="external/dagger2" remote="aosp" groups="pdk" />
+  <project name="platform/external/deqp" path="external/deqp" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/deqp-deps/SPIRV-Headers" path="external/deqp-deps/SPIRV-Headers" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/deqp-deps/SPIRV-Tools" path="external/deqp-deps/SPIRV-Tools" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/deqp-deps/amber" path="external/deqp-deps/amber" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/deqp-deps/glslang" path="external/deqp-deps/glslang" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/desugar" path="external/desugar" remote="aosp" groups="pdk" />
+  <project name="platform/external/dexmaker" path="external/dexmaker" remote="aosp" groups="pdk" />
+  <project name="platform/external/dlmalloc" path="external/dlmalloc" remote="aosp" groups="pdk" />
+  <project name="platform/external/dnsmasq" path="external/dnsmasq" remote="aosp" groups="pdk" />
+  <project name="platform/external/doclava" path="external/doclava" remote="aosp" groups="pdk" />
+  <project name="platform/external/dokka" path="external/dokka" remote="aosp" groups="pdk" />
+  <project name="platform/external/downloader" path="external/downloader" remote="aosp" groups="pdk" />
+  <project name="platform/external/drm_hwcomposer" path="external/drm_hwcomposer" remote="aosp" groups="drm_hwcomposer,pdk-fs" />
+  <project name="platform/external/dynamic_depth" path="external/dynamic_depth" remote="aosp" groups="pdk" />
+  <project name="platform/external/easymock" path="external/easymock" remote="aosp" groups="pdk" />
+  <project name="platform/external/eigen" path="external/eigen" remote="aosp" groups="pdk" />
+  <project name="platform/external/elfutils" path="external/elfutils" remote="aosp" groups="pdk" />
+  <project name="platform/external/emma" path="external/emma" remote="aosp" groups="pdk" />
+  <project name="platform/external/erofs-utils" path="external/erofs-utils" remote="aosp" groups="pdk" />
+  <project name="platform/external/error_prone" path="external/error_prone" remote="aosp" groups="pdk" />
+  <project name="platform/external/escapevelocity" path="external/escapevelocity" remote="aosp" groups="pdk" />
+  <project name="platform/external/ethtool" path="external/ethtool" remote="aosp" groups="pdk" />
+  <project name="platform/external/exoplayer" path="external/exoplayer" remote="aosp" groups="pdk" />
+  <project name="platform/external/f2fs-tools" path="external/f2fs-tools" remote="aosp" groups="pdk" />
+  <project name="platform/external/fastrpc" path="external/fastrpc" remote="aosp" groups="pdk" />
+  <project name="platform/external/fdlibm" path="external/fdlibm" remote="aosp" groups="pdk" />
+  <project name="platform/external/fec" path="external/fec" remote="aosp" groups="pdk" />
+  <project name="platform/external/fft2d" path="external/fft2d" remote="aosp" groups="pdk" />
+  <project name="platform/external/firebase-messaging" path="external/firebase-messaging" remote="aosp" groups="pdk" />
+  <project name="platform/external/flac" path="external/flac" remote="aosp" groups="pdk" />
+  <project name="platform/external/flatbuffers" path="external/flatbuffers" remote="aosp" groups="pdk" />
+  <project name="platform/external/fmtlib" path="external/fmtlib" remote="aosp" groups="pdk" />
+  <project name="platform/external/fonttools" path="external/fonttools" remote="aosp" groups="pdk" />
+  <project name="platform/external/fsck_msdos" path="external/fsck_msdos" remote="aosp" groups="pdk" />
+  <project name="platform/external/fsverity-utils" path="external/fsverity-utils" remote="aosp" groups="pdk" />
+  <project name="platform/external/gemmlowp" path="external/gemmlowp" remote="aosp" groups="pdk" />
+  <project name="platform/external/geojson-jackson" path="external/geojson-jackson" remote="aosp" groups="pdk" />
+  <project name="platform/external/geonames" path="external/geonames" remote="aosp" groups="pdk" />
+  <project name="platform/external/gflags" path="external/gflags" remote="aosp" groups="pdk" />
+  <project name="platform/external/gfxstream-protocols" path="external/gfxstream-protocols" remote="aosp" groups="pdk" />
+  <project name="platform/external/glide" path="external/glide" remote="aosp" groups="pdk" />
+  <project name="platform/external/go-cmp" path="external/go-cmp" remote="aosp" groups="pdk" />
+  <project name="platform/external/golang-protobuf" path="external/golang-protobuf" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-benchmark" path="external/google-benchmark" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-breakpad" path="external/google-breakpad" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/google-fonts/arbutus-slab" path="external/google-fonts/arbutus-slab" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/arvo" path="external/google-fonts/arvo" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/barlow" path="external/google-fonts/barlow" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/big-shoulders-text" path="external/google-fonts/big-shoulders-text" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/carrois-gothic-sc" path="external/google-fonts/carrois-gothic-sc" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/coming-soon" path="external/google-fonts/coming-soon" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/cutive-mono" path="external/google-fonts/cutive-mono" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/dancing-script" path="external/google-fonts/dancing-script" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/fraunces" path="external/google-fonts/fraunces" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/karla" path="external/google-fonts/karla" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/lato" path="external/google-fonts/lato" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/lustria" path="external/google-fonts/lustria" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/rubik" path="external/google-fonts/rubik" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/source-sans-pro" path="external/google-fonts/source-sans-pro" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fonts/zilla-slab" path="external/google-fonts/zilla-slab" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-fruit" path="external/google-fruit" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-java-format" path="external/google-java-format" remote="aosp" groups="pdk" />
+  <project name="platform/external/google-styleguide" path="external/google-styleguide" remote="aosp" groups="pdk" />
+  <project name="platform/external/googletest" path="external/googletest" remote="aosp" groups="pdk" />
+  <project name="platform/external/grpc-grpc" path="external/grpc-grpc" remote="aosp" groups="pdk,tradefed" />
+  <project name="platform/external/grpc-grpc-java" path="external/grpc-grpc-java" remote="aosp" groups="pdk,tradefed" />
+  <project name="platform/external/guava" path="external/guava" remote="aosp" groups="pdk" />
+  <project name="platform/external/guice" path="external/guice" remote="aosp" groups="pdk" />
+  <project name="platform/external/gwp_asan" path="external/gwp_asan" remote="aosp" groups="pdk" />
+  <project name="platform/external/hamcrest" path="external/hamcrest" remote="aosp" groups="pdk" />
+  <project name="platform/external/harfbuzz_ng" path="external/harfbuzz_ng" remote="aosp" groups="pdk,qcom_msm8x26" />
+  <project name="platform/external/hyphenation-patterns" path="external/hyphenation-patterns" remote="aosp" groups="pdk" />
+  <project name="platform/external/icing" path="external/icing" remote="aosp" groups="pdk" />
+  <project name="platform/external/igt-gpu-tools" path="external/igt-gpu-tools" remote="aosp" groups="pdk" />
+  <project name="platform/external/image_io" path="external/image_io" remote="aosp" groups="pdk" />
+  <project name="platform/external/ims" path="external/ims" remote="aosp" groups="pdk" />
+  <project name="platform/external/iperf3" path="external/iperf3" remote="aosp" groups="pdk" />
+  <project name="platform/external/iproute2" path="external/iproute2" remote="aosp" groups="pdk" />
+  <project name="platform/external/ipsec-tools" path="external/ipsec-tools" remote="aosp" groups="pdk" />
+  <project name="platform/external/iptables" path="external/iptables" remote="aosp" groups="pdk" />
+  <project name="platform/external/iputils" path="external/iputils" remote="aosp" groups="pdk" />
+  <project name="platform/external/iw" path="external/iw" remote="aosp" groups="pdk" />
+  <project name="platform/external/jackson-annotations" path="external/jackson-annotations" remote="aosp" groups="pdk" />
+  <project name="platform/external/jackson-core" path="external/jackson-core" remote="aosp" groups="pdk" />
+  <project name="platform/external/jackson-databind" path="external/jackson-databind" remote="aosp" groups="pdk" />
+  <project name="platform/external/jacoco" path="external/jacoco" remote="aosp" groups="pdk" />
+  <project name="platform/external/jarjar" path="external/jarjar" remote="aosp" groups="pdk" />
+  <project name="platform/external/javaparser" path="external/javaparser" remote="aosp" groups="pdk" />
+  <project name="platform/external/javapoet" path="external/javapoet" remote="aosp" groups="pdk" />
+  <project name="platform/external/javasqlite" path="external/javasqlite" remote="aosp" groups="pdk" />
+  <project name="platform/external/javassist" path="external/javassist" remote="aosp" groups="pdk" />
+  <project name="platform/external/jazzer-api" path="external/jazzer-api" remote="aosp" groups="pdk" />
+  <project name="platform/external/jcommander" path="external/jcommander" remote="aosp" groups="pdk" />
+  <project name="platform/external/jdiff" path="external/jdiff" remote="aosp" groups="pdk" />
+  <project name="platform/external/jemalloc_new" path="external/jemalloc_new" remote="aosp" groups="pdk" />
+  <project name="platform/external/jimfs" path="external/jimfs" remote="aosp" groups="pdk" />
+  <project name="platform/external/jline" path="external/jline" remote="aosp" groups="pdk,pdk-fs,tradefed" />
+  <project name="platform/external/jsilver" path="external/jsilver" remote="aosp" groups="pdk" />
+  <project name="platform/external/jsmn" path="external/jsmn" remote="aosp" groups="pdk" />
+  <project name="platform/external/jsoncpp" path="external/jsoncpp" remote="aosp" groups="pdk" />
+  <project name="platform/external/jsr305" path="external/jsr305" remote="aosp" groups="pdk" />
+  <project name="platform/external/jsr330" path="external/jsr330" remote="aosp" groups="pdk" />
+  <project name="platform/external/junit" path="external/junit" remote="aosp" groups="pdk" />
+  <project name="platform/external/junit-params" path="external/junit-params" remote="aosp" groups="pdk" />
+  <project name="platform/external/kernel-headers" path="external/kernel-headers" remote="aosp" groups="pdk" />
+  <project name="platform/external/kmod" path="external/kmod" remote="aosp" groups="pdk" />
+  <project name="platform/external/kotlinc" path="external/kotlinc" remote="aosp" groups="pdk" />
+  <project name="platform/external/kotlinx.atomicfu" path="external/kotlinx.atomicfu" remote="aosp" groups="pdk" />
+  <project name="platform/external/kotlinx.coroutines" path="external/kotlinx.coroutines" remote="aosp" groups="pdk" />
+  <project name="platform/external/kotlinx.metadata" path="external/kotlinx.metadata" remote="aosp" groups="pdk" />
+  <project name="platform/external/ksoap2" path="external/ksoap2" remote="aosp" groups="pdk" />
+  <project name="platform/external/ktfmt" path="external/ktfmt" remote="aosp" groups="pdk" />
+  <project name="platform/external/libabigail" path="external/libabigail" remote="aosp" groups="pdk" />
+  <project name="platform/external/libaom" path="external/libaom" remote="aosp" groups="pdk" />
+  <project name="platform/external/libavc" path="external/libavc" remote="aosp" groups="pdk" />
+  <project name="platform/external/libbackup" path="external/libbackup" remote="aosp" groups="pdk" />
+  <project name="platform/external/libbpf" path="external/libbpf" remote="aosp" groups="pdk" />
+  <project name="platform/external/libbrillo" path="external/libbrillo" remote="aosp" groups="pdk" />
+  <project name="platform/external/libcap" path="external/libcap" remote="aosp" groups="pdk" />
+  <project name="platform/external/libcap-ng" path="external/libcap-ng" remote="aosp" groups="pdk" />
+  <project name="platform/external/libchrome" path="external/libchrome" remote="aosp" groups="pdk" />
+  <project name="platform/external/libchromeos-rs" path="external/libchromeos-rs" remote="aosp" groups="pdk" />
+  <project name="platform/external/libconfig" path="external/libconfig" remote="aosp" groups="pdk" />
+  <project name="platform/external/libcppbor" path="external/libcppbor" remote="aosp" groups="pdk" />
+  <project name="platform/external/libcups" path="external/libcups" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/external/libcxxabi" path="external/libcxxabi" remote="aosp" groups="pdk" />
+  <project name="platform/external/libdivsufsort" path="external/libdivsufsort" remote="aosp" groups="pdk" />
+  <project name="platform/external/libepoxy" path="external/libepoxy" remote="aosp" groups="pdk" />
+  <project name="platform/external/libese" path="external/libese" remote="aosp" groups="pdk" />
+  <project name="platform/external/libevent" path="external/libevent" remote="aosp" groups="pdk" />
+  <project name="platform/external/libexif" path="external/libexif" remote="aosp" groups="pdk" />
+  <project name="platform/external/libffi" path="external/libffi" remote="aosp" groups="pdk" />
+  <project name="platform/external/libfuse" path="external/libfuse" remote="aosp" groups="pdk" />
+  <project name="platform/external/libgav1" path="external/libgav1" remote="aosp" groups="pdk" />
+  <project name="platform/external/libgsm" path="external/libgsm" remote="aosp" groups="pdk" />
+  <project name="LineageOS/android_external_libhevc" path="external/libhevc" groups="pdk" revision="bfb8d17d32a7dce0b4fbea30795d8d465a29695f" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="platform/external/libiio" path="external/libiio" remote="aosp" groups="pdk" />
+  <project name="platform/external/libkmsxx" path="external/libkmsxx" remote="aosp" groups="pdk" />
+  <project name="platform/external/libldac" path="external/libldac" remote="aosp" groups="pdk" />
+  <project name="platform/external/libmpeg2" path="external/libmpeg2" remote="aosp" groups="pdk" />
+  <project name="platform/external/libnetfilter_conntrack" path="external/libnetfilter_conntrack" remote="aosp" groups="pdk" />
+  <project name="platform/external/libnfnetlink" path="external/libnfnetlink" remote="aosp" groups="pdk" />
+  <project name="platform/external/libnl" path="external/libnl" remote="aosp" groups="pdk" />
+  <project name="platform/external/libogg" path="external/libogg" remote="aosp" groups="pdk" />
+  <project name="platform/external/libopus" path="external/libopus" remote="aosp" groups="pdk" />
+  <project name="platform/external/libpalmrejection" path="external/libpalmrejection" remote="aosp" groups="pdk" />
+  <project name="platform/external/libpcap" path="external/libpcap" remote="aosp" groups="pdk" />
+  <project name="platform/external/libphonenumber" path="external/libphonenumber" remote="aosp" groups="pdk" />
+  <project name="platform/external/libprotobuf-mutator" path="external/libprotobuf-mutator" remote="aosp" groups="pdk" />
+  <project name="platform/external/libsrtp2" path="external/libsrtp2" remote="aosp" groups="pdk" />
+  <project name="platform/external/libtextclassifier" path="external/libtextclassifier" remote="aosp" groups="pdk" />
+  <project name="platform/external/libtraceevent" path="external/libtraceevent" remote="aosp" groups="pdk" />
+  <project name="platform/external/libtracefs" path="external/libtracefs" remote="aosp" groups="pdk" />
+  <project name="platform/external/liburing" path="external/liburing" remote="aosp" groups="pdk" />
+  <project name="platform/external/libusb" path="external/libusb" remote="aosp" groups="pdk" />
+  <project name="platform/external/libutf" path="external/libutf" remote="aosp" groups="pdk" />
+  <project name="platform/external/libwebm" path="external/libwebm" remote="aosp" groups="pdk" />
+  <project name="platform/external/libwebsockets" path="external/libwebsockets" remote="aosp" groups="pdk" />
+  <project name="platform/external/libxaac" path="external/libxaac" remote="aosp" groups="pdk" />
+  <project name="platform/external/libxkbcommon" path="external/libxkbcommon" remote="aosp" groups="pdk" />
+  <project name="platform/external/libyuv" path="external/libyuv" remote="aosp" groups="libyuv,pdk" />
+  <project name="platform/external/linux-kselftest" path="external/linux-kselftest" remote="aosp" groups="pdk,vts" clone-depth="1" />
+  <project name="platform/external/llvm" path="external/llvm" remote="aosp" groups="pdk" />
+  <project name="platform/external/lmfit" path="external/lmfit" remote="aosp" groups="pdk" />
+  <project name="platform/external/lottie" path="external/lottie" remote="aosp" groups="pdk" />
+  <project name="platform/external/ltp" path="external/ltp" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/lua" path="external/lua" remote="aosp" groups="pdk" />
+  <project name="platform/external/lz4" path="external/lz4" remote="aosp" groups="pdk" />
+  <project name="platform/external/lzma" path="external/lzma" remote="aosp" groups="pdk" />
+  <project name="platform/external/marisa-trie" path="external/marisa-trie" remote="aosp" groups="pdk" />
+  <project name="platform/external/markdown" path="external/markdown" remote="aosp" groups="pdk" />
+  <project name="platform/external/mdnsresponder" path="external/mdnsresponder" remote="aosp" groups="pdk" />
+  <project name="platform/external/mime-support" path="external/mime-support" remote="aosp" groups="pdk" />
+  <project name="platform/external/minijail" path="external/minijail" remote="aosp" groups="pdk" />
+  <project name="platform/external/mobly-bundled-snippets" path="external/mobly-bundled-snippets" remote="aosp" groups="pdk" />
+  <project name="platform/external/mobly-snippet-lib" path="external/mobly-snippet-lib" remote="aosp" groups="pdk" />
+  <project name="platform/external/mockftpserver" path="external/mockftpserver" remote="aosp" groups="pdk" />
+  <project name="platform/external/mockito" path="external/mockito" remote="aosp" groups="pdk" />
+  <project name="platform/external/mockwebserver" path="external/mockwebserver" remote="aosp" groups="pdk" />
+  <project name="platform/external/modp_b64" path="external/modp_b64" remote="aosp" groups="pdk" />
+  <project name="platform/external/mp4parser" path="external/mp4parser" remote="aosp" groups="pdk" />
+  <project name="platform/external/ms-tpm-20-ref" path="external/ms-tpm-20-ref" remote="aosp" groups="pdk" />
+  <project name="platform/external/mtools" path="external/mtools" remote="aosp" groups="pdk" />
+  <project name="platform/external/mtpd" path="external/mtpd" remote="aosp" groups="pdk" />
+  <project name="platform/external/musl" path="external/musl" remote="aosp" groups="pdk" />
+  <project name="platform/external/nanohttpd" path="external/nanohttpd" remote="aosp" groups="pdk" />
+  <project name="platform/external/nanopb-c" path="external/nanopb-c" remote="aosp" groups="pdk" />
+  <project name="platform/external/naver-fonts" path="external/naver-fonts" remote="aosp" groups="pdk" />
+  <project name="platform/external/neon_2_sse" path="external/neon_2_sse" remote="aosp" groups="pdk" />
+  <project name="platform/external/neven" path="external/neven" remote="aosp" groups="pdk" />
+  <project name="platform/external/newfs_msdos" path="external/newfs_msdos" remote="aosp" groups="pdk" />
+  <project name="platform/external/nist-pkits" path="external/nist-pkits" remote="aosp" groups="pdk" />
+  <project name="platform/external/nist-sip" path="external/nist-sip" remote="aosp" groups="pdk" />
+  <project name="platform/external/nos/host/generic" path="external/nos/host/generic" remote="aosp" groups="pdk" />
+  <project name="platform/external/noto-fonts" path="external/noto-fonts" remote="aosp" groups="pdk" />
+  <project name="platform/external/nullaway" path="external/nullaway" remote="aosp" groups="pdk" />
+  <project name="platform/external/oauth" path="external/oauth" remote="aosp" groups="pdk" />
+  <project name="platform/external/obex" path="external/obex" remote="aosp" groups="pdk" />
+  <project name="platform/external/objenesis" path="external/objenesis" remote="aosp" groups="pdk" />
+  <project name="platform/external/oboe" path="external/oboe" remote="aosp" groups="pdk" />
+  <project name="platform/external/obstack" path="external/obstack" remote="aosp" groups="pdk" />
+  <project name="platform/external/oj-libjdwp" path="external/oj-libjdwp" remote="aosp" groups="pdk" />
+  <project name="platform/external/okhttp" path="external/okhttp" remote="aosp" groups="pdk" />
+  <project name="platform/external/okhttp4" path="external/okhttp4" remote="aosp" groups="pdk" />
+  <project name="platform/external/okio" path="external/okio" remote="aosp" groups="pdk" />
+  <project name="platform/external/one-true-awk" path="external/one-true-awk" remote="aosp" groups="pdk" />
+  <project name="platform/external/open-dice" path="external/open-dice" remote="aosp" groups="pdk" />
+  <project name="platform/external/opencensus-java" path="external/opencensus-java" remote="aosp" groups="pdk,tradefed" />
+  <project name="platform/external/openscreen" path="external/openscreen" remote="aosp" groups="pdk" />
+  <project name="platform/external/openwrt-prebuilts" path="external/openwrt-prebuilts" remote="aosp" groups="pdk" />
+  <project name="platform/external/oss-fuzz" path="external/oss-fuzz" remote="aosp" groups="pdk" />
+  <project name="platform/external/owasp/sanitizer" path="external/owasp/sanitizer" remote="aosp" groups="pdk" />
+  <project name="platform/external/pandora/avatar" path="external/pandora/avatar" remote="aosp" groups="pdk" />
+  <project name="platform/external/pandora/bt-test-interfaces" path="external/pandora/bt-test-interfaces" remote="aosp" groups="pdk" />
+  <project name="platform/external/pandora/mmi2grpc" path="external/pandora/mmi2grpc" remote="aosp" groups="pdk" />
+  <project name="platform/external/parameter-framework" path="external/parameter-framework" remote="aosp" groups="pdk" />
+  <project name="platform/external/pcre" path="external/pcre" remote="aosp" groups="pdk" />
+  <project name="platform/external/perfetto" path="external/perfetto" remote="aosp" groups="pdk" />
+  <project name="platform/external/pffft" path="external/pffft" remote="aosp" groups="pdk" />
+  <project name="platform/external/piex" path="external/piex" remote="aosp" groups="pdk" />
+  <project name="platform/external/pigweed" path="external/pigweed" remote="aosp" groups="pdk" />
+  <project name="platform/external/ply" path="external/ply" remote="aosp" groups="pdk" />
+  <project name="platform/external/ppp" path="external/ppp" remote="aosp" groups="pdk" />
+  <project name="platform/external/proguard" path="external/proguard" remote="aosp" groups="pdk" />
+  <project name="platform/external/protobuf" path="external/protobuf" remote="aosp" groups="pdk" />
+  <project name="platform/external/psimd" path="external/psimd" remote="aosp" groups="pdk" />
+  <project name="platform/external/pthreadpool" path="external/pthreadpool" remote="aosp" groups="pdk" />
+  <project name="platform/external/puffin" path="external/puffin" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/apitools" path="external/python/apitools" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/asn1crypto" path="external/python/asn1crypto" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/bumble" path="external/python/bumble" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/cachetools" path="external/python/cachetools" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/cffi" path="external/python/cffi" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/cpython2" path="external/python/cpython2" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/cpython3" path="external/python/cpython3" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/cryptography" path="external/python/cryptography" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/dateutil" path="external/python/dateutil" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/enum34" path="external/python/enum34" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/funcsigs" path="external/python/funcsigs" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/futures" path="external/python/futures" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/google-api-python-client" path="external/python/google-api-python-client" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/google-auth-library-python" path="external/python/google-auth-library-python" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/httplib2" path="external/python/httplib2" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/ipaddress" path="external/python/ipaddress" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/jinja" path="external/python/jinja" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/markupsafe" path="external/python/markupsafe" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/mobly" path="external/python/mobly" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/oauth2client" path="external/python/oauth2client" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/parse_type" path="external/python/parse_type" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/portpicker" path="external/python/portpicker" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/pyasn1" path="external/python/pyasn1" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/pyasn1-modules" path="external/python/pyasn1-modules" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/pybind11" path="external/python/pybind11" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/pycparser" path="external/python/pycparser" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/pyee" path="external/python/pyee" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/pyfakefs" path="external/python/pyfakefs" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/pyopenssl" path="external/python/pyopenssl" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/pyserial" path="external/python/pyserial" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/python-api-core" path="external/python/python-api-core" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/pyyaml" path="external/python/pyyaml" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/rsa" path="external/python/rsa" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/setuptools" path="external/python/setuptools" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/six" path="external/python/six" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/python/timeout-decorator" path="external/python/timeout-decorator" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/typing" path="external/python/typing" remote="aosp" groups="pdk" />
+  <project name="platform/external/python/uritemplates" path="external/python/uritemplates" remote="aosp" groups="pdk,vts" />
+  <project name="platform/external/rappor" path="external/rappor" remote="aosp" groups="pdk" />
+  <project name="platform/external/renderscript-intrinsics-replacement-toolkit" path="external/renderscript-intrinsics-replacement-toolkit" remote="aosp" groups="pdk" />
+  <project name="platform/external/replicaisland" path="external/replicaisland" remote="aosp" groups="pdk" />
+  <project name="platform/external/rmi4utils" path="external/rmi4utils" remote="aosp" groups="pdk" />
+  <project name="platform/external/rnnoise" path="external/rnnoise" remote="aosp" groups="pdk" />
+  <project name="platform/external/robolectric" path="external/robolectric" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/external/robolectric-shadows" path="external/robolectric-shadows" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/external/roboto-fonts" path="external/roboto-fonts" remote="aosp" groups="pdk" />
+  <project name="platform/external/rootdev" path="external/rootdev" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ahash" path="external/rust/crates/ahash" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/aho-corasick" path="external/rust/crates/aho-corasick" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/android_log-sys" path="external/rust/crates/android_log-sys" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/android_logger" path="external/rust/crates/android_logger" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/anyhow" path="external/rust/crates/anyhow" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/arbitrary" path="external/rust/crates/arbitrary" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/argh" path="external/rust/crates/argh" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/argh_derive" path="external/rust/crates/argh_derive" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/argh_shared" path="external/rust/crates/argh_shared" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ash" path="external/rust/crates/ash" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/async-stream" path="external/rust/crates/async-stream" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/async-stream-impl" path="external/rust/crates/async-stream-impl" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/async-task" path="external/rust/crates/async-task" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/async-trait" path="external/rust/crates/async-trait" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/atty" path="external/rust/crates/atty" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/base64" path="external/rust/crates/base64" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/bencher" path="external/rust/crates/bencher" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/bindgen" path="external/rust/crates/bindgen" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/bitflags" path="external/rust/crates/bitflags" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/bstr" path="external/rust/crates/bstr" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/byteorder" path="external/rust/crates/byteorder" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/bytes" path="external/rust/crates/bytes" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/cast" path="external/rust/crates/cast" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/cesu8" path="external/rust/crates/cesu8" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/cexpr" path="external/rust/crates/cexpr" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/cfg-if" path="external/rust/crates/cfg-if" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/chrono" path="external/rust/crates/chrono" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ciborium" path="external/rust/crates/ciborium" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ciborium-io" path="external/rust/crates/ciborium-io" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ciborium-ll" path="external/rust/crates/ciborium-ll" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/clang-sys" path="external/rust/crates/clang-sys" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/clap" path="external/rust/crates/clap" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/codespan-reporting" path="external/rust/crates/codespan-reporting" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/combine" path="external/rust/crates/combine" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/command-fds" path="external/rust/crates/command-fds" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/coset" path="external/rust/crates/coset" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/crc32fast" path="external/rust/crates/crc32fast" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/criterion" path="external/rust/crates/criterion" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/criterion-plot" path="external/rust/crates/criterion-plot" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/crossbeam-channel" path="external/rust/crates/crossbeam-channel" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/crossbeam-deque" path="external/rust/crates/crossbeam-deque" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/crossbeam-epoch" path="external/rust/crates/crossbeam-epoch" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/crossbeam-queue" path="external/rust/crates/crossbeam-queue" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/crossbeam-utils" path="external/rust/crates/crossbeam-utils" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/csv" path="external/rust/crates/csv" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/csv-core" path="external/rust/crates/csv-core" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/der-oid-macro" path="external/rust/crates/der-oid-macro" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/der-parser" path="external/rust/crates/der-parser" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/derive_arbitrary" path="external/rust/crates/derive_arbitrary" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/downcast-rs" path="external/rust/crates/downcast-rs" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/either" path="external/rust/crates/either" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/enumn" path="external/rust/crates/enumn" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/env_logger" path="external/rust/crates/env_logger" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/fallible-iterator" path="external/rust/crates/fallible-iterator" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/fallible-streaming-iterator" path="external/rust/crates/fallible-streaming-iterator" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/flate2" path="external/rust/crates/flate2" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/fnv" path="external/rust/crates/fnv" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/form_urlencoded" path="external/rust/crates/form_urlencoded" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures" path="external/rust/crates/futures" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-channel" path="external/rust/crates/futures-channel" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-core" path="external/rust/crates/futures-core" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-executor" path="external/rust/crates/futures-executor" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-io" path="external/rust/crates/futures-io" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-macro" path="external/rust/crates/futures-macro" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-sink" path="external/rust/crates/futures-sink" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-task" path="external/rust/crates/futures-task" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/futures-util" path="external/rust/crates/futures-util" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/gdbstub" path="external/rust/crates/gdbstub" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/gdbstub_arch" path="external/rust/crates/gdbstub_arch" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/getrandom" path="external/rust/crates/getrandom" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/glob" path="external/rust/crates/glob" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/grpcio" path="external/rust/crates/grpcio" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/grpcio-compiler" path="external/rust/crates/grpcio-compiler" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/grpcio-sys" path="external/rust/crates/grpcio-sys" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/half" path="external/rust/crates/half" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/hashbrown" path="external/rust/crates/hashbrown" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/hashlink" path="external/rust/crates/hashlink" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/heck" path="external/rust/crates/heck" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/idna" path="external/rust/crates/idna" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/instant" path="external/rust/crates/instant" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/intrusive-collections" path="external/rust/crates/intrusive-collections" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/itertools" path="external/rust/crates/itertools" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/itoa" path="external/rust/crates/itoa" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/jni" path="external/rust/crates/jni" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/jni-sys" path="external/rust/crates/jni-sys" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/kernlog" path="external/rust/crates/kernlog" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/lazy_static" path="external/rust/crates/lazy_static" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/lazycell" path="external/rust/crates/lazycell" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/libc" path="external/rust/crates/libc" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/libfuzzer-sys" path="external/rust/crates/libfuzzer-sys" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/libloading" path="external/rust/crates/libloading" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/libm" path="external/rust/crates/libm" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/libsqlite3-sys" path="external/rust/crates/libsqlite3-sys" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/libz-sys" path="external/rust/crates/libz-sys" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/linked-hash-map" path="external/rust/crates/linked-hash-map" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/lock_api" path="external/rust/crates/lock_api" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/log" path="external/rust/crates/log" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/lru-cache" path="external/rust/crates/lru-cache" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/macaddr" path="external/rust/crates/macaddr" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/managed" path="external/rust/crates/managed" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/matches" path="external/rust/crates/matches" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/memchr" path="external/rust/crates/memchr" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/memoffset" path="external/rust/crates/memoffset" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/minimal-lexical" path="external/rust/crates/minimal-lexical" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/mio" path="external/rust/crates/mio" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/nix" path="external/rust/crates/nix" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/no-panic" path="external/rust/crates/no-panic" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/nom" path="external/rust/crates/nom" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/num-bigint" path="external/rust/crates/num-bigint" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/num-derive" path="external/rust/crates/num-derive" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/num-integer" path="external/rust/crates/num-integer" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/num-traits" path="external/rust/crates/num-traits" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/num_cpus" path="external/rust/crates/num_cpus" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/oid-registry" path="external/rust/crates/oid-registry" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/once_cell" path="external/rust/crates/once_cell" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/oorandom" path="external/rust/crates/oorandom" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/parking_lot" path="external/rust/crates/parking_lot" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/parking_lot_core" path="external/rust/crates/parking_lot_core" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/paste" path="external/rust/crates/paste" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/peeking_take_while" path="external/rust/crates/peeking_take_while" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/percent-encoding" path="external/rust/crates/percent-encoding" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pest" path="external/rust/crates/pest" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pest_derive" path="external/rust/crates/pest_derive" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pest_generator" path="external/rust/crates/pest_generator" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pest_meta" path="external/rust/crates/pest_meta" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pin-project" path="external/rust/crates/pin-project" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pin-project-internal" path="external/rust/crates/pin-project-internal" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pin-project-lite" path="external/rust/crates/pin-project-lite" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/pin-utils" path="external/rust/crates/pin-utils" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/plotters" path="external/rust/crates/plotters" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/plotters-backend" path="external/rust/crates/plotters-backend" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/plotters-svg" path="external/rust/crates/plotters-svg" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ppv-lite86" path="external/rust/crates/ppv-lite86" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/proc-macro-error" path="external/rust/crates/proc-macro-error" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/proc-macro-error-attr" path="external/rust/crates/proc-macro-error-attr" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/proc-macro-hack" path="external/rust/crates/proc-macro-hack" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/proc-macro-nested" path="external/rust/crates/proc-macro-nested" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/proc-macro2" path="external/rust/crates/proc-macro2" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/protobuf" path="external/rust/crates/protobuf" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/protobuf-codegen" path="external/rust/crates/protobuf-codegen" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/quiche" path="external/rust/crates/quiche" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/quickcheck" path="external/rust/crates/quickcheck" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/quote" path="external/rust/crates/quote" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rand" path="external/rust/crates/rand" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rand_chacha" path="external/rust/crates/rand_chacha" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rand_core" path="external/rust/crates/rand_core" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rand_xorshift" path="external/rust/crates/rand_xorshift" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rayon" path="external/rust/crates/rayon" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rayon-core" path="external/rust/crates/rayon-core" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/regex" path="external/rust/crates/regex" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/regex-automata" path="external/rust/crates/regex-automata" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/regex-syntax" path="external/rust/crates/regex-syntax" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/remain" path="external/rust/crates/remain" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/remove_dir_all" path="external/rust/crates/remove_dir_all" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ring" path="external/rust/crates/ring" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rusqlite" path="external/rust/crates/rusqlite" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rustc-demangle" path="external/rust/crates/rustc-demangle" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rustc-demangle-capi" path="external/rust/crates/rustc-demangle-capi" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rustc-hash" path="external/rust/crates/rustc-hash" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rusticata-macros" path="external/rust/crates/rusticata-macros" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/rustversion" path="external/rust/crates/rustversion" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ryu" path="external/rust/crates/ryu" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/same-file" path="external/rust/crates/same-file" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/scopeguard" path="external/rust/crates/scopeguard" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/semver" path="external/rust/crates/semver" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/serde" path="external/rust/crates/serde" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/serde-xml-rs" path="external/rust/crates/serde-xml-rs" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/serde_cbor" path="external/rust/crates/serde_cbor" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/serde_derive" path="external/rust/crates/serde_derive" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/serde_json" path="external/rust/crates/serde_json" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/serde_test" path="external/rust/crates/serde_test" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/shared_child" path="external/rust/crates/shared_child" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/shared_library" path="external/rust/crates/shared_library" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/shlex" path="external/rust/crates/shlex" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/slab" path="external/rust/crates/slab" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/smallvec" path="external/rust/crates/smallvec" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/spin" path="external/rust/crates/spin" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/structopt" path="external/rust/crates/structopt" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/structopt-derive" path="external/rust/crates/structopt-derive" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/syn" path="external/rust/crates/syn" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/syn-mid" path="external/rust/crates/syn-mid" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tempfile" path="external/rust/crates/tempfile" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/termcolor" path="external/rust/crates/termcolor" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/textwrap" path="external/rust/crates/textwrap" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/thiserror" path="external/rust/crates/thiserror" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/thiserror-impl" path="external/rust/crates/thiserror-impl" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/thread_local" path="external/rust/crates/thread_local" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tinytemplate" path="external/rust/crates/tinytemplate" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tinyvec" path="external/rust/crates/tinyvec" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tinyvec_macros" path="external/rust/crates/tinyvec_macros" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tokio" path="external/rust/crates/tokio" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tokio-macros" path="external/rust/crates/tokio-macros" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tokio-stream" path="external/rust/crates/tokio-stream" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/tokio-test" path="external/rust/crates/tokio-test" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/ucd-trie" path="external/rust/crates/ucd-trie" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/unicode-bidi" path="external/rust/crates/unicode-bidi" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/unicode-normalization" path="external/rust/crates/unicode-normalization" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/unicode-segmentation" path="external/rust/crates/unicode-segmentation" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/unicode-width" path="external/rust/crates/unicode-width" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/unicode-xid" path="external/rust/crates/unicode-xid" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/untrusted" path="external/rust/crates/untrusted" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/url" path="external/rust/crates/url" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/uuid" path="external/rust/crates/uuid" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/vsock" path="external/rust/crates/vsock" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/vulkano" path="external/rust/crates/vulkano" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/walkdir" path="external/rust/crates/walkdir" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/weak-table" path="external/rust/crates/weak-table" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/webpki" path="external/rust/crates/webpki" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/which" path="external/rust/crates/which" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/x509-parser" path="external/rust/crates/x509-parser" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/xml-rs" path="external/rust/crates/xml-rs" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/crates/zip" path="external/rust/crates/zip" remote="aosp" groups="pdk" />
+  <project name="platform/external/rust/cxx" path="external/rust/cxx" remote="aosp" groups="pdk" />
+  <project name="platform/external/ruy" path="external/ruy" remote="aosp" groups="pdk" />
+  <project name="platform/external/s2-geometry-library-java" path="external/s2-geometry-library-java" remote="aosp" groups="pdk" />
+  <project name="platform/external/scapy" path="external/scapy" remote="aosp" groups="pdk-fs" />
+  <project name="platform/external/scrypt" path="external/scrypt" remote="aosp" groups="pdk" />
+  <project name="platform/external/scudo" path="external/scudo" remote="aosp" groups="pdk" />
+  <project name="platform/external/seccomp-tests" path="external/seccomp-tests" remote="aosp" groups="pdk" />
+  <project name="platform/external/selinux" path="external/selinux" remote="aosp" groups="pdk" />
+  <project name="platform/external/setupdesign" path="external/setupdesign" remote="aosp" groups="pdk" />
+  <project name="platform/external/sfntly" path="external/sfntly" remote="aosp" groups="pdk,qcom_msm8x26" />
+  <project name="platform/external/shaderc/spirv-headers" path="external/shaderc/spirv-headers" remote="aosp" groups="pdk" />
+  <project name="platform/external/shflags" path="external/shflags" remote="aosp" groups="pdk" />
+  <project name="platform/external/sl4a" path="external/sl4a" remote="aosp" groups="pdk" />
+  <project name="platform/external/slf4j" path="external/slf4j" remote="aosp" groups="pdk" />
+  <project name="platform/external/smali" path="external/smali" remote="aosp" groups="pdk" />
+  <project name="platform/external/snakeyaml" path="external/snakeyaml" remote="aosp" groups="pdk" />
+  <project name="platform/external/sonic" path="external/sonic" remote="aosp" groups="pdk" />
+  <project name="platform/external/speex" path="external/speex" remote="aosp" groups="pdk" />
+  <project name="platform/external/squashfs-tools" path="external/squashfs-tools" remote="aosp" groups="pdk" />
+  <project name="platform/external/stardoc" path="external/stardoc" remote="aosp" groups="pdk" />
+  <project name="platform/external/starlark-go" path="external/starlark-go" remote="aosp" groups="pdk" />
+  <project name="platform/external/strace" path="external/strace" remote="aosp" groups="pdk" />
+  <project name="platform/external/stressapptest" path="external/stressapptest" remote="aosp" groups="pdk" />
+  <project name="platform/external/subsampling-scale-image-view" path="external/subsampling-scale-image-view" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/external/swiftshader" path="external/swiftshader" remote="aosp" groups="pdk" />
+  <project name="platform/external/tagsoup" path="external/tagsoup" remote="aosp" groups="pdk" />
+  <project name="platform/external/tcpdump" path="external/tcpdump" remote="aosp" groups="pdk" />
+  <project name="platform/external/tensorflow" path="external/tensorflow" remote="aosp" groups="pdk" />
+  <project name="platform/external/testng" path="external/testng" remote="aosp" groups="pdk" />
+  <project name="platform/external/tflite-support" path="external/tflite-support" remote="aosp" groups="pdk" />
+  <project name="platform/external/timezone-boundary-builder" path="external/timezone-boundary-builder" remote="aosp" groups="pdk" clone-depth="2" />
+  <project name="platform/external/tinyalsa" path="external/tinyalsa" remote="aosp" groups="pdk" />
+  <project name="platform/external/tinyalsa_new" path="external/tinyalsa_new" remote="aosp" groups="pdk" />
+  <project name="platform/external/tinyxml" path="external/tinyxml" remote="aosp" revision="refs/tags/android-11.0.0_r46" groups="pdk" />
+  <project name="platform/external/tinyxml2" path="external/tinyxml2" remote="aosp" groups="pdk" />
+  <project name="platform/external/toolchain-utils" path="external/toolchain-utils" remote="aosp" />
+  <project name="platform/external/toybox" path="external/toybox" remote="aosp" groups="pdk" />
+  <project name="platform/external/tpm2-tss" path="external/tpm2-tss" remote="aosp" groups="pdk" />
+  <project name="platform/external/trace-cmd" path="external/trace-cmd" remote="aosp" groups="pdk" />
+  <project name="platform/external/tremolo" path="external/tremolo" remote="aosp" groups="pdk" />
+  <project name="platform/external/turbine" path="external/turbine" remote="aosp" groups="pdk" />
+  <project name="platform/external/ukey2" path="external/ukey2" remote="aosp" groups="pdk" />
+  <project name="platform/external/unicode" path="external/unicode" remote="aosp" groups="pdk" />
+  <project name="platform/external/universal-tween-engine" path="external/universal-tween-engine" remote="aosp" />
+  <project name="platform/external/usrsctp" path="external/usrsctp" remote="aosp" groups="pdk" />
+  <project name="platform/external/uwb" path="external/uwb" remote="aosp" groups="pdk" />
+  <project name="platform/external/v4l2_codec2" path="external/v4l2_codec2" remote="aosp" groups="pdk" />
+  <project name="platform/external/vboot_reference" path="external/vboot_reference" remote="aosp" groups="pdk-fs,vboot" />
+  <project name="platform/external/virglrenderer" path="external/virglrenderer" remote="aosp" groups="pdk" />
+  <project name="platform/external/vixl" path="external/vixl" remote="aosp" groups="pdk" />
+  <project name="platform/external/vogar" path="external/vogar" remote="aosp" groups="pdk" />
+  <project name="platform/external/volley" path="external/volley" remote="aosp" groups="pdk" />
+  <project name="platform/external/vulkan-headers" path="external/vulkan-headers" remote="aosp" groups="pdk" />
+  <project name="platform/external/vulkan-validation-layers" path="external/vulkan-validation-layers" remote="aosp" groups="pdk" />
+  <project name="platform/external/walt" path="external/walt" remote="aosp" groups="pdk" />
+  <project name="platform/external/wayland" path="external/wayland" remote="aosp" groups="pdk" />
+  <project name="platform/external/wayland-protocols" path="external/wayland-protocols" remote="aosp" groups="pdk" />
+  <project name="platform/external/webrtc" path="external/webrtc" remote="aosp" groups="pdk" />
+  <project name="platform/external/wmediumd" path="external/wmediumd" remote="aosp" groups="pdk" />
+  <project name="platform/external/wuffs-mirror-release-c" path="external/wuffs-mirror-release-c" remote="aosp" groups="pdk,qcom_msm8x26" />
+  <project name="platform/external/wycheproof" path="external/wycheproof" remote="aosp" groups="pdk" />
+  <project name="platform/external/xmp_toolkit" path="external/xmp_toolkit" remote="aosp" groups="pdk" />
+  <project name="platform/external/xz-embedded" path="external/xz-embedded" remote="aosp" groups="pdk" />
+  <project name="platform/external/xz-java" path="external/xz-java" remote="aosp" groups="pdk" />
+  <project name="platform/external/yapf" path="external/yapf" remote="aosp" groups="pdk,projectarch,vts" />
+  <project name="platform/external/zlib" path="external/zlib" remote="aosp" groups="pdk" />
+  <project name="platform/external/zopfli" path="external/zopfli" remote="aosp" groups="pdk" />
+  <project name="platform/external/zucchini" path="external/zucchini" remote="aosp" groups="pdk" />
+  <project name="platform/external/zxing" path="external/zxing" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/compile/libbcc" path="frameworks/compile/libbcc" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/compile/mclinker" path="frameworks/compile/mclinker" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/compile/slang" path="frameworks/compile/slang" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/ex" path="frameworks/ex" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/hardware/interfaces" path="frameworks/hardware/interfaces" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/layoutlib" path="frameworks/layoutlib" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/libs/modules-utils" path="frameworks/libs/modules-utils" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/libs/native_bridge_support" path="frameworks/libs/native_bridge_support" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/libs/net" path="frameworks/libs/net" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/libs/service_entitlement" path="frameworks/libs/service_entitlement" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/minikin" path="frameworks/minikin" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/multidex" path="frameworks/multidex" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/opt/bitmap" path="frameworks/opt/bitmap" remote="aosp" groups="pdk-fs" />
+  <project name="platform/frameworks/opt/car/services" path="frameworks/opt/car/services" remote="aosp" groups="pdk-fs" />
+  <project name="platform/frameworks/opt/car/setupwizard" path="frameworks/opt/car/setupwizard" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/opt/chips" path="frameworks/opt/chips" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/opt/localepicker" path="frameworks/opt/localepicker" remote="aosp" />
+  <project name="platform/frameworks/opt/net/ethernet" path="frameworks/opt/net/ethernet" remote="aosp" groups="pdk-fs" />
+  <project name="platform/frameworks/opt/net/ims" path="frameworks/opt/net/ims" remote="aosp" groups="frameworks_ims,pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/opt/net/voip" path="frameworks/opt/net/voip" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/opt/net/wifi" path="frameworks/opt/net/wifi" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/opt/photoviewer" path="frameworks/opt/photoviewer" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/opt/setupwizard" path="frameworks/opt/setupwizard" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/opt/tv/tvsystem" path="frameworks/opt/tv/tvsystem" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/opt/vcard" path="frameworks/opt/vcard" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/proto_logging" path="frameworks/proto_logging" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/frameworks/rs" path="frameworks/rs" remote="aosp" groups="pdk" />
+  <project name="platform/frameworks/wilhelm" path="frameworks/wilhelm" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/hardware/broadcom/wlan" path="hardware/broadcom/wlan" remote="aosp" groups="broadcom_wlan,pdk" />
+  <project name="platform/hardware/google/apf" path="hardware/google/apf" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/google/av" path="hardware/google/av" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/google/camera" path="hardware/google/camera" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/google/easel" path="hardware/google/easel" remote="aosp" groups="easel,pdk" />
+  <project name="platform/hardware/google/graphics/gs101" path="hardware/google/graphics/gs101" remote="aosp" groups="pdk-gs-arm,pdk-lassen" />
+  <project name="platform/hardware/google/graphics/gs201" path="hardware/google/graphics/gs201" remote="aosp" groups="cloudripper" />
+  <project name="platform/hardware/google/interfaces" path="hardware/google/interfaces" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/invensense" path="hardware/invensense" remote="aosp" groups="invensense,pdk" />
+  <project name="platform/hardware/knowles/athletico/sound_trigger_hal" path="hardware/knowles/athletico/sound_trigger_hal" remote="aosp" groups="coral,generic_fs" />
+  <project name="platform/hardware/nxp/nfc" path="hardware/nxp/nfc" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/nxp/secure_element" path="hardware/nxp/secure_element" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/qcom/bootctrl" path="hardware/qcom/bootctrl" remote="aosp" groups="pdk-qcom,qcom" />
+  <project name="platform/hardware/qcom/bt" path="hardware/qcom/bt" remote="aosp" groups="pdk-qcom,qcom" />
+  <project name="platform/hardware/qcom/keymaster" path="hardware/qcom/keymaster" remote="aosp" groups="pdk-qcom,qcom,qcom_keymaster" />
+  <project name="platform/hardware/qcom/sdm845/bt" path="hardware/qcom/sdm845/bt" remote="aosp" groups="generic_fs,qcom,qcom_sdm845" />
+  <project name="platform/hardware/qcom/sdm845/data/ipacfg-mgr" path="hardware/qcom/sdm845/data/ipacfg-mgr" remote="aosp" groups="generic_fs,qcom,qcom_sdm845,vendor">
+    <linkfile src="os_pickup.mk" dest="hardware/qcom/sdm845/Android.mk" />
+    <linkfile src="os_pickup.bp" dest="hardware/qcom/sdm845/Android.bp" />
+  </project>
+  <project name="platform/hardware/qcom/sdm845/thermal" path="hardware/qcom/sdm845/thermal" remote="aosp" groups="generic_fs,qcom,qcom_sdm845" />
+  <project name="platform/hardware/qcom/sdm845/vr" path="hardware/qcom/sdm845/vr" remote="aosp" groups="generic_fs,qcom,qcom_sdm845" />
+  <project name="platform/hardware/qcom/sm8150/thermal" path="hardware/qcom/sm8150/thermal" remote="aosp" groups="qcom,qcom_sm8150" />
+  <project name="platform/hardware/qcom/sm8150/vr" path="hardware/qcom/sm8150/vr" remote="aosp" groups="qcom,qcom_sm8150" />
+  <project name="platform/hardware/samsung/nfc" path="hardware/samsung/nfc" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/st/secure_element" path="hardware/st/secure_element" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/st/secure_element2" path="hardware/st/secure_element2" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/synaptics/wlan" path="hardware/synaptics/wlan" remote="aosp" groups="pdk" />
+  <project name="platform/hardware/ti/am57x" path="hardware/ti/am57x" remote="aosp" groups="pdk" />
+  <project name="platform/libnativehelper" path="libnativehelper" remote="aosp" groups="pdk" />
+  <project name="platform/packages/apps/BasicSmsReceiver" path="packages/apps/BasicSmsReceiver" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/apps/Browser2" path="packages/apps/Browser2" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/Calendar" path="packages/apps/Car/Calendar" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/Cluster" path="packages/apps/Car/Cluster" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/DebuggingRestrictionController" path="packages/apps/Car/DebuggingRestrictionController" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/DialerPrebuilt" path="packages/apps/Car/DialerPrebuilt" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/Hvac" path="packages/apps/Car/Hvac" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/LatinIME" path="packages/apps/Car/LatinIME" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/Launcher" path="packages/apps/Car/Launcher" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/LinkViewer" path="packages/apps/Car/LinkViewer" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/LocalMediaPlayer" path="packages/apps/Car/LocalMediaPlayer" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/MediaPrebuilt" path="packages/apps/Car/MediaPrebuilt" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/MessengerPrebuilt" path="packages/apps/Car/MessengerPrebuilt" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/Notification" path="packages/apps/Car/Notification" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/Provision" path="packages/apps/Car/Provision" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/Radio" path="packages/apps/Car/Radio" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/RotaryController" path="packages/apps/Car/RotaryController" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/SettingsIntelligence" path="packages/apps/Car/SettingsIntelligence" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/SystemUI" path="packages/apps/Car/SystemUI" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/SystemUpdater" path="packages/apps/Car/SystemUpdater" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Car/systemlibs" path="packages/apps/Car/systemlibs" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/CarrierConfig" path="packages/apps/CarrierConfig" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/apps/HTMLViewer" path="packages/apps/HTMLViewer" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/ImsServiceEntitlement" path="packages/apps/ImsServiceEntitlement" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/Music" path="packages/apps/Music" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/MusicFX" path="packages/apps/MusicFX" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/OnDeviceAppPrediction" path="packages/apps/OnDeviceAppPrediction" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/OneTimeInitializer" path="packages/apps/OneTimeInitializer" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/PhoneCommon" path="packages/apps/PhoneCommon" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/apps/Provision" path="packages/apps/Provision" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/QuickAccessWallet" path="packages/apps/QuickAccessWallet" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/QuickSearchBox" path="packages/apps/QuickSearchBox" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/RemoteProvisioner" path="packages/apps/RemoteProvisioner" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/SafetyRegulatoryInfo" path="packages/apps/SafetyRegulatoryInfo" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/SampleLocationAttribution" path="packages/apps/SampleLocationAttribution" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/SecureElement" path="packages/apps/SecureElement" remote="aosp" groups="apps_se,pdk-fs" />
+  <project name="platform/packages/apps/StorageManager" path="packages/apps/StorageManager" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/SystemUIGo" path="packages/apps/SystemUIGo" remote="aosp" groups="pdk-fs" />
+  <project name="LineageOS/android_packages_apps_TV" path="packages/apps/TV" groups="pdk" revision="50462999aeee02ca22ea7bb3351e201b30f67bca" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="platform/packages/apps/Test/connectivity" path="packages/apps/Test/connectivity" remote="aosp" groups="pdk" />
+  <project name="platform/packages/apps/TimeZoneData" path="packages/apps/TimeZoneData" remote="aosp" groups="pdk" />
+  <project name="platform/packages/apps/TimeZoneUpdater" path="packages/apps/TimeZoneUpdater" remote="aosp" groups="pdk" />
+  <project name="platform/packages/apps/Traceur" path="packages/apps/Traceur" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/apps/UniversalMediaPlayer" path="packages/apps/UniversalMediaPlayer" remote="aosp" />
+  <project name="platform/packages/apps/WallpaperPicker" path="packages/apps/WallpaperPicker" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/modules/AdServices" path="packages/modules/AdServices" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/modules/AppSearch" path="packages/modules/AppSearch" remote="aosp" groups="pdk" />
+  <project name="platform/packages/modules/ArtPrebuilt" path="packages/modules/ArtPrebuilt" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/packages/modules/BootPrebuilt/5.10/arm64" path="packages/modules/BootPrebuilt/5.10/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/packages/modules/BootPrebuilt/5.4/arm64" path="packages/modules/BootPrebuilt/5.4/arm64" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/packages/modules/CaptivePortalLogin" path="packages/modules/CaptivePortalLogin" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/ExtServices" path="packages/modules/ExtServices" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/GeoTZ" path="packages/modules/GeoTZ" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/Gki" path="packages/modules/Gki" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/IPsec" path="packages/modules/IPsec" remote="aosp" groups="pdk" />
+  <project name="platform/packages/modules/Media" path="packages/modules/Media" remote="aosp" groups="pdk" />
+  <project name="platform/packages/modules/ModuleMetadata" path="packages/modules/ModuleMetadata" remote="aosp" groups="pdk" />
+  <project name="platform/packages/modules/NetworkPermissionConfig" path="packages/modules/NetworkPermissionConfig" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/NetworkStack" path="packages/modules/NetworkStack" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/OnDevicePersonalization" path="packages/modules/OnDevicePersonalization" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/modules/RuntimeI18n" path="packages/modules/RuntimeI18n" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/SEPolicy" path="packages/modules/SEPolicy" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/Scheduling" path="packages/modules/Scheduling" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/SdkExtensions" path="packages/modules/SdkExtensions" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/TestModule" path="packages/modules/TestModule" remote="aosp" />
+  <project name="platform/packages/modules/Uwb" path="packages/modules/Uwb" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/modules/vndk" path="packages/modules/vndk" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/providers/PartnerBookmarksProvider" path="packages/providers/PartnerBookmarksProvider" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/providers/TvProvider" path="packages/providers/TvProvider" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/providers/UserDictionaryProvider" path="packages/providers/UserDictionaryProvider" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/screensavers/Basic" path="packages/screensavers/Basic" remote="aosp" groups="pdk-fs" />
+  <project name="platform/packages/services/AlternativeNetworkAccess" path="packages/services/AlternativeNetworkAccess" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="LineageOS/android_packages_services_BuiltInPrintService" path="packages/services/BuiltInPrintService" groups="pdk-cw-fs,pdk-fs" revision="b3da86b1a4d62e52346d8614de0fe36d1d5b2eba" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="platform/packages/services/Iwlan" path="packages/services/Iwlan" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/services/Mtp" path="packages/services/Mtp" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/packages/wallpapers/ImageWallpaper" path="packages/wallpapers/ImageWallpaper" remote="aosp" groups="pdk-fs" />
+  <project name="platform/pdk" path="pdk" remote="aosp" groups="pdk" />
+  <project name="platform/platform_testing" path="platform_testing" remote="aosp" groups="cts,pdk-cw-fs,pdk-fs" />
+  <project name="platform/prebuilts/abi-dumps/ndk" path="prebuilts/abi-dumps/ndk" remote="aosp" groups="pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/abi-dumps/platform" path="prebuilts/abi-dumps/platform" remote="aosp" groups="pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/abi-dumps/vndk" path="prebuilts/abi-dumps/vndk" remote="aosp" groups="pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/android-emulator" path="prebuilts/android-emulator" remote="aosp" groups="pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/asuite" path="prebuilts/asuite" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/bazel/darwin-x86_64" path="prebuilts/bazel/darwin-x86_64" remote="aosp" groups="darwin,pdk" clone-depth="1" />
+  <project name="platform/prebuilts/bazel/linux-x86_64" path="prebuilts/bazel/linux-x86_64" remote="aosp" groups="linux,pdk" clone-depth="1" />
+  <project name="platform/prebuilts/bundletool" path="prebuilts/bundletool" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/checkcolor" path="prebuilts/checkcolor" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/checkstyle" path="prebuilts/checkstyle" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/clang-tools" path="prebuilts/clang-tools" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/clang/host/darwin-x86" path="prebuilts/clang/host/darwin-x86" remote="aosp" groups="darwin,pdk" clone-depth="1" />
+  <project name="platform/prebuilts/clang/host/linux-x86" path="prebuilts/clang/host/linux-x86" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/cmdline-tools" path="prebuilts/cmdline-tools" remote="aosp" groups="pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/devtools" path="prebuilts/devtools" remote="aosp" groups="pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" path="prebuilts/gcc/linux-x86/host/x86_64-linux-glibc2.17-4.8" remote="aosp" groups="linux,pdk" clone-depth="1" />
+  <project name="platform/prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8" path="prebuilts/gcc/linux-x86/host/x86_64-w64-mingw32-4.8" remote="aosp" groups="pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/go/darwin-x86" path="prebuilts/go/darwin-x86" remote="aosp" groups="darwin,pdk,tradefed" clone-depth="1" />
+  <project name="platform/prebuilts/go/linux-x86" path="prebuilts/go/linux-x86" remote="aosp" groups="linux,pdk,tradefed" clone-depth="1" />
+  <project name="platform/prebuilts/gradle-plugin" path="prebuilts/gradle-plugin" remote="aosp" groups="pdk,pdk-cw-fs,pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/jdk/jdk11" path="prebuilts/jdk/jdk11" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/jdk/jdk17" path="prebuilts/jdk/jdk17" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/jdk/jdk8" path="prebuilts/jdk/jdk8" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/jdk/jdk9" path="prebuilts/jdk/jdk9" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/ktlint" path="prebuilts/ktlint" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/manifest-merger" path="prebuilts/manifest-merger" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/maven_repo/android" path="prebuilts/maven_repo/android" remote="aosp" groups="pdk-cw-fs,pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/maven_repo/bumptech" path="prebuilts/maven_repo/bumptech" remote="aosp" groups="pdk-cw-fs,pdk-fs" clone-depth="1" />
+  <project name="platform/prebuilts/misc" path="prebuilts/misc" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/AdServices" path="prebuilts/module_sdk/AdServices" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/AppSearch" path="prebuilts/module_sdk/AppSearch" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/Bluetooth" path="prebuilts/module_sdk/Bluetooth" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/Connectivity" path="prebuilts/module_sdk/Connectivity" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/IPsec" path="prebuilts/module_sdk/IPsec" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/Media" path="prebuilts/module_sdk/Media" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/MediaProvider" path="prebuilts/module_sdk/MediaProvider" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/OnDevicePersonalization" path="prebuilts/module_sdk/OnDevicePersonalization" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/Permission" path="prebuilts/module_sdk/Permission" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/Scheduling" path="prebuilts/module_sdk/Scheduling" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/SdkExtensions" path="prebuilts/module_sdk/SdkExtensions" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/StatsD" path="prebuilts/module_sdk/StatsD" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/Uwb" path="prebuilts/module_sdk/Uwb" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/Wifi" path="prebuilts/module_sdk/Wifi" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/art" path="prebuilts/module_sdk/art" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/module_sdk/conscrypt" path="prebuilts/module_sdk/conscrypt" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/ndk" path="prebuilts/ndk" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/qemu-kernel" path="prebuilts/qemu-kernel" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/r8" path="prebuilts/r8" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/remoteexecution-client" path="prebuilts/remoteexecution-client" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/runtime" path="prebuilts/runtime" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/rust" path="prebuilts/rust" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/sdk" path="prebuilts/sdk" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/tools" path="prebuilts/tools" remote="aosp" groups="pdk,tools" clone-depth="1" />
+  <project name="platform/prebuilts/vndk/v31" path="prebuilts/vndk/v31" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/prebuilts/vndk/v32" path="prebuilts/vndk/v32" remote="aosp" groups="pdk" clone-depth="1" />
+  <project name="platform/sdk" path="sdk" remote="aosp" groups="pdk-cw-fs,pdk-fs" />
+  <project name="platform/system/bpf" path="system/bpf" remote="aosp" groups="pdk" />
+  <project name="platform/system/bpfprogs" path="system/bpfprogs" remote="aosp" groups="pdk" />
+  <project name="platform/system/chre" path="system/chre" remote="aosp" groups="pdk" />
+  <project name="platform/system/connectivity/wificond" path="system/connectivity/wificond" remote="aosp" groups="pdk" />
+  <project name="platform/system/dmesgd" path="system/dmesgd" remote="aosp" groups="pdk" />
+  <project name="platform/system/gatekeeper" path="system/gatekeeper" remote="aosp" groups="pdk" />
+  <project name="platform/system/gsid" path="system/gsid" remote="aosp" groups="pdk" />
+  <project name="platform/system/hardware/interfaces" path="system/hardware/interfaces" remote="aosp" groups="pdk" />
+  <project name="platform/system/hwservicemanager" path="system/hwservicemanager" remote="aosp" groups="pdk" />
+  <project name="LineageOS/android_system_incremental_delivery" path="system/incremental_delivery" groups="pdk" revision="574718556ac0390cc9de6e9f788fdcf4d259dc28" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="platform/system/iorap" path="system/iorap" remote="aosp" groups="pdk" />
+  <project name="platform/system/libartpalette" path="system/libartpalette" remote="aosp" groups="pdk" />
+  <project name="platform/system/libbase" path="system/libbase" remote="aosp" groups="pdk" />
+  <project name="platform/system/libhwbinder" path="system/libhwbinder" remote="aosp" groups="pdk" />
+  <project name="platform/system/libprocinfo" path="system/libprocinfo" remote="aosp" groups="pdk" />
+  <project name="platform/system/librustutils" path="system/librustutils" remote="aosp" groups="pdk" />
+  <project name="platform/system/libsysprop" path="system/libsysprop" remote="aosp" groups="pdk" />
+  <project name="LineageOS/android_system_libufdt" path="system/libufdt" groups="pdk" revision="6f4879f0df2a4b1f277bdd8475318be5ad0723a6" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="platform/system/libvintf" path="system/libvintf" remote="aosp" groups="pdk" />
+  <project name="platform/system/linkerconfig" path="system/linkerconfig" remote="aosp" groups="pdk" />
+  <project name="platform/system/memory/libdmabufheap" path="system/memory/libdmabufheap" remote="aosp" groups="pdk" />
+  <project name="platform/system/memory/libion" path="system/memory/libion" remote="aosp" groups="pdk" />
+  <project name="platform/system/memory/libmeminfo" path="system/memory/libmeminfo" remote="aosp" groups="pdk" />
+  <project name="platform/system/memory/libmemtrack" path="system/memory/libmemtrack" remote="aosp" groups="pdk" />
+  <project name="platform/system/memory/libmemunreachable" path="system/memory/libmemunreachable" remote="aosp" groups="pdk" />
+  <project name="LineageOS/android_system_nfc" path="system/nfc" groups="pdk" revision="2c44e9828fb63f2a180b99acc136ee4f4e6b2521" upstream="refs/heads/lineage-20.0" dest-branch="refs/heads/lineage-20.0" />
+  <project name="platform/system/nvram" path="system/nvram" remote="aosp" groups="pdk" />
+  <project name="platform/system/server_configurable_flags" path="system/server_configurable_flags" remote="aosp" groups="pdk" />
+  <project name="platform/system/teeui" path="system/teeui" remote="aosp" groups="pdk" />
+  <project name="platform/system/testing/gtest_extras" path="system/testing/gtest_extras" remote="aosp" groups="pdk" />
+  <project name="platform/system/tools/aidl" path="system/tools/aidl" remote="aosp" groups="pdk" />
+  <project name="platform/system/tools/hidl" path="system/tools/hidl" remote="aosp" groups="pdk" />
+  <project name="platform/system/tools/sysprop" path="system/tools/sysprop" remote="aosp" groups="pdk" />
+  <project name="platform/system/tools/xsdc" path="system/tools/xsdc" remote="aosp" groups="pdk" />
+  <project name="platform/system/unwinding" path="system/unwinding" remote="aosp" groups="pdk" />
+  <project name="platform/test/app_compat/csuite" path="test/app_compat/csuite" remote="aosp" groups="pdk" />
+  <project name="platform/test/catbox" path="test/catbox" remote="aosp" />
+  <project name="platform/test/cts-root" path="test/cts-root" remote="aosp" />
+  <project name="platform/test/framework" path="test/framework" remote="aosp" groups="pdk,projectarch,vts" />
+  <project name="platform/test/mlts/benchmark" path="test/mlts/benchmark" remote="aosp" groups="pdk" />
+  <project name="platform/test/mlts/models" path="test/mlts/models" remote="aosp" groups="pdk" />
+  <project name="platform/test/mts" path="test/mts" remote="aosp" />
+  <project name="platform/test/vts" path="test/vts" remote="aosp" groups="pdk,vts" />
+  <project name="platform/test/vts-testcase/fuzz" path="test/vts-testcase/fuzz" remote="aosp" groups="pdk,projectarch,vts" />
+  <project name="platform/test/vts-testcase/hal" path="test/vts-testcase/hal" remote="aosp" groups="pdk,vts" />
+  <project name="platform/test/vts-testcase/hal-trace" path="test/vts-testcase/hal-trace" remote="aosp" groups="pdk,vts" />
+  <project name="platform/test/vts-testcase/kernel" path="test/vts-testcase/kernel" remote="aosp" groups="pdk,vts" />
+  <project name="platform/test/vts-testcase/nbu" path="test/vts-testcase/nbu" remote="aosp" groups="pdk,projectarch,vts" />
+  <project name="platform/test/vts-testcase/performance" path="test/vts-testcase/performance" remote="aosp" groups="pdk,projectarch,vts" />
+  <project name="platform/test/vts-testcase/security" path="test/vts-testcase/security" remote="aosp" groups="pdk,projectarch,vts" />
+  <project name="platform/test/vts-testcase/vndk" path="test/vts-testcase/vndk" remote="aosp" groups="pdk,vts" />
+  <project name="platform/tools/aadevtools" path="tools/aadevtools" remote="aosp" groups="pdk" />
+  <project name="platform/tools/acloud" path="tools/acloud" remote="aosp" groups="pdk,projectarch,tools,tradefed,vts" />
+  <project name="platform/tools/apifinder" path="tools/apifinder" remote="aosp" groups="pdk,tools" />
+  <project name="platform/tools/apkzlib" path="tools/apkzlib" remote="aosp" groups="pdk,tradefed" />
+  <project name="platform/tools/asuite" path="tools/asuite" remote="aosp" groups="pdk" />
+  <project name="platform/tools/carrier_settings" path="tools/carrier_settings" remote="aosp" groups="tools" />
+  <project name="platform/tools/currysrc" path="tools/currysrc" remote="aosp" groups="pdk" />
+  <project name="platform/tools/dexter" path="tools/dexter" remote="aosp" groups="pdk-fs,tools" />
+  <project name="platform/tools/doc_generation" path="tools/doc_generation" remote="aosp" groups="pdk,tools" />
+  <project name="platform/tools/external/fat32lib" path="tools/external/fat32lib" remote="aosp" groups="tools" />
+  <project name="platform/tools/external_updater" path="tools/external_updater" remote="aosp" groups="tools" />
+  <project name="platform/tools/loganalysis" path="tools/loganalysis" remote="aosp" groups="nopresubmit,pdk,tradefed" />
+  <project name="platform/tools/metalava" path="tools/metalava" remote="aosp" groups="pdk,tools" />
+  <project name="platform/tools/ndkports" path="tools/ndkports" remote="aosp" groups="pdk" />
+  <project name="platform/tools/security" path="tools/security" remote="aosp" groups="pdk,tools" />
+  <project name="platform/tools/test/connectivity" path="tools/test/connectivity" remote="aosp" groups="pdk" />
+  <project name="platform/tools/test/graphicsbenchmark" path="tools/test/graphicsbenchmark" remote="aosp" groups="pdk" />
+  <project name="platform/tools/test/mobly_snippets" path="tools/test/mobly_snippets" remote="aosp" groups="pdk" />
+  <project name="platform/tools/test/openhst" path="tools/test/openhst" remote="aosp" groups="tools" />
+  <project name="platform/tools/tradefederation/prebuilts" path="tools/tradefederation/prebuilts" remote="aosp" groups="pdk,tradefed" clone-depth="1" />
+  <project name="platform/tools/treble" path="tools/treble" remote="aosp" groups="pdk,tools" />
+  <project name="platform/tools/trebuchet" path="tools/trebuchet" remote="aosp" groups="cts,pdk,pdk-cw-fs,pdk-fs,tools" />
+  <project name="toolchain/benchmark" remote="aosp" />
+  <project name="toolchain/pgo-profiles" remote="aosp" groups="pdk" />
+  <project name="tools/platform-compat" remote="aosp" groups="pdk,pdk-cw-fs,pdk-fs" />
+  
+  <superproject name="platform/superproject" remote="aosp" revision="android-13.0.0_r75" />
+  
+  <contactinfo bugurl="go/repo-bug" />
+</manifest>

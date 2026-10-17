@@ -1,0 +1,18 @@
+# waydroid-nvidia: the nvidia-prolapse vendor image is gated on, and pinned to, the NVIDIA kernel module it ran on.
+# After a driver update the container refuses to start with the new module until the setup re-gates it.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = nvidia-utils
+Target = nvidia-open
+Target = nvidia-open-dkms
+Target = nvidia-open-lts
+Target = nvidia
+Target = nvidia-dkms
+Target = nvidia-lts
+
+[Action]
+Description = Checking the waydroid-nvidia driver mode...
+When = PostTransaction
+Exec = /usr/lib/waydroid-nvidia/driver-update-note

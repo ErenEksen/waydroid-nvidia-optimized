@@ -2,7 +2,7 @@
 # measure — the canonical smoothness bench: fling the app DRAWER (local,
 # deterministic content — horizontal workspace swipes land on the Discover
 # news feed, whose network content varies run-to-run) and read HWUI frame
-# stats. Numbers go in STATE.md's Log. Requires a booted stack.
+# stats. Requires a booted stack.
 #
 # Two metric sets:
 #  - histogram percentiles (dumpsys gfxinfo): intended-vsync -> present

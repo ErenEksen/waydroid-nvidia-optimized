@@ -1,0 +1,12 @@
+# /etc/sudoers.d/wd-native — example; install with: sudo visudo -cf this-file && sudo install -m 0440 this-file /etc/sudoers.d/wd-native
+#
+# WARNING: this lets the named user run the native-mode helper as root without a password.
+# The helper runs the code of the checkout named in /etc/waydroid-nvidia/wd-native.conf
+# (default: the package's root-owned copy in /usr/lib/waydroid-nvidia/native). If you point it
+# at a checkout you can write (ALLOW_USER_OWNED_REPO=yes), anyone who can write that checkout
+# can act as root. Replace USERNAME; keep the exact helper path; never use a wildcard path.
+#
+# Packaged helper:
+USERNAME ALL=(root) NOPASSWD: /usr/lib/waydroid-nvidia/wd-native
+# Development checkout instead (copy packaging/native/wd-native to a root-owned path first):
+# USERNAME ALL=(root) NOPASSWD: /usr/local/sbin/wd-native

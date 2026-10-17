@@ -1,0 +1,298 @@
+//! C ABI of video/nv_video.h (v1).
+use super::{
+    session::{Session, SessionInfo, Target},
+    NvVideoCaps, NvVideoDeviceInfo, VideoDevice, VideoError,
+};
+use std::{cell::RefCell, ffi::CString, os::fd::IntoRawFd};
+
+thread_local! {
+    static LAST_ERROR: RefCell<CString> = RefCell::new(CString::default());
+}
+
+fn fail(e: VideoError) -> i32 {
+    let msg = e.message().replace('\0', " ");
+    crate::diag::diag!("nv-video: {msg}");
+    LAST_ERROR.with(|l| *l.borrow_mut() = CString::new(msg).unwrap_or_default());
+    e.code()
+}
+
+fn guard(f: impl FnOnce() -> Result<i32, VideoError>) -> i32 {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(Ok(v)) => v,
+        Ok(Err(e)) => fail(e),
+        Err(_) => fail(VideoError::DeviceLost("internal panic".into())),
+    }
+}
+
+pub struct NvVideoDevice(VideoDevice);
+pub struct NvVideoSession(Session);
+// SAFETY: a session's RM objects are only reachable through the session; the
+// header requires callers to serialise each session, so moving it between
+// threads never shares its Rc graph concurrently.
+unsafe impl Send for NvVideoSession {}
+
+#[repr(C)]
+pub struct NvVideoSessionInfo {
+    pub codec: u32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub bit_depth: u32,
+    pub extra_output_slots: u32,
+    pub codec_config: *const u8,
+    pub codec_config_len: usize,
+    pub reserved: [u32; 8],
+}
+
+#[repr(C)]
+pub struct NvVideoPicture {
+    pub id: u64,
+    pub timestamp: u64,
+    pub width: u32,
+    pub height: u32,
+    pub crop_left: u32,
+    pub crop_top: u32,
+    pub crop_width: u32,
+    pub crop_height: u32,
+    pub bit_depth: u32,
+    pub color_primaries: u32,
+    pub transfer: u32,
+    pub matrix: u32,
+    pub full_range: u32,
+    pub keyframe: u32,
+    pub reserved: [u32; 5],
+}
+
+#[repr(C)]
+pub struct NvVideoTarget {
+    pub dmabuf_fd: [i32; 2],
+    pub offset: [u64; 2],
+    pub pitch: [u32; 2],
+    pub modifier: u64,
+    pub format: u32,
+    pub width: u32,
+    pub height: u32,
+    pub acquire_fence_fd: i32,
+    pub reserved: [u32; 6],
+}
+
+fn null<T>(p: *const T, what: &str) -> Result<(), VideoError> {
+    if p.is_null() {
+        Err(VideoError::Invalid(format!("{what} is NULL")))
+    } else {
+        Ok(())
+    }
+}
+
+/// # Safety
+/// `out` must be writable; `info` NULL or writable.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_device_open(
+    out: *mut *mut NvVideoDevice,
+    info: *mut NvVideoDeviceInfo,
+) -> i32 {
+    guard(|| {
+        null(out, "out")?;
+        let dev = VideoDevice::open()?;
+        if !info.is_null() {
+            // SAFETY: caller-provided writable struct.
+            unsafe { info.write(dev.info) };
+        }
+        // SAFETY: checked non-NULL.
+        unsafe { out.write(Box::into_raw(Box::new(NvVideoDevice(dev)))) };
+        Ok(0)
+    })
+}
+
+/// # Safety
+/// `dev` from nv_video_device_open (or NULL), not used afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_device_close(dev: *mut NvVideoDevice) {
+    if !dev.is_null() {
+        // SAFETY: ownership returns from the caller.
+        drop(unsafe { Box::from_raw(dev) });
+    }
+}
+
+/// # Safety
+/// Valid device and writable caps.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_query_caps(
+    dev: *mut NvVideoDevice,
+    codec: u32,
+    caps: *mut NvVideoCaps,
+) -> i32 {
+    guard(|| {
+        null(dev, "dev")?;
+        null(caps, "caps")?;
+        // SAFETY: checked non-NULL, caller keeps them valid.
+        let c = unsafe { &*dev }.0.caps(codec)?;
+        unsafe { caps.write(c) };
+        Ok(0)
+    })
+}
+
+/// # Safety
+/// Valid device, info and out pointers; codec_config readable for its length.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_session_create(
+    dev: *mut NvVideoDevice,
+    info: *const NvVideoSessionInfo,
+    out: *mut *mut NvVideoSession,
+) -> i32 {
+    guard(|| {
+        null(dev, "dev")?;
+        null(info, "info")?;
+        null(out, "out")?;
+        // SAFETY: checked non-NULL.
+        let i = unsafe { &*info };
+        let cfg = if i.codec_config.is_null() || i.codec_config_len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees the buffer.
+            unsafe { std::slice::from_raw_parts(i.codec_config, i.codec_config_len) }
+        };
+        let s = Session::new(
+            &unsafe { &*dev }.0,
+            SessionInfo {
+                codec: i.codec,
+                max_width: i.max_width,
+                max_height: i.max_height,
+                bit_depth: i.bit_depth,
+                extra_output_slots: i.extra_output_slots,
+            },
+            cfg,
+        )?;
+        unsafe { out.write(Box::into_raw(Box::new(NvVideoSession(s)))) };
+        Ok(0)
+    })
+}
+
+/// # Safety
+/// `s` from nv_video_session_create (or NULL), not used afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_session_destroy(s: *mut NvVideoSession) {
+    if !s.is_null() {
+        // SAFETY: ownership returns from the caller.
+        drop(unsafe { Box::from_raw(s) });
+    }
+}
+
+/// # Safety
+/// Valid session; `data` readable for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_decode(
+    s: *mut NvVideoSession,
+    data: *const u8,
+    len: usize,
+    timestamp: u64,
+    flags: u32,
+) -> i32 {
+    guard(|| {
+        null(s, "session")?;
+        if data.is_null() && len != 0 {
+            return Err(VideoError::Invalid("data NULL with nonzero length".into()));
+        }
+        let d = if len == 0 {
+            &[][..]
+        } else {
+            // SAFETY: caller guarantees the buffer.
+            unsafe { std::slice::from_raw_parts(data, len) }
+        };
+        unsafe { &mut *s }.0.decode(d, timestamp, flags)?;
+        Ok(0)
+    })
+}
+
+/// # Safety
+/// Valid session and writable picture.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_next_picture(
+    s: *mut NvVideoSession,
+    pic: *mut NvVideoPicture,
+) -> i32 {
+    guard(|| {
+        null(s, "session")?;
+        null(pic, "pic")?;
+        let Some((id, timestamp, i)) = unsafe { &mut *s }.0.next_picture() else {
+            return Ok(0);
+        };
+        let p = NvVideoPicture {
+            id,
+            timestamp,
+            width: i.width,
+            height: i.height,
+            crop_left: i.crop[0],
+            crop_top: i.crop[1],
+            crop_width: i.crop[2],
+            crop_height: i.crop[3],
+            bit_depth: i.bit_depth,
+            color_primaries: i.color_primaries,
+            transfer: i.transfer,
+            matrix: i.matrix,
+            full_range: u32::from(i.full_range),
+            keyframe: u32::from(i.keyframe),
+            reserved: [0; 5],
+        };
+        unsafe { pic.write(p) };
+        Ok(1)
+    })
+}
+
+/// # Safety
+/// Valid session.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_flush(s: *mut NvVideoSession) -> i32 {
+    guard(|| {
+        null(s, "session")?;
+        unsafe { &mut *s }.0.flush()?;
+        Ok(0)
+    })
+}
+
+/// # Safety
+/// Valid session, target and fence pointer; target fds live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_copy_out(
+    s: *mut NvVideoSession,
+    id: u64,
+    target: *const NvVideoTarget,
+    release_fence_fd: *mut i32,
+) -> i32 {
+    guard(|| {
+        null(s, "session")?;
+        null(target, "target")?;
+        null(release_fence_fd, "release_fence_fd")?;
+        let t = unsafe { &*target };
+        let fd = unsafe { &mut *s }.0.copy_out(
+            id,
+            &Target {
+                dmabuf_fd: t.dmabuf_fd,
+                offset: t.offset,
+                pitch: t.pitch,
+                modifier: t.modifier,
+                format: t.format,
+                width: t.width,
+                height: t.height,
+                acquire_fence_fd: t.acquire_fence_fd,
+            },
+        )?;
+        unsafe { release_fence_fd.write(fd.map_or(-1, |f| f.into_raw_fd())) };
+        Ok(0)
+    })
+}
+
+/// # Safety
+/// Valid session.
+#[no_mangle]
+pub unsafe extern "C" fn nv_video_picture_release(s: *mut NvVideoSession, id: u64) -> i32 {
+    guard(|| {
+        null(s, "session")?;
+        unsafe { &mut *s }.0.release(id)?;
+        Ok(0)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn nv_video_last_error() -> *const std::ffi::c_char {
+    LAST_ERROR.with(|l| l.borrow().as_ptr())
+}

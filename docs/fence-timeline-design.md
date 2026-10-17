@@ -1,10 +1,8 @@
 # Zero-roundtrip fence export via shared DRM timeline syncobj
 
-Status: **working** (M8.B done 2026-07-12: 0.00% janky, flat 5 ms @250 Hz with
-the path engaged). Prereqs researched 2026-07-12 (see STATE.md log: syncobj
-ioctls are DRM_RENDER_ALLOW, cross-process and cross-driver by design;
-reference designs: linux-drm-syncobj-v1, PipeWire 1.2). Kill switch:
-`VTEST_NO_TIMELINE=1` on the server disables the capability param.
+Venus mode only. Status: working (0.00 % janky frames, flat 5 ms at 250 Hz with the path engaged).
+Syncobj ioctls are DRM_RENDER_ALLOW and work across processes and drivers by design; reference designs are
+linux-drm-syncobj-v1 and PipeWire 1.2. `VTEST_NO_TIMELINE=1` on the server disables the path.
 
 ## Problem
 

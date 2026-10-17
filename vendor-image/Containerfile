@@ -1,0 +1,36 @@
+# Build environment for the LineageOS 20 Waydroid vendor image (vendor-image/build-vendor.sh runs lunch and m in it).
+#
+# Why a container: the Android build replaces PATH for its actions (build/soong/ui/build/path.go: prebuilts/build-tools
+# + the out/.path interposer), so host tools that the tree expects can only come from the system locations.
+# Waydroid's Mesa rule runs `PATH=/usr/bin:/usr/local/bin:$PATH meson ...` (external/mesa/android/mesa3d_cross.mk:86),
+# and Mesa's meson needs python3 with mako. The LLVM host tools NEED libncurses.so.5 + libtinfo.so.5. The official
+# images are built in a container too (their build.prop names /out/lineage20). The runner host (Arch) has neither
+# meson nor ncurses 5, and it gets no system changes.
+#
+# Contents: the LineageOS/WayDroid-ATV documented host packages for Ubuntu (minus GUI-only ones; plus ccache, used
+# as the tree's CC_WRAPPER, build-vendor.sh), the Mesa
+# 26.0.8 build tools (meson >= 1.4.0 from pip at a pinned version, mako/yaml/packaging, bison, flex, glslang >= 12.2
+# built from a pinned upstream tag), and git.
+# The base image is pinned by digest. apt package versions are whatever jammy's archive serves at image build time;
+# build-vendor.sh records `dpkg -l` + `pip freeze` of the image with every build.
+FROM ubuntu@sha256:5ec03bb3441e8b0bf3b4f9cd4629a1ae763010dc3035bb8da3ae6cf026486401
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 LC_ALL=C.UTF-8
+RUN apt-get update -q && apt-get install -yq --no-install-recommends \
+        bc bison build-essential ca-certificates curl flex g++-multilib gcc-multilib git git-lfs gnupg gperf \
+        lib32ncurses5-dev lib32readline-dev lib32z1-dev libelf-dev liblz4-tool libncurses5 libncurses5-dev \
+        libssl-dev libxml2 libxml2-utils lzop python3 python3-pip python3-mako python3-yaml python3-packaging \
+        rsync schedtool squashfs-tools xsltproc zip unzip zlib1g-dev pkg-config ninja-build procps cmake python-is-python3 \
+        ccache \
+    && rm -rf /var/lib/apt/lists/*
+# Mesa 26.0.8 asks for meson >= 1.4.0 (external/mesa/meson.build:9); jammy ships 0.61, so pip, pinned.
+RUN python3 -m pip install --no-cache-dir meson==1.7.0 && meson --version
+# Mesa's radv BVH shaders need glslang >= 12.2 (external/mesa/meson.build:695); jammy ships 11.8, so build the pinned
+# tag into /usr/local (no apt glslang-tools: the Mesa rule puts /usr/bin first on PATH and would find the old one).
+ARG GLSLANG_TAG=15.0.0
+ARG GLSLANG_COMMIT=46ef757e048e760b46601e6e77ae0cb72c97bd2f
+RUN git clone -q --depth 1 --branch "$GLSLANG_TAG" https://github.com/KhronosGroup/glslang /tmp/glslang \
+    && test "$(git -C /tmp/glslang rev-parse HEAD)" = "$GLSLANG_COMMIT" \
+    && cmake -S /tmp/glslang -B /tmp/glslang/build -G Ninja -DCMAKE_BUILD_TYPE=Release -DENABLE_OPT=OFF \
+         -DGLSLANG_TESTS=OFF -DBUILD_SHARED_LIBS=OFF -DCMAKE_INSTALL_PREFIX=/usr/local \
+    && ninja -C /tmp/glslang/build install && rm -rf /tmp/glslang && glslangValidator --version | head -1

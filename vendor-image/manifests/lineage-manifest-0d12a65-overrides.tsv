@@ -1,0 +1,7 @@
+# LineageOS manifest 0f52348 (tree sync 2026-07) -> 0d12a65 (2026-09-23): AOSP tag -> LineageOS fork
+external/libhevc	LineageOS/android_external_libhevc	bfb8d17d32a7dce0b4fbea30795d8d465a29695f	refs/heads/lineage-20.0
+packages/apps/TV	LineageOS/android_packages_apps_TV	50462999aeee02ca22ea7bb3351e201b30f67bca	refs/heads/lineage-20.0
+packages/services/BuiltInPrintService	LineageOS/android_packages_services_BuiltInPrintService	b3da86b1a4d62e52346d8614de0fe36d1d5b2eba	refs/heads/lineage-20.0
+system/incremental_delivery	LineageOS/android_system_incremental_delivery	574718556ac0390cc9de6e9f788fdcf4d259dc28	refs/heads/lineage-20.0
+system/libufdt	LineageOS/android_system_libufdt	6f4879f0df2a4b1f277bdd8475318be5ad0723a6	refs/heads/lineage-20.0
+system/nfc	LineageOS/android_system_nfc	2c44e9828fb63f2a180b99acc136ee4f4e6b2521	refs/heads/lineage-20.0

@@ -1,0 +1,4 @@
+# libnvglibc default environment (nvidia-prolapse/shim/core/defenv.c): NAME=VALUE, used by NVIDIA's libraries
+# only when NAME is absent from the process environment. ${ORIGIN} = this directory.
+# NVIDIA's EGL finds the Android window-system platform (libnvnative-egl-android.so) through this JSON.
+__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES=${ORIGIN}/nvnative_egl_android.json

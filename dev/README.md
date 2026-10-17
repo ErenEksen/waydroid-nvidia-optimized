@@ -54,7 +54,7 @@ packaging/aur/reproduce.sh mesa virgl     # fully reproducible components
 
 See `packaging/aur/README.md` + `PREREQS.md` for the full story and the gaps.
 
-## Rules baked in (learned the hard way — see STATE.md)
+## Rules baked in
 
 - **Never** bounce composer/SurfaceFlinger individually — SF zombies at
   `flips=0`. Only `dev/restart`.

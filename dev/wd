@@ -3,7 +3,7 @@
 # Usage: dev/wd container start | dev/wd upgrade -o | dev/wd shell ...
 source "$(dirname "$(readlink -f "$0")")/env.sh"
 cd "$WAYDROID_SRC"
-# interactive tty: normal sudo (may prompt). non-tty (agents/units): -n only —
+# interactive tty: normal sudo (may prompt). non-tty (scripts/units): -n only —
 # a bare sudo prompt without a tty burns PAM attempts and faillock locks the
-# account for 600s (see STATE.md).
+# account for 600s.
 if [ -t 0 ]; then exec sudo python3 waydroid.py "$@"; else exec sudo -n python3 waydroid.py "$@"; fi

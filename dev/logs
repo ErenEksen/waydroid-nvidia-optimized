@@ -14,7 +14,7 @@ GFX_RE='gralloc|Gralloc|EGL|egl|[Vv]ulkan|SurfaceFlinger|hwcomposer|hwc|libEGL|s
 # waydroid.log is world-readable (0644) and the wheel group reads the system
 # journal — no sudo needed for either. logcat goes through guest() (lxc-attach,
 # NOPASSWD-allowlisted) instead of `sudo waydroid.py logcat` (bare sudo without
-# a tty burns PAM attempts -> faillock; see STATE.md).
+# a tty burns PAM attempts -> faillock).
 case "${1:-dump}" in
   -f)    exec tail -f "$LOG" ;;
   gfx)   guest 'logcat -d' | grep -E "$GFX_RE" ;;
