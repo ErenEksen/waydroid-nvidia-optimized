@@ -1,4 +1,4 @@
-# ANGLE (guest GLES) — pinned source + our patch
+# ANGLE (guest GLES) — pinned source + our patches
 
 The guest's GLES driver is ANGLE on Vulkan (`/vendor/lib{,64}/egl/lib{EGL,GLESv2,GLESv1_CM}_angle.so`),
 built from upstream at a pinned commit plus the patches in `patches/`. Nothing is binary-patched.
@@ -41,7 +41,7 @@ angle_enable_swiftshader = false
 ```
 
 Check: x86_64 outputs are ELF64 / "Advanced Micro Devices X86-64", x86 outputs ELF32 / "Intel 80386".
-The patch changes only `libGLESv2_angle.so`; libEGL and libGLESv1_CM stay byte-identical.
+The patches change only `libGLESv2_angle.so`; libEGL and libGLESv1_CM stay byte-identical.
 
 ## Patch 0001: ReBAR memory for dynamic buffers on discrete GPUs
 
@@ -81,3 +81,45 @@ gpuload 1440p 7392 (was 7265).
 
 Upstream candidate (no existing upstream bug or CL found; related history: 3b38b37907 added the
 discrete exclusion, 5ddf631cc1 the heap-size check for virtual GPUs).
+
+## Patch 0002: tell Mesa NVK apart from the NVIDIA proprietary driver
+
+**Problem.** NVK reports NVIDIA's vendor ID, so `Renderer::initFeatures()` treated it as the proprietary
+driver and parsed its Mesa version (26.2.5) as NVIDIA driver "26.x": every workaround for NVIDIA drivers
+older than 421/441/470/525/531 applied. The costly one is `externallySynchronizePipelineCacheAccess`
+(NVIDIA < 441): ANGLE's link-time pipeline warm-up ran one `vkCreateGraphicsPipelines` at a time under a
+renderer mutex, and the first draw waited for it. Unchanged on upstream main 7865acacb.
+
+**Fix.** As the PanVK split (ba5db43c1): NVK is identified by `VK_DRIVER_ID_MESA_NVK`;
+`isNvidiaProprietary = isNvidia && !isMesaNVK` gates the driver-bug workarounds and NVIDIA version
+checks, NVK's version is parsed as Mesa. Hardware-related conditions keep `isNvidia`.
+
+| feature | NVK before | NVK after | reason (vk_renderer.cpp lines at the pin + 0001) |
+|---|---|---|---|
+| driverVersion parse | NVIDIA layout (26.0.x) | Mesa (26.2.5) | :5533 |
+| externallySynchronizePipelineCacheAccess | on | off | NVIDIA < 441 (:6575-6578); NVK's VkPipelineCache is internally synchronized |
+| supportsGraphicsPipelineLibrary | off | on | NVIDIA < 531 (:6489-6492); NVK exposes graphicsPipelineLibrary |
+| forceWaitForSubmissionToCompleteForQueryResult | on | off | NVIDIA < 470 query bug (:6706-6710) |
+| supportsSPIRV14 | off | on | NVIDIA < 525 (:6270-6275) |
+| clampPointSize | on | off | NVIDIA < 421 (:5638-5643) |
+| supportsDynamicRenderingLocalRead | off | on | NVIDIA driver bug with attachment location gaps (:6771-6780) |
+| disableDepthStencilResolveThroughAttachment | on | off | NVIDIA driver bug anglebug.com/42267095 (:5818-5824) |
+| avoidOpSelectWithMismatchingRelaxedPrecision | off | off | NVIDIA 535-551 (:5645-5648) |
+| avoidInvisibleWindowSwapchainRecreate | off | off | NVIDIA on X11 only (:5892-5896) |
+| swapchainDeferredMemoryAllocation | unchanged | unchanged | NVIDIA on Wayland only (:6153-6156) |
+| isImmediateModeRenderer | IMR | IMR | GPU architecture (:5568-5569), kept |
+| clampFragDepth | off | off | kept; only without depthClampZeroOne, which NVK has (:5657-5658) |
+| allowGenerateMipmapWithCompute | on | on | kept (:6007-6010) |
+| doubleDepthBiasConstantFactor | on | on | kept (:6718-6719); the list holds other vendors' Mesa drivers too |
+| preferGlobalPipelineCache | on | on | kept (:6552-6553) |
+| skipPipelineCacheSerialization | on | on | kept (:6529); NVK keeps its own disk cache, a blob-cache copy would duplicate it |
+
+GL renderer string: the driver version now reads `NVK-26.2.5`.
+
+**Measured** (RTX 5090, NVK 26.2.5 with the per-application disk cache, Minecraft 1.26.60.24, first hotbar
+switch, longest present-to-present interval of the app's layer; cold = empty NVK and EGL blob caches):
+
+| | cold | warm relaunch |
+|---|---|---|
+| pinned ANGLE + 0001, NVK without disk cache | 1542 ms | 1504 ms |
+| + 0002, NVK with disk cache | 206 / 228 ms | 134 / 134 ms |

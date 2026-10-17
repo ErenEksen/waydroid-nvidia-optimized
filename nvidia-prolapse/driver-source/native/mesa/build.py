@@ -141,7 +141,9 @@ GL_RUST = ROOT / f"build/nvrm-rust{_GL_SUFFIX}"
 NVK_PATCHES = ("build-compat.patch", "rm-integration.patch", "pascal-a-clear.patch",
                "nvk-upstream-ecfea8d9-ycbcr-modifier.patch",
                "nvk-upstream-bfb90f05-memory-plane-aspects.patch",
-               "nvk-explicit-plane-layouts.patch", "nvk-angle-nan-preserve-min-max.patch")
+               "nvk-explicit-plane-layouts.patch", "nvk-angle-nan-preserve-min-max.patch",
+               "mesa-disk-cache-create-with-path.patch", "mesa-disk-cache-keep-file-backend.patch",
+               "mesa-disk-cache-evict-invalid-item.patch", "nvk-android-app-disk-cache.patch")
 
 GL_TRIPLES = {"android": "x86_64-linux-android", "android32": "i686-linux-android"}
 # Android: distinct library names so the image's own Mesa (libEGL_mesa.so,
@@ -171,6 +173,15 @@ NVK_PATCH_LIST = [
     # GLES through ANGLE keeps NaN-preserving FMin/FMax/FClamp (Mesa 26
     # folds max(NaN, 0) to NaN; GTA SA car paint black), driconf by engine.
     HERE / "nvk-angle-nan-preserve-min-max.patch",
+    # Shader disk cache in an explicit per-application directory
+    # (create_with_path): nvrm's program cache and, on Android, NVK's
+    # pipeline cache in the application's code_cache; never redirected
+    # into the EGL blob cache (keep-file-backend); self-healing after a
+    # damaged item (evict-invalid).
+    HERE / "mesa-disk-cache-create-with-path.patch",
+    HERE / "mesa-disk-cache-keep-file-backend.patch",
+    HERE / "mesa-disk-cache-evict-invalid-item.patch",
+    HERE / "nvk-android-app-disk-cache.patch",
 ]
 
 def prepared_stamp(source, inputs):
@@ -198,6 +209,15 @@ GL_PREP_INPUTS = [HERE / n for n in NVK_PATCHES + ("gallium-nvrm.patch", "mesa-o
                                                   "gallium-nvrm")]
 NVK_PREP_INPUTS = NVK_PATCH_LIST + [HERE / n for n in ("nv_rm.h", "nvkmd_rm.h", "nvkmd_rm.c")]
 
+def write_ndk_zlib_pc(pkgconfig_dir):
+    """zlib.pc for the NDK sysroot zlib (an NDK stable library, libz.so in
+    every image's /system/lib*); libzstd is not in the NDK."""
+    ndk_zlib = (NDK / "sysroot/usr/include/zlib.h").read_text()
+    zlib_version = next(line.split('"')[1].split("-")[0] for line in ndk_zlib.splitlines()
+                        if line.startswith("#define ZLIB_VERSION "))
+    (pkgconfig_dir / "zlib.pc").write_text(
+        f"Name: zlib\nDescription: NDK sysroot zlib\nVersion: {zlib_version}\nLibs: -lz\nCflags:\n")
+
 def gl_build_dir(target):
     return ROOT / f"build/nvrm-{target}{_GL_SUFFIX}"
 
@@ -224,14 +244,8 @@ def prepare_gl_source(args):
     run(["git", "-C", GL_SOURCE, "clean", "-qfdx", "-e", "subprojects/packagecache"])
     # GL-only Mesa core fixes (st/mesa, main/) on top of the NVK stack;
     # android-egl-suffix.patch only changes Android library naming.
-    # mesa-disk-cache-*: nvrm's program cache in an explicit per-application
-    # directory (create_with_path), not redirected into the EGL blob cache
-    # (keep-file-backend), self-healing after a damaged item (evict-invalid).
     for name in NVK_PATCHES + ("gallium-nvrm.patch", "mesa-oes-texture-stencil8.patch",
                                "mesa-nv-polygon-mode.patch", "nak-panic-message.patch",
-                               "mesa-disk-cache-create-with-path.patch",
-                               "mesa-disk-cache-keep-file-backend.patch",
-                               "mesa-disk-cache-evict-invalid-item.patch",
                                "android-egl-suffix.patch"):
         run(["git", "-C", GL_SOURCE, "apply", HERE / name])
     rm_source = GL_SOURCE / "src/nouveau/vulkan/nvkmd/rm"
@@ -335,11 +349,7 @@ def build_gl_android(args, env, target):
     # nvrm's program cache (Mesa disk_cache, nvrm_shader_cache.c) needs a
     # compressor: the NDK sysroot ships zlib (an NDK stable library, libz.so in
     # every image's /system/lib*); libzstd is not in the NDK.
-    ndk_zlib = (NDK / "sysroot/usr/include/zlib.h").read_text()
-    zlib_version = next(line.split('"')[1].split("-")[0] for line in ndk_zlib.splitlines()
-                        if line.startswith("#define ZLIB_VERSION "))
-    (cross_dir / "pkgconfig/zlib.pc").write_text(
-        f"Name: zlib\nDescription: NDK sysroot zlib\nVersion: {zlib_version}\nLibs: -lz\nCflags:\n")
+    write_ndk_zlib_pc(cross_dir / "pkgconfig")
     linker_args = [f"-L{rust_lib}"]
     options = ["--cross-file", cross,
                "-Dvulkan-drivers=nouveau", "-Dgallium-drivers=nvrm",
@@ -455,7 +465,11 @@ def main():
         if target == "host":
             options += ["-Dplatforms=", "-Dinstall-mesa-clc=true", "-Dcpp_link_args=" + json.dumps(linker_args)]
         else:
-            options += ["--cross-file", android_cross_file(bits, download=args.download_deps), "-Dplatforms=android", "-Dplatform-sdk-version=33", "-Dandroid-libbacktrace=disabled", "-Dllvm=disabled", "-Dmesa-clc=system", "-Dexpat=disabled", "-Dzstd=disabled", "-Dzlib=disabled", "-Dshader-cache=disabled"]
+            # Persistent pipeline cache (nvk-android-app-disk-cache.patch) with
+            # the NDK's zlib as compressor, as the nvrm build.
+            cross = android_cross_file(bits, download=args.download_deps)
+            write_ndk_zlib_pc(ROOT / f"build/nvk-{target}-pkgconfig")
+            options += ["--cross-file", cross, "-Dplatforms=android", "-Dplatform-sdk-version=33", "-Dandroid-libbacktrace=disabled", "-Dllvm=disabled", "-Dmesa-clc=system", "-Dexpat=disabled", "-Dzstd=disabled", "-Dzlib=enabled", "-Dshader-cache=enabled"]
             options += ["-Dcpp_link_args=" + json.dumps(linker_args + ["-static-libstdc++", f"-Wl,-rpath-link,{runtime}"])]
             target_env.pop("PKG_CONFIG_PATH", None)
             target_env["BINDGEN_EXTRA_CLANG_ARGS"] = f"--sysroot={NDK}/sysroot -isystem {NDK}/sysroot/usr/include/{triple} -D__ANDROID_API__=33"

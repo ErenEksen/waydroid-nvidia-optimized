@@ -111,13 +111,21 @@ Mesa's GLSL frontend keeps float min/max NaN-preserving and NVIDIA FMNMX/stock r
 non-NaN operand. GTA SA's vehicle specular `max(pow(x<0, 10.0), 0.0)` rendered car paint black
 under ANGLE on 26.2 (`tests/vk-nan-minmax.c`, live A/B 2026-10-16).
 
-GL-only Mesa util patches for nvrm's program cache (upstream-style messages in each file):
+Mesa util patches for the shader disk cache, applied to the NVK and the GL tree (upstream-style messages in each file):
 `mesa-disk-cache-create-with-path.patch` (`disk_cache_create_with_path()`: a cache at an absolute,
 per-application directory, enabled on every platform, driver_flags kept),
 `mesa-disk-cache-keep-file-backend.patch` (`disk_cache_set_callbacks` leaves a cache with a working
 file backend alone, so Android libEGL's blob-cache callbacks do not take it over) and
 `mesa-disk-cache-evict-invalid-item.patch` (a multi-file item that fails validation is removed on load;
 before, it blocked every later write of its key and the key missed forever).
+`nvk-android-app-disk-cache.patch`: on Android NVK creates its disk cache with
+`disk_cache_create_with_path()` at the application's `code_cache/nvk_shader_cache` (the sibling of
+the TMPDIR that Android's framework sets in every application process, as for nvrm). Mesa's default
+location is off on Android and Vulkan has no blob cache, so before this every process recompiled
+every pipeline, ANGLE GLES applications on each launch. Processes without an application code cache
+keep the in-memory cache only. The Android NVK build uses `-Dshader-cache=enabled -Dzlib=enabled` with
+the NDK zlib. Measured 2026-10-17 (Minecraft 1.26.60.24, first hotbar switch, ANGLE on NVK, RTX 5090,
+longest present interval): warm relaunch 1504 -> 130 ms; cold unchanged; cache 9.1 MB.
 
 Dropped on 26.2: `p100-bisect.patch` (opt-in GP100 Xid 13 diagnostic; the bisection
 ruled its suspects out and the cause was R19, RM depth kinds),
