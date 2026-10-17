@@ -65,7 +65,6 @@ compare with `--native-gl off` before reporting a GL bug.
 
 ## Known issues
 
-- Minecraft freezes for about 2 seconds the first time a new item or effect appears. A fix is in progress.
 - With `--native-gl on`, GTA San Andreas sometimes shows black frames.
 - Above about 333 Hz the display can stall. Cap the rate with `sudo waydroid-nvidia-setup --refresh <hz>`.
 - Android 14 and 15 have no official Waydroid images and are untested.
