@@ -12,7 +12,7 @@ GPU and kernel module against the shipped payload:
     vk-compute      tools/native-vulkan-probe.c        (compute + copy, --negative)
     vk-graphics     tools/native-vulkan-offscreen.c    (triangle -> tiled image -> readback)
     vk-interop      tools/native-vulkan-interop.c      (dma-buf + sync-fd between two devices)
-    anb-roundtrip, astc-roundtrip   nvidia-prolapse/hal tests (native/mesa/build-hal-tests.py output)
+    anb-roundtrip, astc-roundtrip, etc2-roundtrip   nvidia-prolapse/hal tests (native/mesa/build-hal-tests.py output)
     gl-triangle     native/mesa/tests/gl-g0b-triangle.c   (ES 3.0 clear/triangle/quad + readback)
     gl-dmabuf       native/mesa/tests/gl-dmabuf.c         (-DNVRM_NO_VULKAN; EGL dma-buf + native fences)
     gl-skia-shaders native/mesa/tests/gl-skia-shaders.c   (SurfaceFlinger RenderEngine shader features)
@@ -83,7 +83,7 @@ def main():
         for exe, source in (('vk-compute', 'native-vulkan-probe.c'), ('vk-graphics', 'native-vulkan-offscreen.c'),
                             ('vk-interop', 'native-vulkan-interop.c')):
             run(cc, *WARN, REPO / 'tools' / source, '-ldl', '-o', bindir / exe)
-        for exe in ('anb-roundtrip', 'astc-roundtrip'):   # native/mesa/build-hal-tests.py, same NDK
+        for exe in ('anb-roundtrip', 'astc-roundtrip', 'etc2-roundtrip'):   # native/mesa/build-hal-tests.py, same NDK
             shutil.copyfile(must(REPO / 'build/source-native-integration' / target / exe), bindir / exe)
         nvrm = REPO / f'build/nvrm-{target}'
         link = [f'-L{must(nvrm / "src/egl/libEGL_nvrm.so").parent}',

@@ -13,6 +13,8 @@
 # read from the git object store of $(MESA) (never from its working tree): astc_decoder.glsl -> SPIR-V with
 # glslangValidator (Mesa's src/vulkan/runtime/meson.build command), texcompress_astc_luts.cpp -> LUT data
 # (tools/astc-luts-gen.cpp). No binary is checked in.
+# The ETC2/EAC decoder is src/etc2_decoder.comp, compiled the same way (out/gen/etc2_spv.h); its host test's reference
+# is Mesa's CPU decoder src/mesa/main/texcompress_etc.c from the same pinned commit.
 
 .DEFAULT_GOAL := all
 NDK      ?= /opt/android-ndk
@@ -27,7 +29,8 @@ HOST_VKINC ?= /usr/include/vulkan
 NDK_VKINC  := $(TC)/sysroot/usr/include/vulkan
 GEN_HDRS := --header-dir $(HOST_VKINC) --header-dir $(NDK_VKINC)
 
-SRCS := src/hal.c src/device.c src/anb.c src/ahb.c src/imgxlate.c src/util.c src/astc.c src/cmdstate.c src/astc_spv.c src/gputime.c
+SRCS := src/hal.c src/device.c src/anb.c src/ahb.c src/imgxlate.c src/util.c src/astc.c src/cmdstate.c src/astc_spv.c \
+        src/etc2_spv.c src/gputime.c
 GEN  := out/gen/nvhal_gen.c
 HDRS := src/nvhal.h src/nvhal_ahb.h src/nvhal_astc.h $(wildcard include/android/*/*.h) \
         include/minigbm/cros_gralloc_handle.h include/host/android/hardware_buffer.h
@@ -40,9 +43,12 @@ MESA_URL := https://gitlab.freedesktop.org/mesa/mesa.git
 GLSLANG  ?= glslangValidator
 SPIRV_VAL ?= spirv-val
 HOSTCXX  ?= g++
-ASTC_GEN := out/gen/nvhal_astc_luts.c out/gen/astc_spv.h
+ASTC_GEN := out/gen/nvhal_astc_luts.c out/gen/astc_spv.h out/gen/etc2_spv.h
 MESA_FILES := src/compiler/glsl/astc_decoder.glsl src/util/texcompress_astc_luts.cpp src/util/texcompress_astc_luts.h \
-              src/mesa/main/texcompress_astc.cpp
+              src/mesa/main/texcompress_astc.cpp src/mesa/main/texcompress_etc.c src/util/format/texcompress_etc_tmp.h
+# the ETC2/EAC test's reference decoder (test/etc2-ref.c) and its inputs
+ETC2_REF_DEPS := $(wildcard test/etc2-ref/*.h test/etc2-ref/util/*.h) out/gen/mesa/src/mesa/main/texcompress_etc.c \
+                 out/gen/mesa/src/util/format/texcompress_etc_tmp.h
 # a file of the pinned commit, from the object store (the checkout may be sparse or modified)
 out/gen/mesa/%: | out/gen
 	@mkdir -p $(dir $@)
@@ -59,6 +65,14 @@ out/gen/astc_spv.h: out/gen/mesa/src/compiler/glsl/astc_decoder.glsl
 	$(GLSLANG) -V -S comp -x -o $@ $<
 	{ echo "Mesa $(MESA_TAG) $(MESA_SHA):src/compiler/glsl/astc_decoder.glsl"; $(GLSLANG) --version | head -1; } \
 	    > out/gen/astc_spv.version
+
+# the ETC2/EAC decoder (this tree's source), validated, version recorded
+out/gen/etc2_spv.h: src/etc2_decoder.comp | out/gen
+	@command -v $(GLSLANG) >/dev/null || { echo "$(GLSLANG) not found (glslang); it compiles src/etc2_decoder.comp" >&2; exit 1; }
+	$(GLSLANG) -V -S comp -o out/gen/etc2.spv $<
+	$(SPIRV_VAL) --target-env vulkan1.0 out/gen/etc2.spv
+	$(GLSLANG) -V -S comp -x -o $@ $<
+	$(GLSLANG) --version | head -1 > out/gen/etc2_spv.version
 
 out/gen/astc-luts-gen: tools/astc-luts-gen.cpp out/gen/mesa/src/util/texcompress_astc_luts.cpp \
                        out/gen/mesa/src/util/texcompress_astc_luts.h | out/gen
@@ -78,11 +92,11 @@ LDFLAGS_SO    := -shared -Wl,-z,defs -Wl,--no-undefined -Wl,-soname,vulkan.nvidi
 .PHONY: all host android android32 host32 check coverage test test32 driver-check hal-fence-check clean
 all: host android android32 host32 check
 host: out/host/vulkan.nvidia.so out/host/anb-roundtrip out/host/ahb-roundtrip out/host/ext-duplicates \
-      out/host/ext-duplicates-asan out/host/loader-pd out/host/astc-roundtrip out/host/ahb-yuv
+      out/host/ext-duplicates-asan out/host/loader-pd out/host/astc-roundtrip out/host/etc2-roundtrip out/host/ahb-yuv
 android: out/android/vulkan.nvidia.so out/android/ext-duplicates
 android32: out/android32/vulkan.nvidia.so out/android32/ext-duplicates
 host32: out/host32/vulkan.nvidia.so out/host32/anb-roundtrip out/host32/ahb-roundtrip out/host32/ext-duplicates \
-        out/host32/ext-duplicates-asan out/host32/loader-pd out/host32/astc-roundtrip
+        out/host32/ext-duplicates-asan out/host32/loader-pd out/host32/astc-roundtrip out/host32/etc2-roundtrip
 
 out/host out/android out/android32 out/host32 out/gen:
 	mkdir -p $@
@@ -131,6 +145,11 @@ out/host32/astc-ref.o: test/astc-ref.cpp $(wildcard test/astc-ref/*.h test/astc-
 out/host32/astc-roundtrip: test/astc-roundtrip.c out/host32/astc-ref.o out/gen/astc_sample_spv.h \
                            $(wildcard include/android/*/*.h) | out/host32
 	$(HOSTCC) -m32 $(TEST_CFLAGS) -Iout/gen -o $@ test/astc-roundtrip.c out/host32/astc-ref.o -ldl -lstdc++
+out/host32/etc2-ref.o: test/etc2-ref.c $(ETC2_REF_DEPS) | out/host32
+	$(HOSTCC) -m32 $(ETC2_REF_CFLAGS) -c -o $@ test/etc2-ref.c
+out/host32/etc2-roundtrip: test/etc2-roundtrip.c out/host32/etc2-ref.o out/gen/etc2_sample_spv.h \
+                           $(wildcard include/android/*/*.h) | out/host32
+	$(HOSTCC) -m32 $(TEST_CFLAGS) -Iout/gen -o $@ test/etc2-roundtrip.c out/host32/etc2-ref.o -ldl
 
 TEST_CFLAGS := -std=c11 -D_GNU_SOURCE -DVK_NO_PROTOTYPES -DVK_USE_PLATFORM_ANDROID_KHR -O1 -g $(PREFIX_MAP) -Wall -Wextra -Werror \
                -Isrc -Iinclude/host -Iinclude/android -Iinclude/minigbm
@@ -154,6 +173,19 @@ out/host/astc-ref.o: test/astc-ref.cpp $(wildcard test/astc-ref/*.h test/astc-re
 out/host/astc-roundtrip: test/astc-roundtrip.c out/host/astc-ref.o out/gen/astc_sample_spv.h \
                          $(wildcard include/android/*/*.h) | out/host
 	$(HOSTCC) $(TEST_CFLAGS) -Iout/gen -o $@ test/astc-roundtrip.c out/host/astc-ref.o -ldl -lstdc++
+
+# ETC2/EAC emulation pixel test: the reference is Mesa's CPU ETC2/EAC decoder (pinned src/mesa/main/texcompress_etc.c +
+# src/util/format/texcompress_etc_tmp.h, with the test-only stand-in headers of test/etc2-ref/), the sampling shader is
+# compiled from test/etc2-sample.comp
+ETC2_REF_CFLAGS := -std=c11 -O1 -g $(PREFIX_MAP) -Wall -Wextra -Werror -Itest/etc2-ref -Iout/gen/mesa/src \
+                   -Iout/gen/mesa/src/mesa/main
+out/gen/etc2_sample_spv.h: test/etc2-sample.comp | out/gen
+	$(GLSLANG) -V -S comp -x -o $@ $<
+out/host/etc2-ref.o: test/etc2-ref.c $(ETC2_REF_DEPS) | out/host
+	$(HOSTCC) $(ETC2_REF_CFLAGS) -c -o $@ test/etc2-ref.c
+out/host/etc2-roundtrip: test/etc2-roundtrip.c out/host/etc2-ref.o out/gen/etc2_sample_spv.h \
+                         $(wildcard include/android/*/*.h) | out/host
+	$(HOSTCC) $(TEST_CFLAGS) -Iout/gen -o $@ test/etc2-roundtrip.c out/host/etc2-ref.o -ldl
 
 # -rdynamic: the HAL finds the fake AHardwareBuffer table (nvhal_test_ahb_fns) with dlsym(RTLD_DEFAULT)
 out/host/ahb-roundtrip: test/ahb-roundtrip.c src/nvhal_ahb.h include/host/android/hardware_buffer.h \
@@ -219,7 +251,7 @@ hal-fence-check: out/host/vulkan.nvidia.so out/host/vk-first-wait
 	    run --mode sem-export --no-fence-ext --no-anb; run --mode sem-warm-sem-export --no-fence-ext --no-anb; exit $$fail
 
 test: out/host/vulkan.nvidia.so out/host/anb-roundtrip out/host/ahb-roundtrip out/host/ext-duplicates-asan \
-      out/host/loader-pd out/host/astc-roundtrip out/host/ahb-yuv
+      out/host/loader-pd out/host/astc-roundtrip out/host/etc2-roundtrip out/host/ahb-yuv
 	DISPLAY= WAYLAND_DISPLAY= ASAN_OPTIONS=detect_leaks=0 ./out/host/ext-duplicates-asan --hal out/host/vulkan.nvidia.so --dup 3
 	DISPLAY= WAYLAND_DISPLAY= ASAN_OPTIONS=detect_leaks=0 ./out/host/ext-duplicates-asan --icd /usr/lib/libEGL_nvidia.so.0 --dup 3
 	DISPLAY= WAYLAND_DISPLAY= ./out/host/anb-roundtrip out/host/vulkan.nvidia.so
@@ -232,10 +264,12 @@ test: out/host/vulkan.nvidia.so out/host/anb-roundtrip out/host/ahb-roundtrip ou
 	DISPLAY= WAYLAND_DISPLAY= ./out/host/loader-pd out/host/vulkan.nvidia.so
 	DISPLAY= WAYLAND_DISPLAY= ./out/host/astc-roundtrip out/host/vulkan.nvidia.so
 	DISPLAY= WAYLAND_DISPLAY= ./out/host/astc-roundtrip out/host/vulkan.nvidia.so --api 1.0
+	DISPLAY= WAYLAND_DISPLAY= ./out/host/etc2-roundtrip out/host/vulkan.nvidia.so
+	DISPLAY= WAYLAND_DISPLAY= ./out/host/etc2-roundtrip out/host/vulkan.nvidia.so --api 1.0
 
 ICD32 ?= /usr/lib32/libEGL_nvidia.so.0
 test32: out/host32/vulkan.nvidia.so out/host32/anb-roundtrip out/host32/ahb-roundtrip out/host32/ext-duplicates-asan \
-        out/host32/loader-pd out/host32/astc-roundtrip
+        out/host32/loader-pd out/host32/astc-roundtrip out/host32/etc2-roundtrip
 	DISPLAY= WAYLAND_DISPLAY= ASAN_OPTIONS=detect_leaks=0 ./out/host32/ext-duplicates-asan --hal out/host32/vulkan.nvidia.so --dup 3
 	DISPLAY= WAYLAND_DISPLAY= ASAN_OPTIONS=detect_leaks=0 ./out/host32/ext-duplicates-asan --icd $(ICD32) --dup 3
 	DISPLAY= WAYLAND_DISPLAY= ./out/host32/anb-roundtrip out/host32/vulkan.nvidia.so
@@ -247,6 +281,8 @@ test32: out/host32/vulkan.nvidia.so out/host32/anb-roundtrip out/host32/ahb-roun
 	DISPLAY= WAYLAND_DISPLAY= ./out/host32/loader-pd out/host32/vulkan.nvidia.so
 	DISPLAY= WAYLAND_DISPLAY= ./out/host32/astc-roundtrip out/host32/vulkan.nvidia.so
 	DISPLAY= WAYLAND_DISPLAY= ./out/host32/astc-roundtrip out/host32/vulkan.nvidia.so --api 1.0
+	DISPLAY= WAYLAND_DISPLAY= ./out/host32/etc2-roundtrip out/host32/vulkan.nvidia.so
+	DISPLAY= WAYLAND_DISPLAY= ./out/host32/etc2-roundtrip out/host32/vulkan.nvidia.so --api 1.0
 
 clean:
 	rm -rf out

@@ -1,26 +1,31 @@
-/* ASTC LDR emulation (risk R8): desktop NVIDIA has no ASTC, and its ICD even accepts vkCreateImage for an
- * ASTC format and then reports memory requirements of size 0 (measured on 615.71.09). Android titles create
- * ASTC images whether or not textureCompressionASTC_LDR is advertised (Unity: VMA fails, the game traps).
+/* Compressed-format emulation: ASTC LDR (risk R8) and ETC2/EAC. Desktop NVIDIA has neither, and its ICD even
+ * accepts vkCreateImage for an ASTC format and then reports memory requirements of size 0 (measured on 615.71.09).
+ * Android titles create ASTC images whether or not textureCompressionASTC_LDR is advertised (Unity: VMA fails, the
+ * game traps); Android's Vulkan baseline (VP_ANDROID_baseline_2021) requires textureCompressionETC2, and Chrome's
+ * Skia compositor needs ETC2_R8G8B8_UNORM for its ETC1 tab thumbnails. NVK has no ETC2 on desktop GPUs either
+ * (nvk_physical_device.c: textureCompressionETC2 = false).
  *
- * Design: Mesa's common emulation (src/vulkan/runtime/vk_texcompress_astc.c, used by anv/radv) and the
- * baseline's vn_astc_emu (patches/mesa/0003, Venus), re-hosted in a pass-through HAL:
- *  - the app's ASTC image IS an ICD image of the matching RGBA8 format (UNORM or SRGB, as Mesa's
- *    vk_texcompress_astc_emulation_format) with STORAGE usage and MUTABLE_FORMAT|EXTENDED_USAGE added. The
- *    app's handle is that image, so sampling, descriptors, blits from it and barriers need no translation;
- *    views get the RGBA format and a VkImageViewUsageCreateInfo with the app's own usage;
- *  - beside it the HAL keeps the compressed data: one R32G32B32A32_UINT "block image" per mip level (one
- *    texel per 128-bit block, every layer), bound into the app's memory behind the RGBA image; the memory
- *    requirements the app sees cover all of them (so the RGBA size plus about a quarter for 4x4 blocks);
- *  - uploads (vkCmdCopyBufferToImage[2], vkCmdCopyImage[2] into it) copy the blocks into the block image and
- *    then run Mesa's decoder (astc_decoder.glsl, unorm8 mode) in the app's command buffer from the block image
- *    into an R8G8B8A8_UINT storage view of the RGBA image, between barriers; the app's compute state is then
- *    restored (cmdstate.c);
+ * Design: Mesa's common emulation (src/vulkan/runtime/vk_texcompress_astc.c and vk_texcompress_etc2.c, used by
+ * anv/radv) and the baseline's vn_astc_emu (patches/mesa/0003, Venus), re-hosted in a pass-through HAL:
+ *  - the app's compressed image IS an ICD image of the decoded format (Mesa's vk_texcompress_astc_emulation_format
+ *    and vk_texcompress_etc2_emulation_format: RGBA8 UNORM/SRGB for ASTC and ETC2 colour, R16[G16] UNORM/SNORM for
+ *    EAC R11[G11]) with STORAGE usage and MUTABLE_FORMAT|EXTENDED_USAGE added. The app's handle is that image, so
+ *    sampling, descriptors, blits from it and barriers need no translation; views get the decoded format and a
+ *    VkImageViewUsageCreateInfo with the app's own usage;
+ *  - beside it the HAL keeps the compressed data: one "block image" per mip level (one texel per block, every
+ *    layer: R32G32B32A32_UINT for 128-bit blocks, R32G32_UINT for 64-bit ones), bound into the app's memory behind
+ *    the decoded image; the memory requirements the app sees cover all of them;
+ *  - uploads (vkCmdCopyBufferToImage[2], vkCmdCopyImage[2] into it) copy the blocks into the block image and then
+ *    run the decoder in the app's command buffer from the block image into an unsigned-integer storage view of the
+ *    decoded image, between barriers: Mesa's astc_decoder.glsl (unorm8 mode) for ASTC, src/etc2_decoder.comp for
+ *    ETC2/EAC; the app's compute state is then restored (cmdstate.c);
  *  - readbacks (vkCmdCopyImageToBuffer[2], vkCmdCopyImage[2] from it) copy the blocks, so compressed data
- *    round-trips bit-exactly; ASTC->ASTC copies copy blocks and decoded texels;
+ *    round-trips bit-exactly; copies between images of the same decode class copy blocks and decoded texels;
  *  - image barriers naming the app's image are mirrored onto its block images (layouts, queue ownership).
- * Everything outside that is refused loudly, never handed to the ICD: LINEAR tiling, 1D/3D, sparse, aliasing,
- * protected, disjoint, multisampled, external memory, block-texel views, storage/attachment/host-transfer
- * usage, HDR/3D ASTC, device-address and indirect copies, uploads on queues without compute. */
+ * Everything outside that is refused loudly, never handed to the ICD: LINEAR tiling, 1D/3D, sparse residency,
+ * aliasing, protected, disjoint, multisampled, external memory, block-texel views, storage/attachment/host-transfer
+ * usage, HDR/3D ASTC, device-address and indirect copies, uploads on queues without compute. ASTC and ETC2 are
+ * decided independently per physical device: each is emulated only where the ICD lacks it and the probe passes. */
 #include "nvhal.h"
 #include "nvhal_astc.h"
 
@@ -32,23 +37,78 @@
 
 #define ASTC_FIRST VK_FORMAT_ASTC_4x4_UNORM_BLOCK
 #define ASTC_LAST VK_FORMAT_ASTC_12x12_SRGB_BLOCK
+#define ETC2_FIRST VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK
+#define ETC2_LAST VK_FORMAT_EAC_R11G11_SNORM_BLOCK
 #define MAX_MIPS 16
 #define R8_TAG "(ASTC gap, R8)"
+#define ETC2_TAG "(ETC2 gap)"
 
 /* VkFormat order: 4x4, 5x4, 5x5, 6x5, 6x6, 8x5, 8x6, 8x8, 10x5, 10x6, 10x8, 10x10, 12x10, 12x12, UNORM then
  * SRGB for each; the same order as vk_texcompress_astc.c get_partition_table_index() */
 static const uint8_t block_dims[NVHAL_ASTC_NUM_PARTITION_TABLES][2] = {
     {4, 4}, {5, 4}, {5, 5}, {6, 5}, {6, 6}, {8, 5}, {8, 6}, {8, 8}, {10, 5}, {10, 6}, {10, 8}, {10, 10}, {12, 10}, {12, 12}};
 
-bool nvhal_astc_format(VkFormat f) { return f >= ASTC_FIRST && f <= ASTC_LAST; }
-static unsigned fmt_table(VkFormat f) { return (unsigned)(f - ASTC_FIRST) / 2; }
-static bool fmt_srgb(VkFormat f) { return ((unsigned)(f - ASTC_FIRST) & 1) != 0; }
-static VkFormat fmt_rgba(VkFormat f) { return fmt_srgb(f) ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM; }
+/* ETC2/EAC decoder variants (src/etc2_decoder.comp specialization KIND, SIGNED): RGB8, RGB8A1, RGBA8, R11, signed
+ * R11, RG11, signed RG11 */
+#define ETC2_VARIANTS 7
+static const uint32_t etc2_spec[ETC2_VARIANTS][2] = {{0, 0}, {1, 0}, {2, 0}, {3, 0}, {3, 1}, {4, 0}, {4, 1}};
+static const char *const etc2_variant_name[ETC2_VARIANTS] = {"RGB8", "RGB8A1", "RGBA8", "R11", "signed R11", "RG11",
+                                                             "signed RG11"};
+
+enum { FAM_ASTC, FAM_ETC2 };
+/* an emulated format */
+struct efmt {
+    uint8_t fam;
+    uint8_t bw, bh;
+    uint8_t cls;     /* decode class: ASTC: the block-size table (0..13); ETC2: 14 + the decoder variant. Views and
+                        texel copies stay within one class (UNORM/SRGB twins decode to the same bytes, EAC UNORM/SNORM
+                        do not) */
+    uint8_t variant; /* ETC2: decoder variant */
+    bool twin;       /* the SRGB (ASTC, ETC2 colour) or SNORM (EAC) member of its pair */
+    VkFormat decoded; /* the app's image (vk_texcompress_*_emulation_format) */
+    VkFormat store;   /* the decoder's unsigned-integer storage view of it */
+    VkFormat block;   /* the block images: one texel per block */
+};
+
+static bool efmt_get(VkFormat f, struct efmt *e) {
+    if (f >= ASTC_FIRST && f <= ASTC_LAST) {
+        const unsigned t = (unsigned)(f - ASTC_FIRST) / 2;
+        const bool srgb = ((unsigned)(f - ASTC_FIRST) & 1) != 0;
+        *e = (struct efmt){FAM_ASTC, block_dims[t][0], block_dims[t][1], (uint8_t)t, 0, srgb,
+                           srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT,
+                           VK_FORMAT_R32G32B32A32_UINT};
+        return true;
+    }
+    if (f >= ETC2_FIRST && f <= ETC2_LAST) {
+        /* vk_texcompress_etc2.c vk_texcompress_etc2_emulation_format() */
+        static const struct { uint8_t variant; VkFormat decoded, store, block; } t[10] = {
+            {0, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R32G32_UINT},
+            {0, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R32G32_UINT},
+            {1, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R32G32_UINT},
+            {1, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R32G32_UINT},
+            {2, VK_FORMAT_R8G8B8A8_UNORM, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R32G32B32A32_UINT},
+            {2, VK_FORMAT_R8G8B8A8_SRGB, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R32G32B32A32_UINT},
+            {3, VK_FORMAT_R16_UNORM, VK_FORMAT_R16_UINT, VK_FORMAT_R32G32_UINT},
+            {4, VK_FORMAT_R16_SNORM, VK_FORMAT_R16_UINT, VK_FORMAT_R32G32_UINT},
+            {5, VK_FORMAT_R16G16_UNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R32G32B32A32_UINT},
+            {6, VK_FORMAT_R16G16_SNORM, VK_FORMAT_R16G16_UINT, VK_FORMAT_R32G32B32A32_UINT},
+        };
+        const unsigned i = (unsigned)(f - ETC2_FIRST);
+        *e = (struct efmt){FAM_ETC2, 4, 4, (uint8_t)(NVHAL_ASTC_NUM_PARTITION_TABLES + t[i].variant), t[i].variant,
+                           (i & 1) != 0, t[i].decoded, t[i].store, t[i].block};
+        return true;
+    }
+    return false;
+}
+
+bool nvhal_astc_format(VkFormat f) { struct efmt e; return efmt_get(f, &e); }
+static const char *gap(const struct efmt *e) { return e->fam == FAM_ASTC ? R8_TAG : ETC2_TAG; }
+static const char *fam_name(const struct efmt *e) { return e->fam == FAM_ASTC ? "ASTC" : "ETC2/EAC"; }
 static uint32_t div_up(uint32_t a, uint32_t b) { return (a + b - 1) / b; }
 static uint32_t mip_dim(uint32_t d, uint32_t m) { return (d >> m) ? (d >> m) : 1; }
 
-/* What textureCompressionASTC_LDR makes mandatory for every ASTC LDR format (spec "Required Format Support"),
- * plus the transfer bits; the RGBA8 format's own features bound it. */
+/* What textureCompressionASTC_LDR / textureCompressionETC2 make mandatory for every format of the family (spec
+ * "Required Format Support"), plus the transfer bits; the decoded format's own features bound it. */
 #define ASTC_FEATURES (VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_BLIT_SRC_BIT | \
                        VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | \
                        VK_FORMAT_FEATURE_TRANSFER_DST_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_MINMAX_BIT)
@@ -63,34 +123,17 @@ static uint32_t mip_dim(uint32_t d, uint32_t m) { return (d >> m) ? (d >> m) : 1
 #define SPARSE_FLAGS (VK_IMAGE_CREATE_SPARSE_BINDING_BIT | VK_IMAGE_CREATE_SPARSE_ALIASED_BIT)
 #define RGBA_EXTRA_FLAGS (VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT | VK_IMAGE_CREATE_EXTENDED_USAGE_BIT)
 #define BLOCK_USAGE (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT)
-#define PUSH_SIZE 20u /* astc_decoder.glsl: ivec2 texel_blk_start, ivec2 texel_end, bool is_3Dimage */
+#define PUSH_SIZE 20u      /* astc_decoder.glsl: ivec2 texel_blk_start, ivec2 texel_end, bool is_3Dimage */
+#define ETC2_PUSH_SIZE 16u /* etc2_decoder.comp: ivec2 start, ivec2 end */
 
 /* ------------------------------------------------------------------ physical device */
 
-static void probe(struct nvhal_instance *inst, struct nvhal_astc_pd *p) {
+#define NEED(cond, ...) do { if (!(cond)) { snprintf(why, sizeof p->why, __VA_ARGS__); return false; } } while (0)
+
+/* ASTC: the decoder's prerequisites (Mesa's astc_decoder.glsl and its LUTs) */
+static bool probe_astc(struct nvhal_instance *inst, struct nvhal_astc_pd *p, const VkPhysicalDeviceFeatures *f,
+                       const VkPhysicalDeviceLimits *l, char *why) {
     VkPhysicalDevice pd = p->pd;
-    VkPhysicalDeviceFeatures f;
-    inst->GetPhysicalDeviceFeatures(pd, &f);
-    VkPhysicalDeviceProperties props;
-    inst->GetPhysicalDeviceProperties(pd, &props);
-    p->api_version = props.apiVersion;
-    uint32_t nq = 0;
-    inst->GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
-    VkQueueFamilyProperties qf[16];
-    if (nq > 16) nq = 16;
-    inst->GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
-    bool compute = false;
-    p->nq = nq;
-    for (uint32_t i = 0; i < nq; i++) {
-        p->qflags[i] = qf[i].queueFlags;
-        compute |= (qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
-    }
-    if (f.textureCompressionASTC_LDR) {
-        p->state = NVHAL_ASTC_NATIVE;
-        return;
-    }
-    p->state = NVHAL_ASTC_UNAVAILABLE;
-#define NEED(cond, ...) do { if (!(cond)) { snprintf(p->why, sizeof p->why, __VA_ARGS__); return; } } while (0)
     VkFormatProperties unorm, srgb, u8, u128;
     inst->GetPhysicalDeviceFormatProperties(pd, VK_FORMAT_R8G8B8A8_UNORM, &unorm);
     inst->GetPhysicalDeviceFormatProperties(pd, VK_FORMAT_R8G8B8A8_SRGB, &srgb);
@@ -110,9 +153,8 @@ static void probe(struct nvhal_instance *inst, struct nvhal_astc_pd *p) {
         NEED(lf.bufferFeatures & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT,
              "VkFormat %d has no UNIFORM_TEXEL_BUFFER feature (decoder LUT %u)", nvhal_astc_luts[i].format, i);
     }
-    NEED(f.shaderStorageImageWriteWithoutFormat,
+    NEED(f->shaderStorageImageWriteWithoutFormat,
          "shaderStorageImageWriteWithoutFormat is unsupported (the decoder's output image has no format qualifier)");
-    const VkPhysicalDeviceLimits *l = &props.limits;
     NEED(l->maxComputeWorkGroupInvocations >= 12 * 12 * 4 && l->maxComputeWorkGroupSize[0] >= 12 &&
              l->maxComputeWorkGroupSize[1] >= 12 && l->maxComputeWorkGroupSize[2] >= 4,
          "compute workgroup limits (%u invocations, %ux%ux%u) below the 12x12x4 the decoder needs",
@@ -120,19 +162,93 @@ static void probe(struct nvhal_instance *inst, struct nvhal_astc_pd *p) {
          l->maxComputeWorkGroupSize[2]);
     NEED(l->maxTexelBufferElements >= 12 * 32 * 12 * 32, "maxTexelBufferElements %u below the 12x12 partition table",
          l->maxTexelBufferElements);
-    NEED(compute, "no queue family has VK_QUEUE_COMPUTE_BIT");
     p->feat[0] = unorm.optimalTilingFeatures & ASTC_FEATURES;
     p->feat[1] = srgb.optimalTilingFeatures & ASTC_FEATURES;
     NEED((p->feat[0] & ASTC_FEATURES_REQUIRED) == ASTC_FEATURES_REQUIRED &&
              (p->feat[1] & ASTC_FEATURES_REQUIRED) == ASTC_FEATURES_REQUIRED,
          "R8G8B8A8_UNORM/SRGB optimal features 0x%x/0x%x lack SAMPLED_IMAGE|BLIT_SRC|SAMPLED_IMAGE_FILTER_LINEAR, which "
          "textureCompressionASTC_LDR makes mandatory", unorm.optimalTilingFeatures, srgb.optimalTilingFeatures);
+    return true;
+}
+
+/* ETC2/EAC: the decoder's prerequisites (src/etc2_decoder.comp) and the decoded formats' mandatory features */
+static bool probe_etc2(struct nvhal_instance *inst, struct nvhal_astc_pd *p, const VkPhysicalDeviceFeatures *f,
+                       const VkPhysicalDeviceLimits *l, char *why) {
+    VkPhysicalDevice pd = p->pd;
+    static const VkFormat stores[3] = {VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R16_UINT, VK_FORMAT_R16G16_UINT};
+    for (unsigned i = 0; i < 3; i++) {
+        VkFormatProperties fp;
+        inst->GetPhysicalDeviceFormatProperties(pd, stores[i], &fp);
+        NEED(fp.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT,
+             "VkFormat %d has no optimal-tiling STORAGE_IMAGE feature (0x%x); the decoder writes through it", stores[i],
+             fp.optimalTilingFeatures);
+    }
+    static const VkFormat blocks[2] = {VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32B32A32_UINT};
+    const VkFormatFeatureFlags bf = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+                                    VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    for (unsigned i = 0; i < 2; i++) {
+        VkFormatProperties fp;
+        inst->GetPhysicalDeviceFormatProperties(pd, blocks[i], &fp);
+        NEED((fp.optimalTilingFeatures & bf) == bf,
+             "VkFormat %d optimal-tiling features 0x%x lack SAMPLED_IMAGE|TRANSFER_SRC|TRANSFER_DST (block images)",
+             blocks[i], fp.optimalTilingFeatures);
+    }
+    NEED(f->shaderStorageImageWriteWithoutFormat,
+         "shaderStorageImageWriteWithoutFormat is unsupported (the decoder's output image has no format qualifier)");
+    NEED(l->maxComputeWorkGroupInvocations >= 64 && l->maxComputeWorkGroupSize[0] >= 8 &&
+             l->maxComputeWorkGroupSize[1] >= 8,
+         "compute workgroup limits (%u invocations, %ux%u) below the 8x8 the decoder needs",
+         l->maxComputeWorkGroupInvocations, l->maxComputeWorkGroupSize[0], l->maxComputeWorkGroupSize[1]);
+    for (VkFormat fm = ETC2_FIRST; fm <= ETC2_LAST; fm++) {
+        struct efmt e;
+        efmt_get(fm, &e);
+        VkFormatProperties fp;
+        inst->GetPhysicalDeviceFormatProperties(pd, e.decoded, &fp);
+        p->etc2_feat[fm - ETC2_FIRST] = fp.optimalTilingFeatures & ASTC_FEATURES;
+        NEED((p->etc2_feat[fm - ETC2_FIRST] & ASTC_FEATURES_REQUIRED) == ASTC_FEATURES_REQUIRED,
+             "VkFormat %d (decoded format of VkFormat %d) optimal features 0x%x lack SAMPLED_IMAGE|BLIT_SRC|"
+             "SAMPLED_IMAGE_FILTER_LINEAR, which textureCompressionETC2 makes mandatory", e.decoded, fm,
+             fp.optimalTilingFeatures);
+    }
+    return true;
+}
 #undef NEED
+
+static void probe(struct nvhal_instance *inst, struct nvhal_astc_pd *p) {
+    VkPhysicalDevice pd = p->pd;
+    VkPhysicalDeviceFeatures f;
+    inst->GetPhysicalDeviceFeatures(pd, &f);
+    VkPhysicalDeviceProperties props;
+    inst->GetPhysicalDeviceProperties(pd, &props);
+    p->api_version = props.apiVersion;
+    uint32_t nq = 0;
+    inst->GetPhysicalDeviceQueueFamilyProperties(pd, &nq, NULL);
+    VkQueueFamilyProperties qf[16];
+    if (nq > 16) nq = 16;
+    inst->GetPhysicalDeviceQueueFamilyProperties(pd, &nq, qf);
+    bool compute = false;
+    p->nq = nq;
+    for (uint32_t i = 0; i < nq; i++) {
+        p->qflags[i] = qf[i].queueFlags;
+        compute |= (qf[i].queueFlags & VK_QUEUE_COMPUTE_BIT) != 0;
+    }
     p->usage = ASTC_USAGE;
     p->flags = ASTC_FLAGS | (f.sparseBinding ? VK_IMAGE_CREATE_SPARSE_BINDING_BIT : 0) |
                (f.sparseBinding && f.sparseResidencyAliased ? VK_IMAGE_CREATE_SPARSE_ALIASED_BIT : 0);
-    p->state = NVHAL_ASTC_EMULATE;
-    p->why[0] = 0;
+    p->why[0] = p->etc2_why[0] = 0;
+    if (f.textureCompressionASTC_LDR)
+        p->state = NVHAL_ASTC_NATIVE;
+    else if (!compute)
+        p->state = NVHAL_ASTC_UNAVAILABLE, snprintf(p->why, sizeof p->why, "no queue family has VK_QUEUE_COMPUTE_BIT");
+    else
+        p->state = probe_astc(inst, p, &f, &props.limits, p->why) ? NVHAL_ASTC_EMULATE : NVHAL_ASTC_UNAVAILABLE;
+    if (f.textureCompressionETC2)
+        p->etc2_state = NVHAL_ASTC_NATIVE;
+    else if (!compute)
+        p->etc2_state = NVHAL_ASTC_UNAVAILABLE,
+        snprintf(p->etc2_why, sizeof p->etc2_why, "no queue family has VK_QUEUE_COMPUTE_BIT");
+    else
+        p->etc2_state = probe_etc2(inst, p, &f, &props.limits, p->etc2_why) ? NVHAL_ASTC_EMULATE : NVHAL_ASTC_UNAVAILABLE;
 }
 
 const struct nvhal_astc_pd *nvhal_astc_pd_get(struct nvhal_instance *inst, VkPhysicalDevice pd) {
@@ -168,6 +284,12 @@ const struct nvhal_astc_pd *nvhal_astc_pd_get(struct nvhal_instance *inst, VkPhy
     else if (n->state == NVHAL_ASTC_EMULATE)
         NVHAL_TRACE("ASTC LDR emulation active on physical device %p (ASTC features UNORM 0x%x SRGB 0x%x)", (void *)pd,
                     n->feat[0], n->feat[1]);
+    static atomic_bool etc2_reported;
+    if (n->etc2_state == NVHAL_ASTC_UNAVAILABLE && !atomic_exchange(&etc2_reported, true))
+        NVHAL_ERR("ETC2/EAC emulation is unavailable on physical device %p: %s. textureCompressionETC2 stays 0 and every "
+                  "ETC2/EAC image is refused " ETC2_TAG " (reported once per process)", (void *)pd, n->etc2_why);
+    else if (n->etc2_state == NVHAL_ASTC_EMULATE)
+        NVHAL_TRACE("ETC2/EAC emulation active on physical device %p", (void *)pd);
     return n;
 }
 
@@ -179,8 +301,14 @@ void nvhal_astc_instance_teardown(struct nvhal_instance *inst) {
     inst->astc_pd = NULL;
 }
 
-/* the emulating physical device's state, or NULL; *instp gets the instance (NULL: unknown physical device) */
-static const struct nvhal_astc_pd *pd_emulating(VkPhysicalDevice pd, struct nvhal_instance **instp, const char *who) {
+static enum nvhal_astc_state fam_state(const struct nvhal_astc_pd *p, const struct efmt *e) {
+    return e->fam == FAM_ASTC ? p->state : p->etc2_state;
+}
+
+/* the physical device's state when it emulates format f's family, else NULL; *instp gets the instance (NULL: unknown
+ * physical device). f = VK_FORMAT_UNDEFINED: the state whatever is emulated. */
+static const struct nvhal_astc_pd *pd_emulating(VkPhysicalDevice pd, VkFormat f, struct nvhal_instance **instp,
+                                                const char *who) {
     struct nvhal_instance *inst = nvhal_physdev_instance(pd);
     *instp = inst;
     if (!inst) {
@@ -188,26 +316,39 @@ static const struct nvhal_astc_pd *pd_emulating(VkPhysicalDevice pd, struct nvha
         return NULL;
     }
     const struct nvhal_astc_pd *p = nvhal_astc_pd_get(inst, pd);
-    return p->state == NVHAL_ASTC_EMULATE ? p : NULL;
+    struct efmt e;
+    if (f == VK_FORMAT_UNDEFINED) return p;
+    return efmt_get(f, &e) && fam_state(p, &e) == NVHAL_ASTC_EMULATE ? p : NULL;
+}
+
+static VkFormatFeatureFlags fmt_features(const struct nvhal_astc_pd *p, VkFormat f) {
+    struct efmt e;
+    efmt_get(f, &e);
+    return e.fam == FAM_ASTC ? p->feat[e.twin] : p->etc2_feat[f - ETC2_FIRST];
+}
+
+static void emulated_features(const struct nvhal_astc_pd *p, VkPhysicalDeviceFeatures *f) {
+    if (p->state == NVHAL_ASTC_EMULATE) f->textureCompressionASTC_LDR = VK_TRUE;
+    if (p->etc2_state == NVHAL_ASTC_EMULATE) f->textureCompressionETC2 = VK_TRUE;
 }
 
 void VKAPI_CALL nvhal_GetPhysicalDeviceFeatures(VkPhysicalDevice pd, VkPhysicalDeviceFeatures *f) {
     struct nvhal_instance *inst;
-    const struct nvhal_astc_pd *p = pd_emulating(pd, &inst, "vkGetPhysicalDeviceFeatures");
+    const struct nvhal_astc_pd *p = pd_emulating(pd, VK_FORMAT_UNDEFINED, &inst, "vkGetPhysicalDeviceFeatures");
     if (!inst) {
         memset(f, 0, sizeof *f);
         return;
     }
     inst->GetPhysicalDeviceFeatures(pd, f);
-    if (p) f->textureCompressionASTC_LDR = VK_TRUE;
+    emulated_features(p, f);
 }
 
 static void features2(VkPhysicalDevice pd, VkPhysicalDeviceFeatures2 *f, bool khr) {
     struct nvhal_instance *inst;
-    const struct nvhal_astc_pd *p = pd_emulating(pd, &inst, "vkGetPhysicalDeviceFeatures2");
+    const struct nvhal_astc_pd *p = pd_emulating(pd, VK_FORMAT_UNDEFINED, &inst, "vkGetPhysicalDeviceFeatures2");
     if (!inst) return;
     (khr ? inst->GPDF2_khr : inst->GPDF2_core)(pd, f);
-    if (p) f->features.textureCompressionASTC_LDR = VK_TRUE;
+    emulated_features(p, &f->features);
 }
 void VKAPI_CALL nvhal_GetPhysicalDeviceFeatures2(VkPhysicalDevice pd, VkPhysicalDeviceFeatures2 *f) {
     features2(pd, f, false);
@@ -220,7 +361,7 @@ void VKAPI_CALL nvhal_GetPhysicalDeviceFormatProperties(VkPhysicalDevice pd, VkF
     struct nvhal_instance *inst;
     const struct nvhal_astc_pd *p = NULL;
     if (nvhal_astc_format(format)) {
-        p = pd_emulating(pd, &inst, "vkGetPhysicalDeviceFormatProperties");
+        p = pd_emulating(pd, format, &inst, "vkGetPhysicalDeviceFormatProperties");
     } else if (!(inst = nvhal_physdev_instance(pd))) {
         NVHAL_ERR("vkGetPhysicalDeviceFormatProperties(%p): physical device was not enumerated through this HAL",
                   (void *)pd);
@@ -233,14 +374,14 @@ void VKAPI_CALL nvhal_GetPhysicalDeviceFormatProperties(VkPhysicalDevice pd, VkF
         inst->GetPhysicalDeviceFormatProperties(pd, format, fp);
         return;
     }
-    *fp = (VkFormatProperties){0, p->feat[fmt_srgb(format)], 0};
+    *fp = (VkFormatProperties){0, fmt_features(p, format), 0};
 }
 
 static void format_props2(VkPhysicalDevice pd, VkFormat format, VkFormatProperties2 *fp, bool khr) {
     struct nvhal_instance *inst;
     const struct nvhal_astc_pd *p = NULL;
     if (nvhal_astc_format(format)) {
-        p = pd_emulating(pd, &inst, "vkGetPhysicalDeviceFormatProperties2");
+        p = pd_emulating(pd, format, &inst, "vkGetPhysicalDeviceFormatProperties2");
     } else if (!(inst = nvhal_physdev_instance(pd))) {
         NVHAL_ERR("vkGetPhysicalDeviceFormatProperties2(%p): physical device was not enumerated through this HAL",
                   (void *)pd);
@@ -248,7 +389,7 @@ static void format_props2(VkPhysicalDevice pd, VkFormat format, VkFormatProperti
     if (!inst) return;
     (khr ? inst->GPDFP2_khr : inst->GPDFP2_core)(pd, format, fp); /* chained structs: the ICD's answer (none) */
     if (!p) return;
-    VkFormatFeatureFlags feat = p->feat[fmt_srgb(format)];
+    VkFormatFeatureFlags feat = fmt_features(p, format);
     fp->formatProperties = (VkFormatProperties){0, feat, 0};
     for (VkBaseOutStructure *s = fp->pNext; s; s = s->pNext) {
         switch ((int)s->sType) {
@@ -280,9 +421,10 @@ void VKAPI_CALL nvhal_GetPhysicalDeviceFormatProperties2KHR(VkPhysicalDevice pd,
 /* what the emulation implements; *why names the first parameter outside it */
 static VkResult ifp_check(const struct nvhal_astc_pd *p, VkImageType type, VkImageTiling tiling, VkImageUsageFlags usage,
                           VkImageCreateFlags flags, const char **why) {
-    *why = type != VK_IMAGE_TYPE_2D ? "only 2D ASTC images are emulated"
-         : tiling != VK_IMAGE_TILING_OPTIMAL ? "only OPTIMAL tiling is emulated (the texels live decoded in an RGBA8 "
-                                               "image; a LINEAR/modifier ASTC memory layout cannot be provided)"
+    *why = type != VK_IMAGE_TYPE_2D ? "only 2D images of an emulated compressed format are emulated"
+         : tiling != VK_IMAGE_TILING_OPTIMAL ? "only OPTIMAL tiling is emulated (the texels live decoded in an image "
+                                               "of the decoded format; a LINEAR/modifier compressed memory layout "
+                                               "cannot be provided)"
          : (usage & ~p->usage) ? "usage beyond SAMPLED|TRANSFER_SRC|TRANSFER_DST"
          : (flags & ~p->flags) ? "create flags beyond MUTABLE_FORMAT|CUBE_COMPATIBLE|EXTENDED_USAGE|SPARSE_BINDING|"
                                  "SPARSE_ALIASED (sparse residency, alias, protected, disjoint and block-texel-view "
@@ -299,33 +441,37 @@ VkResult VKAPI_CALL nvhal_GetPhysicalDeviceImageFormatProperties(VkPhysicalDevic
     struct nvhal_instance *inst;
     const struct nvhal_astc_pd *p = NULL;
     if (nvhal_astc_format(format)) {
-        p = pd_emulating(pd, &inst, "vkGetPhysicalDeviceImageFormatProperties");
+        p = pd_emulating(pd, format, &inst, "vkGetPhysicalDeviceImageFormatProperties");
     } else if (!(inst = nvhal_physdev_instance(pd))) {
         NVHAL_ERR("vkGetPhysicalDeviceImageFormatProperties(%p): physical device was not enumerated through this HAL",
                   (void *)pd);
     }
     if (!inst) return VK_ERROR_INITIALIZATION_FAILED;
     if (!p) return inst->GetPhysicalDeviceImageFormatProperties(pd, format, type, tiling, usage, flags, out);
+    struct efmt e;
+    efmt_get(format, &e);
     const char *why;
     VkResult r = ifp_check(p, type, tiling, usage, flags, &why);
     if (r == VK_SUCCESS)
-        r = inst->GetPhysicalDeviceImageFormatProperties(pd, fmt_rgba(format), VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+        r = inst->GetPhysicalDeviceImageFormatProperties(pd, e.decoded, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                                          usage | VK_IMAGE_USAGE_STORAGE_BIT, flags | RGBA_EXTRA_FLAGS, out);
     if (r == VK_SUCCESS) {
         out->sampleCounts = VK_SAMPLE_COUNT_1_BIT;
     } else {
         memset(out, 0, sizeof *out);
-        NVHAL_TRACE("vkGetPhysicalDeviceImageFormatProperties(ASTC VkFormat %d, type %d, tiling %d, usage 0x%x, flags "
-                    "0x%x) -> %s%s%s", format, type, tiling, usage, flags, NVHAL_VKR(r), why ? ": " : "", why ? why : "");
+        NVHAL_TRACE("vkGetPhysicalDeviceImageFormatProperties(%s VkFormat %d, type %d, tiling %d, usage 0x%x, flags "
+                    "0x%x) -> %s%s%s", fam_name(&e), format, type, tiling, usage, flags, NVHAL_VKR(r), why ? ": " : "",
+                    why ? why : "");
     }
     return r;
 }
 
 bool nvhal_astc_gpdifp2(struct nvhal_instance *inst, VkPhysicalDevice pd, const VkPhysicalDeviceImageFormatInfo2 *info,
                         VkImageFormatProperties2 *p, PFN_vkGetPhysicalDeviceImageFormatProperties2 f, VkResult *r) {
-    if (!nvhal_astc_format(info->format)) return false;
+    struct efmt e;
+    if (!efmt_get(info->format, &e)) return false;
     const struct nvhal_astc_pd *ap = nvhal_astc_pd_get(inst, pd);
-    if (ap->state != NVHAL_ASTC_EMULATE) return false;
+    if (fam_state(ap, &e) != NVHAL_ASTC_EMULATE) return false;
     const char *why;
     char buf[96];
     *r = ifp_check(ap, info->type, info->tiling, info->usage, info->flags, &why);
@@ -333,23 +479,27 @@ bool nvhal_astc_gpdifp2(struct nvhal_instance *inst, VkPhysicalDevice pd, const 
         switch ((int)s->sType) {
         case VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_IMAGE_FORMAT_INFO:
             if (((const VkPhysicalDeviceExternalImageFormatInfo *)s)->handleType) {
-                why = "external memory is not emulated for ASTC images";
+                why = "external memory is not emulated for compressed-format images";
                 *r = VK_ERROR_FORMAT_NOT_SUPPORTED;
             }
             break;
         case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: {
             const VkImageFormatListCreateInfo *fl = (const void *)s;
-            for (uint32_t i = 0; i < fl->viewFormatCount; i++)
-                if (!nvhal_astc_format(fl->pViewFormats[i]) || fmt_table(fl->pViewFormats[i]) != fmt_table(info->format)) {
-                    why = "a view format outside the image's ASTC block size (block-texel views are not emulated)";
+            for (uint32_t i = 0; i < fl->viewFormatCount; i++) {
+                struct efmt v;
+                if (!efmt_get(fl->pViewFormats[i], &v) || v.cls != e.cls) {
+                    why = "a view format outside the image's decode class (block-texel views and EAC UNORM/SNORM "
+                          "reinterpretation are not emulated)";
                     *r = VK_ERROR_FORMAT_NOT_SUPPORTED;
                 }
+            }
             break;
         }
         case VK_STRUCTURE_TYPE_IMAGE_STENCIL_USAGE_CREATE_INFO:
             break;
         default:
-            snprintf(buf, sizeof buf, "input structure sType %d is not answered for emulated ASTC", (int)s->sType);
+            snprintf(buf, sizeof buf, "input structure sType %d is not answered for an emulated compressed format",
+                     (int)s->sType);
             why = buf;
             *r = VK_ERROR_FORMAT_NOT_SUPPORTED;
             break;
@@ -358,7 +508,7 @@ bool nvhal_astc_gpdifp2(struct nvhal_instance *inst, VkPhysicalDevice pd, const 
     if (*r == VK_SUCCESS) {
         /* what vkCreateImage will ask the ICD for; the app's output chain is answered for that image */
         VkPhysicalDeviceImageFormatInfo2 q = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_IMAGE_FORMAT_INFO_2, NULL,
-                                              fmt_rgba(info->format), VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+                                              e.decoded, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
                                               info->usage | VK_IMAGE_USAGE_STORAGE_BIT, info->flags | RGBA_EXTRA_FLAGS};
         *r = f(pd, &q, p);
         why = NULL;
@@ -371,8 +521,8 @@ bool nvhal_astc_gpdifp2(struct nvhal_instance *inst, VkPhysicalDevice pd, const 
                        sizeof(VkExternalMemoryProperties));
     } else {
         memset(&p->imageFormatProperties, 0, sizeof p->imageFormatProperties);
-        NVHAL_TRACE("vkGetPhysicalDeviceImageFormatProperties2(ASTC VkFormat %d, type %d, tiling %d, usage 0x%x, flags "
-                    "0x%x) -> %s%s%s", info->format, info->type, info->tiling, info->usage, info->flags, NVHAL_VKR(*r),
+        NVHAL_TRACE("vkGetPhysicalDeviceImageFormatProperties2(%s VkFormat %d, type %d, tiling %d, usage 0x%x, flags "
+                    "0x%x) -> %s%s%s", fam_name(&e), info->format, info->type, info->tiling, info->usage, info->flags, NVHAL_VKR(*r),
                     why ? ": " : "", why ? why : "");
     }
     return true;
@@ -394,6 +544,15 @@ struct nvhal_astc_dev {
     bool pipe_failed[NVHAL_ASTC_NUM_PARTITION_TABLES];
     VkDescriptorPool *pools;
     uint32_t npools;
+    /* the ETC2/EAC decoder (src/etc2_decoder.comp): no LUTs, set 0 = storage view + sampled block view */
+    int etc2_init; /* 0 not tried, 1 ready, -1 failed (logged) */
+    VkDescriptorSetLayout etc2_dsl;
+    VkPipelineLayout etc2_pl;
+    VkShaderModule etc2_sm;
+    VkPipeline etc2_pipe[ETC2_VARIANTS];
+    bool etc2_pipe_failed[ETC2_VARIANTS];
+    VkDescriptorPool *etc2_pools;
+    uint32_t etc2_npools;
 };
 
 VkResult nvhal_astc_device_ci(struct nvhal_instance *inst, VkPhysicalDevice pd, uint32_t api, const VkDeviceCreateInfo *ci,
@@ -401,7 +560,8 @@ VkResult nvhal_astc_device_ci(struct nvhal_instance *inst, VkPhysicalDevice pd, 
     *out = *ci;
     *emulate = *maint2 = false;
     const struct nvhal_astc_pd *p = nvhal_astc_pd_get(inst, pd);
-    if (p->state != NVHAL_ASTC_EMULATE) return VK_SUCCESS;
+    const bool astc = p->state == NVHAL_ASTC_EMULATE, etc2 = p->etc2_state == NVHAL_ASTC_EMULATE;
+    if (!astc && !etc2) return VK_SUCCESS;
     *emulate = true;
     *maint2 = api < VK_API_VERSION_1_1; /* VkImageViewUsageCreateInfo + EXTENDED_USAGE on a 1.0 device */
     const VkPhysicalDeviceFeatures2 *f2 = NULL;
@@ -410,18 +570,20 @@ VkResult nvhal_astc_device_ci(struct nvhal_instance *inst, VkPhysicalDevice pd, 
     if (ci->pEnabledFeatures || !f2) {
         if (ci->pEnabledFeatures) st->feats = *ci->pEnabledFeatures;
         else memset(&st->feats, 0, sizeof st->feats);
-        if (st->feats.textureCompressionASTC_LDR)
-            NVHAL_TRACE("vkCreateDevice: textureCompressionASTC_LDR is emulated by the HAL; not passed to the ICD");
-        st->feats.textureCompressionASTC_LDR = VK_FALSE;
-        st->feats.shaderStorageImageWriteWithoutFormat = VK_TRUE; /* the decoder's output image */
+        if ((astc && st->feats.textureCompressionASTC_LDR) || (etc2 && st->feats.textureCompressionETC2))
+            NVHAL_TRACE("vkCreateDevice: textureCompressionASTC_LDR/ETC2 are emulated by the HAL; not passed to the ICD");
+        if (astc) st->feats.textureCompressionASTC_LDR = VK_FALSE;
+        if (etc2) st->feats.textureCompressionETC2 = VK_FALSE;
+        st->feats.shaderStorageImageWriteWithoutFormat = VK_TRUE; /* the decoders' output images */
         out->pEnabledFeatures = &st->feats;
         return VK_SUCCESS;
     }
     st->f2 = *f2;
-    st->f2.features.textureCompressionASTC_LDR = VK_FALSE;
+    if (astc) st->f2.features.textureCompressionASTC_LDR = VK_FALSE;
+    if (etc2) st->f2.features.textureCompressionETC2 = VK_FALSE;
     st->f2.features.shaderStorageImageWriteWithoutFormat = VK_TRUE;
     if (!nvhal_chain_replace(ci->pNext, f2, &st->f2, (const void **)&st->f2.pNext, st->chain, sizeof st->chain,
-                             "vkCreateDevice(ASTC emulation features)", &out->pNext))
+                             "vkCreateDevice(compressed-format emulation features)", &out->pNext))
         return VK_ERROR_INITIALIZATION_FAILED;
     return VK_SUCCESS;
 }
@@ -444,7 +606,7 @@ VkResult nvhal_astc_device_init(struct nvhal_device *d) {
                 : !d->xl.GetImageMemoryRequirements ? "vkGetImageMemoryRequirements" : NULL;
     }
     if (missing) {
-        NVHAL_ERR("vkCreateDevice: the ICD returned NULL for %s, which the ASTC emulation needs -> "
+        NVHAL_ERR("vkCreateDevice: the ICD returned NULL for %s, which the compressed-format emulation needs -> "
                   "VK_ERROR_INITIALIZATION_FAILED", missing);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
@@ -577,14 +739,72 @@ static VkPipeline decoder_pipeline(struct nvhal_device *d, unsigned t) {
     return a->pipe[t];
 }
 
-/* one descriptor set from the HAL's pools. Caller holds a->lock. */
-static VkResult set_alloc(struct nvhal_device *d, VkDescriptorSet *set, VkDescriptorPool *pool) {
+/* the ETC2/EAC decoder's set and pipeline layouts and shader module. Caller holds a->lock. */
+static VkResult etc2_decoder_init(struct nvhal_device *d) {
     struct nvhal_astc_dev *a = d->astc;
-    for (uint32_t i = a->npools; i-- > 0;) {
-        VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, a->pools[i], 1, &a->dsl};
+    if (a->etc2_init) return a->etc2_init > 0 ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
+    a->etc2_init = -1;
+    VkDevice dev = d->handle;
+    VkDescriptorSetLayoutBinding b[2] = {
+        {0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL},
+        {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, NULL}};
+    VkDescriptorSetLayoutCreateInfo dci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, NULL, 0, 2, b};
+    const char *step = "vkCreateDescriptorSetLayout";
+    VkResult r = d->cs.CreateDescriptorSetLayout(dev, &dci, NULL, &a->etc2_dsl);
+    if (r == VK_SUCCESS) {
+        VkPushConstantRange pcr = {VK_SHADER_STAGE_COMPUTE_BIT, 0, ETC2_PUSH_SIZE};
+        VkPipelineLayoutCreateInfo pci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, NULL, 0, 1, &a->etc2_dsl, 1, &pcr};
+        step = "vkCreatePipelineLayout";
+        r = d->cs.CreatePipelineLayout(dev, &pci, NULL, &a->etc2_pl);
+    }
+    if (r == VK_SUCCESS) {
+        VkShaderModuleCreateInfo smi = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, NULL, 0, nvhal_etc2_spv_size,
+                                        nvhal_etc2_spv};
+        step = "vkCreateShaderModule(etc2_decoder.comp)";
+        r = d->cs.CreateShaderModule(dev, &smi, NULL, &a->etc2_sm);
+    }
+    if (r != VK_SUCCESS) {
+        NVHAL_ERR("ETC2/EAC emulation: decoder setup failed at %s -> %s; ETC2/EAC uploads on device %p stay undecoded "
+                  ETC2_TAG, step, NVHAL_VKR(r), (void *)dev);
+        return r;
+    }
+    NVHAL_TRACE("ETC2/EAC emulation: decoder ready on device %p", (void *)dev);
+    a->etc2_init = 1;
+    return VK_SUCCESS;
+}
+
+/* specialization = the variant's KIND and SIGNED constants. Caller holds a->lock. */
+static VkPipeline etc2_pipeline(struct nvhal_device *d, unsigned v) {
+    struct nvhal_astc_dev *a = d->astc;
+    if (a->etc2_pipe[v] || a->etc2_pipe_failed[v]) return a->etc2_pipe[v];
+    const uint32_t spec[2] = {etc2_spec[v][0], etc2_spec[v][1]}; /* SIGNED is a bool: 32-bit 0/1 */
+    VkSpecializationMapEntry me[2] = {{0, 0, 4}, {1, 4, 4}};
+    VkSpecializationInfo si = {2, me, sizeof spec, spec};
+    VkComputePipelineCreateInfo ci = {
+        VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, NULL, 0,
+        {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_COMPUTE_BIT, a->etc2_sm, "main", &si},
+        a->etc2_pl, VK_NULL_HANDLE, -1};
+    VkResult r = d->cs.CreateComputePipelines(d->handle, VK_NULL_HANDLE, 1, &ci, NULL, &a->etc2_pipe[v]);
+    if (r != VK_SUCCESS) {
+        a->etc2_pipe[v] = VK_NULL_HANDLE;
+        a->etc2_pipe_failed[v] = true;
+        NVHAL_ERR("ETC2/EAC emulation: vkCreateComputePipelines(decoder %s) -> %s; uploads of that format stay "
+                  "undecoded " ETC2_TAG, etc2_variant_name[v], NVHAL_VKR(r));
+    }
+    return a->etc2_pipe[v];
+}
+
+/* one descriptor set of the family's decoder from the HAL's pools. Caller holds a->lock. */
+static VkResult set_alloc(struct nvhal_device *d, unsigned fam, VkDescriptorSet *set, VkDescriptorPool *pool) {
+    struct nvhal_astc_dev *a = d->astc;
+    VkDescriptorPool **pools = fam == FAM_ASTC ? &a->pools : &a->etc2_pools;
+    uint32_t *npools = fam == FAM_ASTC ? &a->npools : &a->etc2_npools;
+    VkDescriptorSetLayout *dsl = fam == FAM_ASTC ? &a->dsl : &a->etc2_dsl;
+    for (uint32_t i = *npools; i-- > 0;) {
+        VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, (*pools)[i], 1, dsl};
         VkResult r = d->cs.AllocateDescriptorSets(d->handle, &ai, set);
         if (r == VK_SUCCESS) {
-            *pool = a->pools[i];
+            *pool = (*pools)[i];
             return r;
         }
         if (r != VK_ERROR_OUT_OF_POOL_MEMORY && r != VK_ERROR_FRAGMENTED_POOL) return r;
@@ -594,14 +814,15 @@ static VkResult set_alloc(struct nvhal_device *d, VkDescriptorSet *set, VkDescri
                                   {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, SETS},
                                   {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 6 * SETS}};
     VkDescriptorPoolCreateInfo pci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, NULL,
-                                      VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, SETS, 3, sz};
-    VkDescriptorPool *np = realloc(a->pools, (a->npools + 1) * sizeof *np);
+                                      VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, SETS, fam == FAM_ASTC ? 3 : 2,
+                                      sz};
+    VkDescriptorPool *np = realloc(*pools, (*npools + 1) * sizeof *np);
     if (!np) return VK_ERROR_OUT_OF_HOST_MEMORY;
-    a->pools = np;
-    VkResult r = d->cs.CreateDescriptorPool(d->handle, &pci, NULL, &a->pools[a->npools]);
+    *pools = np;
+    VkResult r = d->cs.CreateDescriptorPool(d->handle, &pci, NULL, &np[*npools]);
     if (r != VK_SUCCESS) return r;
-    *pool = a->pools[a->npools++];
-    VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, *pool, 1, &a->dsl};
+    *pool = np[(*npools)++];
+    VkDescriptorSetAllocateInfo ai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, NULL, *pool, 1, dsl};
     return d->cs.AllocateDescriptorSets(d->handle, &ai, set);
 }
 
@@ -617,9 +838,10 @@ struct astc_slot {
 
 struct nvhal_astc_image {
     struct nvhal_device *dev;
-    VkImage image;          /* the app's handle = the ICD's RGBA8 image */
-    VkFormat format;        /* the app's ASTC format */
-    uint32_t bw, bh, table;
+    VkImage image;          /* the app's handle = the ICD's image of the decoded format */
+    VkFormat format;        /* the app's compressed format */
+    struct efmt e;
+    uint32_t bw, bh, table; /* e.bw, e.bh, e.cls */
     VkExtent3D extent;
     uint32_t mips, layers;
     VkImageUsageFlags usage; /* the app's */
@@ -648,15 +870,19 @@ struct astc_cis {
     VkImageCreateInfo rgba;
     VkImageFormatListCreateInfo list;
     VkFormat list_fmts[3];
+    struct efmt e;
     VkImageCreateInfo block[MAX_MIPS];
     uint32_t mips;
 };
 
-/* the ICD create infos behind an app ASTC create info; refusals are logged and VK_ERROR_FORMAT_NOT_SUPPORTED */
+/* the ICD create infos behind an app create info of an emulated compressed format; refusals are logged and
+ * VK_ERROR_FORMAT_NOT_SUPPORTED */
 static VkResult build_cis(const struct nvhal_astc_pd *p, const VkImageCreateInfo *ci, struct astc_cis *c,
                           const char *who) {
     const char *why;
     char buf[160];
+    efmt_get(ci->format, &c->e);
+    const struct efmt *e = &c->e;
     VkResult r = ifp_check(p, ci->imageType, ci->tiling, ci->usage, ci->flags, &why);
     if (r == VK_SUCCESS) {
         why = ci->samples != VK_SAMPLE_COUNT_1_BIT ? "multisampled"
@@ -664,20 +890,22 @@ static VkResult build_cis(const struct nvhal_astc_pd *p, const VkImageCreateInfo
             : ci->extent.depth != 1 ? "depth != 1"
             : NULL;
     }
-    bool list = false, unorm = false, srgb = false;
+    bool list = false, plain = false, twin = false;
     for (const VkBaseInStructure *s = ci->pNext; s && !why; s = s->pNext) {
         switch ((int)s->sType) {
         case VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO: {
             const VkImageFormatListCreateInfo *fl = (const void *)s;
             for (uint32_t i = 0; i < fl->viewFormatCount && !why; i++) {
                 VkFormat v = fl->pViewFormats[i];
-                if (!nvhal_astc_format(v) || fmt_table(v) != fmt_table(ci->format)) {
-                    snprintf(buf, sizeof buf, "view format %d in VkImageFormatListCreateInfo (block-texel views are not "
-                             "emulated)", v);
+                struct efmt ve;
+                if (!efmt_get(v, &ve) || ve.cls != e->cls) {
+                    snprintf(buf, sizeof buf, "view format %d in VkImageFormatListCreateInfo (block-texel views and EAC "
+                             "UNORM/SNORM reinterpretation are not emulated)", v);
                     why = buf;
+                    break;
                 }
-                unorm |= !fmt_srgb(v);
-                srgb |= fmt_srgb(v);
+                plain |= !ve.twin;
+                twin |= ve.twin;
             }
             list |= fl->viewFormatCount > 0;
             break;
@@ -698,33 +926,33 @@ static VkResult build_cis(const struct nvhal_astc_pd *p, const VkImageCreateInfo
         }
     }
     if (why) {
-        NVHAL_ERR("%s: VkFormat %d (ASTC %ux%u %s) %ux%u, %u mip(s), %u layer(s), type %d, tiling %d, samples %d, usage "
-                  "0x%x, flags 0x%x: not emulated: %s " R8_TAG " -> VK_ERROR_FORMAT_NOT_SUPPORTED", who,
-                  ci->format, block_dims[fmt_table(ci->format)][0], block_dims[fmt_table(ci->format)][1],
-                  fmt_srgb(ci->format) ? "SRGB" : "UNORM", ci->extent.width, ci->extent.height, ci->mipLevels,
-                  ci->arrayLayers, ci->imageType, ci->tiling, ci->samples, ci->usage, ci->flags, why);
+        NVHAL_ERR("%s: VkFormat %d (%s %ux%u blocks) %ux%u, %u mip(s), %u layer(s), type %d, tiling %d, samples %d, usage "
+                  "0x%x, flags 0x%x: not emulated: %s %s -> VK_ERROR_FORMAT_NOT_SUPPORTED", who, ci->format, fam_name(e),
+                  e->bw, e->bh, ci->extent.width, ci->extent.height, ci->mipLevels, ci->arrayLayers, ci->imageType,
+                  ci->tiling, ci->samples, ci->usage, ci->flags, why, gap(e));
         return VK_ERROR_FORMAT_NOT_SUPPORTED;
     }
-    const unsigned t = fmt_table(ci->format);
     c->rgba = *ci;
     c->rgba.pNext = NULL;
-    c->rgba.format = fmt_rgba(ci->format);
+    c->rgba.format = e->decoded;
     c->rgba.usage |= VK_IMAGE_USAGE_STORAGE_BIT;
     c->rgba.flags |= RGBA_EXTRA_FLAGS;
-    if (list) { /* the app's view formats, as RGBA, plus the decoder's storage view */
+    if (list) { /* the app's view formats, as decoded formats, plus the decoder's storage view */
+        struct efmt pe, te;
         uint32_t n = 0;
-        if (unorm) c->list_fmts[n++] = VK_FORMAT_R8G8B8A8_UNORM;
-        if (srgb) c->list_fmts[n++] = VK_FORMAT_R8G8B8A8_SRGB;
-        c->list_fmts[n++] = VK_FORMAT_R8G8B8A8_UINT;
+        efmt_get(e->twin ? ci->format - 1 : ci->format, &pe); /* the pair: UNORM/SRGB or UNORM/SNORM, adjacent */
+        efmt_get(e->twin ? ci->format : ci->format + 1, &te);
+        if (plain) c->list_fmts[n++] = pe.decoded;
+        if (twin) c->list_fmts[n++] = te.decoded;
+        c->list_fmts[n++] = e->store;
         c->list = (VkImageFormatListCreateInfo){VK_STRUCTURE_TYPE_IMAGE_FORMAT_LIST_CREATE_INFO, NULL, n, c->list_fmts};
         c->rgba.pNext = &c->list;
     }
     c->mips = ci->mipLevels;
     for (uint32_t m = 0; m < c->mips; m++)
         c->block[m] = (VkImageCreateInfo){
-            VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, ci->flags & SPARSE_FLAGS, VK_IMAGE_TYPE_2D, VK_FORMAT_R32G32B32A32_UINT,
-            {div_up(mip_dim(ci->extent.width, m), block_dims[t][0]), div_up(mip_dim(ci->extent.height, m), block_dims[t][1]),
-             1},
+            VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, NULL, ci->flags & SPARSE_FLAGS, VK_IMAGE_TYPE_2D, e->block,
+            {div_up(mip_dim(ci->extent.width, m), e->bw), div_up(mip_dim(ci->extent.height, m), e->bh), 1},
             1, ci->arrayLayers, VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_TILING_OPTIMAL, BLOCK_USAGE, ci->sharingMode,
             ci->queueFamilyIndexCount, ci->pQueueFamilyIndices, ci->initialLayout};
     return VK_SUCCESS;
@@ -751,8 +979,17 @@ static bool combine(const VkMemoryRequirements *parts, uint32_t n, bool sparse, 
     return bits != 0;
 }
 
-static bool icd_lacks_astc(const struct nvhal_device *d) {
-    return !d->astc_pd || d->astc_pd->state != NVHAL_ASTC_NATIVE;
+/* f is an emulated compressed format the ICD does not support itself (*e: its description) */
+static bool icd_lacks(const struct nvhal_device *d, VkFormat f, struct efmt *e) {
+    return efmt_get(f, e) && (!d->astc_pd || fam_state(d->astc_pd, e) != NVHAL_ASTC_NATIVE);
+}
+/* the device emulates e's family */
+static bool emulating(const struct nvhal_device *d, const struct efmt *e) {
+    return d->astc && fam_state(d->astc_pd, e) == NVHAL_ASTC_EMULATE;
+}
+static const char *unavailable_why(const struct nvhal_device *d, const struct efmt *e) {
+    const char *w = !d->astc_pd ? "" : e->fam == FAM_ASTC ? d->astc_pd->why : d->astc_pd->etc2_why;
+    return w[0] ? w : "not set up";
 }
 
 static void destroy_parts(struct nvhal_device *d, struct nvhal_astc_image *ai, const VkAllocationCallbacks *alloc,
@@ -774,12 +1011,13 @@ static void destroy_parts(struct nvhal_device *d, struct nvhal_astc_image *ai, c
 
 bool nvhal_astc_CreateImage(struct nvhal_device *d, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc,
                             VkImage *pImage, VkResult *r) {
-    static const char who[] = "vkCreateImage(ASTC)";
-    if (!nvhal_astc_format(ci->format) || !icd_lacks_astc(d)) return false;
-    if (!d->astc) {
-        NVHAL_ERR("%s: VkFormat %d is ASTC, which the ICD does not support, and this device has no ASTC emulation (%s) "
-                  R8_TAG " -> VK_ERROR_FORMAT_NOT_SUPPORTED", who, ci->format,
-                  d->astc_pd && d->astc_pd->why[0] ? d->astc_pd->why : "not set up");
+    static const char who[] = "vkCreateImage(compressed-format emulation)";
+    struct efmt e;
+    if (!icd_lacks(d, ci->format, &e)) return false;
+    if (!emulating(d, &e)) {
+        NVHAL_ERR("%s: VkFormat %d is %s, which the ICD does not support, and this device has no %s emulation (%s) %s -> "
+                  "VK_ERROR_FORMAT_NOT_SUPPORTED", who, ci->format, fam_name(&e), fam_name(&e), unavailable_why(d, &e),
+                  gap(&e));
         *r = VK_ERROR_FORMAT_NOT_SUPPORTED;
         return true;
     }
@@ -791,18 +1029,18 @@ bool nvhal_astc_CreateImage(struct nvhal_device *d, const VkImageCreateInfo *ci,
         *r = VK_ERROR_OUT_OF_HOST_MEMORY;
         return true;
     }
-    const unsigned t = fmt_table(ci->format);
     ai->dev = d;
     ai->format = ci->format;
-    ai->bw = block_dims[t][0];
-    ai->bh = block_dims[t][1];
-    ai->table = t;
+    ai->e = c.e;
+    ai->bw = c.e.bw;
+    ai->bh = c.e.bh;
+    ai->table = c.e.cls;
     ai->extent = ci->extent;
     ai->mips = c.mips;
     ai->layers = ci->arrayLayers;
     ai->usage = ci->usage;
     VkDevice dev = d->handle;
-    const char *step = "vkCreateImage(RGBA8)";
+    const char *step = "vkCreateImage(decoded image)";
     *r = d->CreateImage(dev, &c.rgba, alloc, &ai->image);
     for (uint32_t m = 0; m < c.mips && *r == VK_SUCCESS; m++) {
         step = "vkCreateImage(block image)";
@@ -830,7 +1068,7 @@ bool nvhal_astc_CreateImage(struct nvhal_device *d, const VkImageCreateInfo *ci,
         ai->sparse = (ci->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) != 0;
         for (uint32_t i = 0; i <= c.mips; i++) ai->size[i] = parts[i].size;
         if (*r == VK_SUCCESS && !combine(parts, 1 + c.mips, ai->sparse, ai->off, &ai->req)) {
-            step = "memory requirements (no memory type fits the RGBA8 image and the block images)";
+            step = "memory requirements (no memory type fits the decoded image and the block images)";
             *r = VK_ERROR_FORMAT_NOT_SUPPORTED;
         }
     }
@@ -839,15 +1077,15 @@ bool nvhal_astc_CreateImage(struct nvhal_device *d, const VkImageCreateInfo *ci,
         *r = VK_ERROR_OUT_OF_HOST_MEMORY;
     }
     if (*r != VK_SUCCESS) {
-        NVHAL_ERR("%s: VkFormat %d %ux%u: %s -> %s " R8_TAG, who, ci->format, ci->extent.width, ci->extent.height, step,
-                  NVHAL_VKR(*r));
+        NVHAL_ERR("%s: VkFormat %d %ux%u: %s -> %s %s", who, ci->format, ci->extent.width, ci->extent.height, step,
+                  NVHAL_VKR(*r), gap(&c.e));
         destroy_parts(d, ai, alloc, true);
         return true;
     }
     atomic_fetch_add_explicit(&n_images, 1, memory_order_release);
-    NVHAL_TRACE("%s: VkImage %p = RGBA8 %s %ux%u, %u mip(s), %u layer(s) + %u block image(s); memory %llu B (RGBA8 %llu B), "
-                "alignment %llu, types 0x%x", who, NVHAL_LOGH(ai->image), fmt_srgb(ci->format) ? "SRGB" : "UNORM",
-                ci->extent.width, ci->extent.height, ai->mips, ai->layers, ai->mips, (unsigned long long)ai->req.size,
+    NVHAL_TRACE("%s: VkImage %p (VkFormat %d) = VkFormat %d %ux%u, %u mip(s), %u layer(s) + %u block image(s); memory "
+                "%llu B (decoded image %llu B), alignment %llu, types 0x%x", who, NVHAL_LOGH(ai->image), ci->format,
+                c.e.decoded, ci->extent.width, ci->extent.height, ai->mips, ai->layers, ai->mips, (unsigned long long)ai->req.size,
                 (unsigned long long)parts[0].size, (unsigned long long)ai->req.alignment, ai->req.memoryTypeBits);
     *pImage = ai->image;
     return true;
@@ -879,18 +1117,21 @@ bool nvhal_astc_image_requirements(VkImage image, VkMemoryRequirements2 *out) {
 }
 
 bool nvhal_astc_ci_refused(struct nvhal_device *d, const VkImageCreateInfo *ci, const char *who) {
-    if (!ci || !nvhal_astc_format(ci->format) || !icd_lacks_astc(d)) return false;
-    NVHAL_TRACE("%s: ASTC create info (VkFormat %d) answered by the HAL, not the ICD", who, ci->format);
+    struct efmt e;
+    if (!ci || !icd_lacks(d, ci->format, &e)) return false;
+    NVHAL_TRACE("%s: %s create info (VkFormat %d) answered by the HAL, not the ICD", who, fam_name(&e), ci->format);
     return true;
 }
 
 bool nvhal_astc_ci_requirements(struct nvhal_device *d, const VkImageCreateInfo *ci, VkMemoryRequirements2 *out, bool khr) {
-    static const char who[] = "vkGetDeviceImageMemoryRequirements(ASTC)";
-    if (!ci || !nvhal_astc_format(ci->format) || !icd_lacks_astc(d)) return false;
+    static const char who[] = "vkGetDeviceImageMemoryRequirements(compressed-format emulation)";
+    struct efmt e;
+    if (!ci || !icd_lacks(d, ci->format, &e)) return false;
     memset(&out->memoryRequirements, 0, sizeof out->memoryRequirements);
-    if (!d->astc) {
-        NVHAL_ERR("%s: VkFormat %d is ASTC, which the ICD does not support, and this device has no ASTC emulation "
-                  R8_TAG "; zero requirements returned", who, ci->format);
+    if (!emulating(d, &e)) {
+        NVHAL_ERR("%s: VkFormat %d is %s, which the ICD does not support, and this device has no %s emulation (%s) %s; "
+                  "zero requirements returned", who, ci->format, fam_name(&e), fam_name(&e), unavailable_why(d, &e),
+                  gap(&e));
         return true;
     }
     struct astc_cis c;
@@ -908,7 +1149,8 @@ bool nvhal_astc_ci_requirements(struct nvhal_device *d, const VkImageCreateInfo 
     }
     VkMemoryRequirements req;
     if (!combine(parts, 1 + c.mips, (ci->flags & VK_IMAGE_CREATE_SPARSE_BINDING_BIT) != 0, off, &req)) {
-        NVHAL_ERR("%s: VkFormat %d: no memory type fits the RGBA8 image and the block images " R8_TAG, who, ci->format);
+        NVHAL_ERR("%s: VkFormat %d: no memory type fits the decoded image and the block images %s", who, ci->format,
+                  gap(&e));
         return true;
     }
     fill_reqs(&req, out);
@@ -923,7 +1165,7 @@ VkResult nvhal_astc_bind1(struct nvhal_device *d, VkImage image, VkDeviceMemory 
     for (uint32_t m = 0; m < ai->mips && r == VK_SUCCESS; m++)
         r = d->xl.BindImageMemory(d->handle, ai->block[m], mem, offset + ai->off[1 + m]);
     if (r != VK_SUCCESS)
-        NVHAL_ERR("vkBindImageMemory: ASTC image %p (+%u block images) at memory %p offset %llu -> %s", NVHAL_LOGH(image),
+        NVHAL_ERR("vkBindImageMemory: emulated compressed image %p (+%u block images) at memory %p offset %llu -> %s", NVHAL_LOGH(image),
                   ai->mips, NVHAL_LOGH(mem), (unsigned long long)offset, NVHAL_VKR(r));
     return r;
 }
@@ -957,27 +1199,29 @@ bool nvhal_astc_CreateImageView(struct nvhal_device *d, VkDevice device, const V
                                 const VkAllocationCallbacks *alloc, VkImageView *view, VkResult *r) {
     struct nvhal_astc_image *ai = lookup(ci->image);
     if (!ai) return false;
-    if (!nvhal_astc_format(ci->format) || fmt_table(ci->format) != ai->table) {
-        NVHAL_ERR("vkCreateImageView: view format %d of ASTC image %p (VkFormat %d): only the image's own ASTC block size "
-                  "is emulated (block-texel views are not) " R8_TAG " -> VK_ERROR_FORMAT_NOT_SUPPORTED", ci->format,
-                  NVHAL_LOGH(ci->image), ai->format);
+    struct efmt ve;
+    if (!efmt_get(ci->format, &ve) || ve.cls != ai->table) {
+        NVHAL_ERR("vkCreateImageView: view format %d of %s image %p (VkFormat %d): only formats of the image's own decode "
+                  "class are emulated (block-texel views and EAC UNORM/SNORM reinterpretation are not) %s -> "
+                  "VK_ERROR_FORMAT_NOT_SUPPORTED", ci->format, fam_name(&ai->e), NVHAL_LOGH(ci->image), ai->format,
+                  gap(&ai->e));
         *r = VK_ERROR_FORMAT_NOT_SUPPORTED;
         return true;
     }
     VkImageViewCreateInfo t = *ci;
-    t.format = fmt_rgba(ci->format);
+    t.format = ve.decoded;
     bool has_usage = false;
     const void *decode_mode = NULL;
     for (const VkBaseInStructure *s = ci->pNext; s; s = s->pNext) {
         if (s->sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO) has_usage = true;
-        if (s->sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_ASTC_DECODE_MODE_EXT) decode_mode = s; /* RGBA8 has no decode mode */
+        if (s->sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_ASTC_DECODE_MODE_EXT) decode_mode = s; /* no decode mode there */
     }
-    /* the image has STORAGE usage for the decoder; the app's view must not inherit it (SRGB has no storage) */
+    /* the image has STORAGE usage for the decoder; the app's view must not inherit it (SRGB/SNORM: no storage) */
     VkImageViewUsageCreateInfo u = {VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, NULL, ai->usage};
     unsigned char storage[1024];
     if ((decode_mode || !has_usage) &&
         !nvhal_chain_replace(ci->pNext, decode_mode, has_usage ? NULL : &u, (const void **)&u.pNext, storage,
-                             sizeof storage, "vkCreateImageView(ASTC)", &t.pNext)) {
+                             sizeof storage, "vkCreateImageView(compressed-format emulation)", &t.pNext)) {
         *r = VK_ERROR_FORMAT_NOT_SUPPORTED;
         return true;
     }
@@ -1000,9 +1244,10 @@ int nvhal_astc_alloc_info(const VkMemoryAllocateInfo *ai, VkMemoryAllocateInfo *
     }
     if (!ded) return 0;
     *out = *ai;
-    if (!nvhal_chain_replace(ai->pNext, ded, NULL, NULL, storage, storage_size, "vkAllocateMemory(ASTC)", &out->pNext))
+    if (!nvhal_chain_replace(ai->pNext, ded, NULL, NULL, storage, storage_size, "vkAllocateMemory(compressed-format "
+                             "emulation)", &out->pNext))
         return -1;
-    NVHAL_TRACE("vkAllocateMemory: dedicated allocation for emulated ASTC image %p made non-dedicated (its memory also "
+    NVHAL_TRACE("vkAllocateMemory: dedicated allocation for emulated compressed image %p made non-dedicated (its memory also "
                 "backs the block images)", NVHAL_LOGH(image));
     return 1;
 }
@@ -1016,12 +1261,14 @@ VkResult nvhal_astc_bind_sparse(uint32_t n, const VkBindSparseInfo *in, VkBindSp
     *nowned = 0;
     if (nvhal_no_astc()) return VK_SUCCESS;
     bool any = false;
+    struct nvhal_astc_image *ai;
     for (uint32_t i = 0; i < n && !any; i++) {
         for (uint32_t k = 0; k < in[i].imageOpaqueBindCount && !any; k++) any = lookup(in[i].pImageOpaqueBinds[k].image);
         for (uint32_t k = 0; k < in[i].imageBindCount; k++)
-            if (lookup(in[i].pImageBinds[k].image)) {
-                NVHAL_ERR("vkQueueBindSparse: VkSparseImageMemoryBindInfo for ASTC image %p: emulated ASTC images have no "
-                          "sparse residency " R8_TAG " -> VK_ERROR_FORMAT_NOT_SUPPORTED", NVHAL_LOGH(in[i].pImageBinds[k].image));
+            if ((ai = lookup(in[i].pImageBinds[k].image))) {
+                NVHAL_ERR("vkQueueBindSparse: VkSparseImageMemoryBindInfo for %s image %p: emulated compressed images have "
+                          "no sparse residency %s -> VK_ERROR_FORMAT_NOT_SUPPORTED", fam_name(&ai->e),
+                          NVHAL_LOGH(in[i].pImageBinds[k].image), gap(&ai->e));
                 return VK_ERROR_FORMAT_NOT_SUPPORTED;
             }
     }
@@ -1092,8 +1339,8 @@ VkResult nvhal_astc_bind_sparse(uint32_t n, const VkBindSparseInfo *in, VkBindSp
 bool nvhal_astc_refuse(VkImage image, const char *what) {
     struct nvhal_astc_image *ai = lookup(image);
     if (!ai) return false;
-    NVHAL_ERR("%s names ASTC image %p (VkFormat %d), which the ASTC emulation does not implement for this command; the "
-              "command is dropped " R8_TAG, what, NVHAL_LOGH(image), ai->format);
+    NVHAL_ERR("%s names %s image %p (VkFormat %d), which the compressed-format emulation does not implement for this "
+              "command; the command is dropped %s", what, fam_name(&ai->e), NVHAL_LOGH(image), ai->format, gap(&ai->e));
     return true;
 }
 
@@ -1119,8 +1366,8 @@ static uint32_t range_mips(const struct nvhal_astc_image *ai, const VkImageSubre
         if (!extra) return in;                                                                                    \
         T *o = malloc((n + extra) * sizeof *o);                                                                   \
         if (!o) {                                                                                                 \
-            NVHAL_ERR("image barrier: out of host memory adding the ASTC block images' barriers; their layouts "   \
-                      "now differ from the app's image " R8_TAG);                                                 \
+            NVHAL_ERR("image barrier: out of host memory adding the emulated images' block-image barriers; their " \
+                      "layouts now differ from the app's image " R8_TAG " " ETC2_TAG);                            \
             return in;                                                                                            \
         }                                                                                                         \
         memcpy(o, in, n * sizeof *o);                                                                             \
@@ -1148,7 +1395,7 @@ static uint32_t layers_of(const struct nvhal_astc_image *ai, const VkImageSubres
     return s->baseArrayLayer < ai->layers ? ai->layers - s->baseArrayLayer : 0;
 }
 
-/* a buffer<->image region of the ASTC image as the same region of its block image (texels -> blocks) */
+/* a buffer<->image region of the emulated image as the same region of its block image (texels -> blocks) */
 static VkBufferImageCopy region_blocks(const struct nvhal_astc_image *ai, const VkBufferImageCopy *r) {
     VkBufferImageCopy b = *r;
     b.bufferRowLength = div_up(r->bufferRowLength, ai->bw);
@@ -1187,20 +1434,20 @@ static VkResult slot_get(struct nvhal_device *d, struct nvhal_astc_image *ai, ui
     const VkComponentMapping id = {VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
                                    VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
     VkImageViewCreateInfo sv = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, NULL, 0, ai->block[mip],
-                                VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_FORMAT_R32G32B32A32_UINT, id,
+                                VK_IMAGE_VIEW_TYPE_2D_ARRAY, ai->e.block, id,
                                 {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, base, count}};
     VkImageViewUsageCreateInfo su = {VK_STRUCTURE_TYPE_IMAGE_VIEW_USAGE_CREATE_INFO, NULL, VK_IMAGE_USAGE_STORAGE_BIT};
     VkImageViewCreateInfo dv = {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, &su, 0, ai->image, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
-                                VK_FORMAT_R8G8B8A8_UINT, id, {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, base, count}};
+                                ai->e.store, id, {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, base, count}};
     VkResult r = d->xl.CreateImageView(d->handle, &sv, NULL, &s.src);
     if (r == VK_SUCCESS) r = d->xl.CreateImageView(d->handle, &dv, NULL, &s.dst);
-    if (r == VK_SUCCESS) r = set_alloc(d, &s.set, &s.pool);
+    if (r == VK_SUCCESS) r = set_alloc(d, ai->e.fam, &s.set, &s.pool);
     if (r != VK_SUCCESS) {
         if (s.src) d->cs.DestroyImageView(d->handle, s.src, NULL);
         if (s.dst) d->cs.DestroyImageView(d->handle, s.dst, NULL);
         return r;
     }
-    /* vk_texcompress_astc_fill_write_descriptor_sets() */
+    /* vk_texcompress_astc_fill_write_descriptor_sets(); the ETC2 decoder has only the first two bindings */
     VkDescriptorImageInfo di = {VK_NULL_HANDLE, s.dst, VK_IMAGE_LAYOUT_GENERAL};
     VkDescriptorImageInfo si = {VK_NULL_HANDLE, s.src, VK_IMAGE_LAYOUT_GENERAL};
     VkWriteDescriptorSet w[8];
@@ -1208,12 +1455,16 @@ static VkResult slot_get(struct nvhal_device *d, struct nvhal_astc_image *ai, ui
                                   VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &di, NULL, NULL};
     w[1] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, s.set, 1, 0, 1,
                                   VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &si, NULL, NULL};
-    for (uint32_t i = 0; i < NVHAL_ASTC_NUM_LUTS; i++)
-        w[2 + i] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, s.set, 2 + i, 0, 1,
-                                          VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, &a->lut_view[i]};
-    w[7] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, s.set, 7, 0, 1,
-                                  VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, &a->part_view[ai->table]};
-    d->cs.UpdateDescriptorSets(d->handle, 8, w, 0, NULL);
+    uint32_t nw = 2;
+    if (ai->e.fam == FAM_ASTC) {
+        for (uint32_t i = 0; i < NVHAL_ASTC_NUM_LUTS; i++)
+            w[2 + i] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, s.set, 2 + i, 0, 1,
+                                              VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, &a->lut_view[i]};
+        w[7] = (VkWriteDescriptorSet){VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, NULL, s.set, 7, 0, 1,
+                                      VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, NULL, NULL, &a->part_view[ai->table]};
+        nw = 8;
+    }
+    d->cs.UpdateDescriptorSets(d->handle, nw, w, 0, NULL);
     ai->slots[ai->nslots++] = s;
     *out = s;
     return VK_SUCCESS;
@@ -1223,7 +1474,7 @@ static void record_decode(struct nvhal_device *d, VkCommandBuffer cb, const stru
                           const struct astc_slot *s) {
     struct nvhal_astc_image *ai = j->ai;
     /* the copy into the block image (TRANSFER) -> the decoder (COMPUTE); the app's own barrier before its copy
-     * covers TRANSFER, which chains into this one for the RGBA image's earlier accesses */
+     * covers TRANSFER, which chains into this one for the decoded image's earlier accesses */
     VkImageMemoryBarrier pre[2] = {
         {VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, NULL, VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, j->layout,
          VK_IMAGE_LAYOUT_GENERAL, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, ai->block[j->mip],
@@ -1235,13 +1486,21 @@ static void record_decode(struct nvhal_device *d, VkCommandBuffer cb, const stru
     d->xl.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, NULL, 0, NULL,
                              2, pre);
     d->cs.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_COMPUTE, pipe);
-    d->cs.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, d->astc->pl, 0, 1, &s->set, 0, NULL);
-    /* radv_meta_astc_decode.c / vn_astc_emu: block coordinates of the start, texel coordinates of the end, 2D */
-    const uint32_t pc[5] = {(uint32_t)j->x / ai->bw, (uint32_t)j->y / ai->bh, (uint32_t)j->x + j->w,
-                            (uint32_t)j->y + j->h, 0};
-    d->cs.CmdPushConstants(cb, d->astc->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, PUSH_SIZE, pc);
-    /* each workgroup decodes 2x2 blocks (local size = block size x 4) */
-    d->cs.CmdDispatch(cb, div_up(div_up(j->w, ai->bw), 2), div_up(div_up(j->h, ai->bh), 2), j->count);
+    if (ai->e.fam == FAM_ASTC) {
+        d->cs.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, d->astc->pl, 0, 1, &s->set, 0, NULL);
+        /* radv_meta_astc_decode.c / vn_astc_emu: block coordinates of the start, texel coordinates of the end, 2D */
+        const uint32_t pc[5] = {(uint32_t)j->x / ai->bw, (uint32_t)j->y / ai->bh, (uint32_t)j->x + j->w,
+                                (uint32_t)j->y + j->h, 0};
+        d->cs.CmdPushConstants(cb, d->astc->pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, PUSH_SIZE, pc);
+        /* each workgroup decodes 2x2 blocks (local size = block size x 4) */
+        d->cs.CmdDispatch(cb, div_up(div_up(j->w, ai->bw), 2), div_up(div_up(j->h, ai->bh), 2), j->count);
+    } else {
+        d->cs.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_COMPUTE, d->astc->etc2_pl, 0, 1, &s->set, 0, NULL);
+        /* etc2_decoder.comp: the texel rectangle [start, end); one invocation per texel, 8x8 per workgroup */
+        const int32_t pc[4] = {j->x, j->y, j->x + (int32_t)j->w, j->y + (int32_t)j->h};
+        d->cs.CmdPushConstants(cb, d->astc->etc2_pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, ETC2_PUSH_SIZE, pc);
+        d->cs.CmdDispatch(cb, div_up(j->w, 8), div_up(j->h, 8), j->count);
+    }
     /* back to the app's layout; dst stage TRANSFER so that the app's next barrier, whose first scope is the
      * transfer it recorded, chains with the decoder's writes */
     VkImageMemoryBarrier post[2] = {
@@ -1260,35 +1519,39 @@ static void record_decode(struct nvhal_device *d, VkCommandBuffer cb, const stru
 static void decode_jobs(struct nvhal_device *d, VkCommandBuffer cb, const struct decode_job *jobs, uint32_t n,
                         const char *who) {
     if (!n) return;
+    const struct efmt *e0 = &jobs[0].ai->e;
     struct nvhal_cmd *e = nvhal_cmd_get(cb);
     uint32_t family = e ? e->family : UINT32_MAX;
     if (family == UINT32_MAX || family >= d->astc_pd->nq || !(d->astc_pd->qflags[family] & VK_QUEUE_COMPUTE_BIT)) {
-        NVHAL_ERR("%s: ASTC image %p: the compressed blocks were copied, but command buffer %p belongs to queue family %d, "
-                  "which has no VK_QUEUE_COMPUTE_BIT (flags 0x%x); the decode needs compute, the texels stay undecoded "
-                  R8_TAG, who, NVHAL_LOGH(jobs[0].ai->image), (void *)cb, (int)family,
-                  family < d->astc_pd->nq ? d->astc_pd->qflags[family] : 0);
+        NVHAL_ERR("%s: %s image %p: the compressed blocks were copied, but command buffer %p belongs to queue family %d, "
+                  "which has no VK_QUEUE_COMPUTE_BIT (flags 0x%x); the decode needs compute, the texels stay undecoded %s",
+                  who, fam_name(e0), NVHAL_LOGH(jobs[0].ai->image), (void *)cb, (int)family,
+                  family < d->astc_pd->nq ? d->astc_pd->qflags[family] : 0, gap(e0));
         return;
     }
     if (nvhal_cs_conditional(cb))
-        NVHAL_ERR("%s: ASTC image %p: the upload is recorded inside conditional rendering (command buffer %p); the "
+        NVHAL_ERR("%s: %s image %p: the upload is recorded inside conditional rendering (command buffer %p); the "
                   "decode dispatch obeys the app's predicate while the copy does not, so a false predicate leaves the "
-                  "texels undecoded " R8_TAG, who, NVHAL_LOGH(jobs[0].ai->image), (void *)cb);
+                  "texels undecoded %s", who, fam_name(e0), NVHAL_LOGH(jobs[0].ai->image), (void *)cb, gap(e0));
     struct { VkPipeline pipe; struct astc_slot slot; } st[8], *res = n <= 8 ? st : malloc(n * sizeof *res);
     if (!res) {
-        NVHAL_ERR("%s: out of host memory; ASTC decode dropped " R8_TAG, who);
+        NVHAL_ERR("%s: out of host memory; %s decode dropped %s", who, fam_name(e0), gap(e0));
         return;
     }
     struct nvhal_astc_dev *a = d->astc;
     pthread_mutex_lock(&a->lock);
-    VkResult r = decoder_init(d);
     for (uint32_t i = 0; i < n; i++) {
-        res[i].pipe = r == VK_SUCCESS ? decoder_pipeline(d, jobs[i].ai->table) : VK_NULL_HANDLE;
+        const struct efmt *je = &jobs[i].ai->e;
+        if (je->fam == FAM_ASTC)
+            res[i].pipe = decoder_init(d) == VK_SUCCESS ? decoder_pipeline(d, je->cls) : VK_NULL_HANDLE;
+        else
+            res[i].pipe = etc2_decoder_init(d) == VK_SUCCESS ? etc2_pipeline(d, je->variant) : VK_NULL_HANDLE;
         VkResult rs = VK_ERROR_INITIALIZATION_FAILED;
         if (res[i].pipe) rs = slot_get(d, jobs[i].ai, jobs[i].mip, jobs[i].base, jobs[i].count, &res[i].slot);
         if (res[i].pipe && rs != VK_SUCCESS) {
-            NVHAL_ERR("%s: ASTC image %p mip %u layers %u+%u: decoder views/descriptor set -> %s; this region stays "
-                      "undecoded " R8_TAG, who, NVHAL_LOGH(jobs[i].ai->image), jobs[i].mip, jobs[i].base, jobs[i].count,
-                      NVHAL_VKR(rs));
+            NVHAL_ERR("%s: %s image %p mip %u layers %u+%u: decoder views/descriptor set -> %s; this region stays "
+                      "undecoded %s", who, fam_name(je), NVHAL_LOGH(jobs[i].ai->image), jobs[i].mip, jobs[i].base,
+                      jobs[i].count, NVHAL_VKR(rs), gap(je));
             res[i].pipe = VK_NULL_HANDLE;
         }
     }
@@ -1298,9 +1561,9 @@ static void decode_jobs(struct nvhal_device *d, VkCommandBuffer cb, const struct
         if (res[i].pipe && jobs[i].w && jobs[i].h && jobs[i].count) {
             record_decode(d, cb, &jobs[i], res[i].pipe, &res[i].slot);
             any = true;
-            NVHAL_TRACE("%s: ASTC image %p mip %u layers %u+%u texels (%d,%d) %ux%u decoded in command buffer %p", who,
-                        NVHAL_LOGH(jobs[i].ai->image), jobs[i].mip, jobs[i].base, jobs[i].count, jobs[i].x, jobs[i].y,
-                        jobs[i].w, jobs[i].h, (void *)cb);
+            NVHAL_TRACE("%s: %s image %p mip %u layers %u+%u texels (%d,%d) %ux%u decoded in command buffer %p", who,
+                        fam_name(&jobs[i].ai->e), NVHAL_LOGH(jobs[i].ai->image), jobs[i].mip, jobs[i].base,
+                        jobs[i].count, jobs[i].x, jobs[i].y, jobs[i].w, jobs[i].h, (void *)cb);
         }
     if (res != st) free(res);
     if (any) nvhal_cs_restore(d, cb, who);
@@ -1308,18 +1571,19 @@ static void decode_jobs(struct nvhal_device *d, VkCommandBuffer cb, const struct
 
 static bool mip_ok(const struct nvhal_astc_image *ai, uint32_t mip, const char *who) {
     if (mip < ai->mips) return true;
-    NVHAL_ERR("%s: mip level %u of ASTC image %p, which has %u; region skipped", who, mip, NVHAL_LOGH(ai->image), ai->mips);
+    NVHAL_ERR("%s: mip level %u of %s image %p, which has %u; region skipped", who, mip, fam_name(&ai->e),
+              NVHAL_LOGH(ai->image), ai->mips);
     return false;
 }
 
 bool nvhal_astc_cmd_copy_buffer_to_image(struct nvhal_device *d, VkCommandBuffer cb, VkBuffer src, VkImage dst,
                                          VkImageLayout layout, uint32_t n, const VkBufferImageCopy *r) {
-    static const char who[] = "vkCmdCopyBufferToImage(ASTC)";
+    static const char who[] = "vkCmdCopyBufferToImage(compressed-format emulation)";
     struct nvhal_astc_image *ai = lookup(dst);
     if (!ai) return false;
     struct decode_job st[8] = {0}, *jobs = n <= 8 ? st : malloc(n * sizeof *jobs);
     if (!jobs) {
-        NVHAL_ERR("%s: out of host memory; copy dropped " R8_TAG, who);
+        NVHAL_ERR("%s: out of host memory; copy dropped %s", who, gap(&ai->e));
         return true;
     }
     uint32_t nj = 0;
@@ -1343,7 +1607,7 @@ bool nvhal_astc_cmd_copy_image_to_buffer(struct nvhal_device *d, VkCommandBuffer
     if (!ai) return false;
     for (uint32_t i = 0; i < n; i++) {
         const uint32_t mip = r[i].imageSubresource.mipLevel;
-        if (!mip_ok(ai, mip, "vkCmdCopyImageToBuffer(ASTC)")) continue;
+        if (!mip_ok(ai, mip, "vkCmdCopyImageToBuffer(compressed-format emulation)")) continue;
         VkBufferImageCopy b = region_blocks(ai, &r[i]);
         d->xl.CmdCopyImageToBuffer(cb, ai->block[mip], layout, dst, 1, &b);
     }
@@ -1352,14 +1616,18 @@ bool nvhal_astc_cmd_copy_image_to_buffer(struct nvhal_device *d, VkCommandBuffer
 
 bool nvhal_astc_cmd_copy_image(struct nvhal_device *d, VkCommandBuffer cb, VkImage src, VkImageLayout srcL, VkImage dst,
                                VkImageLayout dstL, uint32_t n, const VkImageCopy *r) {
-    static const char who[] = "vkCmdCopyImage(ASTC)";
+    static const char who[] = "vkCmdCopyImage(compressed-format emulation)";
     struct nvhal_astc_image *sa = lookup(src), *da = lookup(dst);
     if (!sa && !da) return false;
-    if (sa && da) /* the decoded texels, RGBA8 to RGBA8, as the app's regions say */
-        d->xl.CmdCopyImage(cb, src, srcL, dst, dstL, n, r);
+    /* the same decode class on both sides (the same ASTC block size, or the same ETC2/EAC decoder variant): the
+     * decoded texels are copied as the app's regions say. Otherwise the destination's blocks are decoded: blocks of
+     * another family or variant decode to other texels (size-compatible compressed formats) */
+    const bool texels = sa && da && sa->table == da->table;
+    if (texels) d->xl.CmdCopyImage(cb, src, srcL, dst, dstL, n, r);
+    const bool decode = da && !texels;
     struct decode_job st[8] = {0}, *jobs = st;
-    if (!sa && n > 8 && !(jobs = malloc(n * sizeof *jobs))) {
-        NVHAL_ERR("%s: out of host memory; copy dropped " R8_TAG, who);
+    if (decode && n > 8 && !(jobs = malloc(n * sizeof *jobs))) {
+        NVHAL_ERR("%s: out of host memory; copy dropped %s", who, gap(&da->e));
         return true;
     }
     uint32_t nj = 0;
@@ -1380,11 +1648,13 @@ bool nvhal_astc_cmd_copy_image(struct nvhal_device *d, VkCommandBuffer cb, VkIma
             b.dstOffset = (VkOffset3D){r[i].dstOffset.x / (int32_t)da->bw, r[i].dstOffset.y / (int32_t)da->bh, 0};
         }
         d->xl.CmdCopyImage(cb, bs, srcL, bd, dstL, 1, &b);
-        if (da && !sa) { /* uncompressed source texels are blocks of the destination: decode what they cover */
+        if (decode) { /* the source's texels or blocks are blocks of the destination: decode what they cover */
             const uint32_t mip = r[i].dstSubresource.mipLevel;
             uint32_t mw = mip_dim(da->extent.width, mip), mh = mip_dim(da->extent.height, mip);
             uint32_t x = (uint32_t)r[i].dstOffset.x, y = (uint32_t)r[i].dstOffset.y;
-            uint32_t w = r[i].extent.width * da->bw, h = r[i].extent.height * da->bh;
+            /* the extent is in source texels: blocks of an uncompressed source, texels of a compressed one */
+            uint32_t w = sa ? div_up(r[i].extent.width, sa->bw) * da->bw : r[i].extent.width * da->bw;
+            uint32_t h = sa ? div_up(r[i].extent.height, sa->bh) * da->bh : r[i].extent.height * da->bh;
             if (x + w > mw) w = mw > x ? mw - x : 0;
             if (y + h > mh) h = mh > y ? mh - y : 0;
             jobs[nj++] = (struct decode_job){da, mip, r[i].dstSubresource.baseArrayLayer,
@@ -1400,8 +1670,8 @@ bool nvhal_astc_cmd_copy_image(struct nvhal_device *d, VkCommandBuffer cb, VkIma
 static bool regions2_plain(const void *info_next, const void *regions, uint32_t n, size_t stride, const char *who) {
     bool ok = info_next == NULL;
     for (uint32_t i = 0; i < n && ok; i++) ok = ((const VkBaseInStructure *)((const char *)regions + i * stride))->pNext == NULL;
-    if (!ok) NVHAL_ERR("%s: a pNext structure on the copy or a region is not implemented by the ASTC emulation; the "
-                       "command is dropped " R8_TAG, who);
+    if (!ok) NVHAL_ERR("%s: a pNext structure on the copy or a region is not implemented by the compressed-format "
+                       "emulation; the command is dropped " R8_TAG " " ETC2_TAG, who);
     return ok;
 }
 
@@ -1459,8 +1729,9 @@ static bool of_device(void *v, void *arg) { return ((struct nvhal_astc_image *)v
 static void leaked_image(void *v) {
     struct nvhal_astc_image *ai = v;
     atomic_fetch_sub_explicit(&n_images, 1, memory_order_release);
-    NVHAL_WARN("vkDestroyDevice: ASTC image %p was not destroyed by the app; its HAL objects are freed now", NVHAL_LOGH(ai->image));
-    destroy_parts(ai->dev, ai, NULL, false); /* the RGBA8 image is the app's (leaked) object */
+    NVHAL_WARN("vkDestroyDevice: %s image %p was not destroyed by the app; its HAL objects are freed now",
+               fam_name(&ai->e), NVHAL_LOGH(ai->image));
+    destroy_parts(ai->dev, ai, NULL, false); /* the decoded image is the app's (leaked) object */
 }
 
 void nvhal_astc_device_teardown(struct nvhal_device *d) {
@@ -1471,6 +1742,13 @@ void nvhal_astc_device_teardown(struct nvhal_device *d) {
     for (unsigned i = 0; i < NVHAL_ASTC_NUM_PARTITION_TABLES; i++)
         if (a->pipe[i]) d->cs.DestroyPipeline(dev, a->pipe[i], NULL);
     for (uint32_t i = 0; i < a->npools; i++) d->cs.DestroyDescriptorPool(dev, a->pools[i], NULL);
+    for (unsigned i = 0; i < ETC2_VARIANTS; i++)
+        if (a->etc2_pipe[i]) d->cs.DestroyPipeline(dev, a->etc2_pipe[i], NULL);
+    for (uint32_t i = 0; i < a->etc2_npools; i++) d->cs.DestroyDescriptorPool(dev, a->etc2_pools[i], NULL);
+    if (a->etc2_pl) d->cs.DestroyPipelineLayout(dev, a->etc2_pl, NULL);
+    if (a->etc2_dsl) d->cs.DestroyDescriptorSetLayout(dev, a->etc2_dsl, NULL);
+    if (a->etc2_sm) d->cs.DestroyShaderModule(dev, a->etc2_sm, NULL);
+    free(a->etc2_pools);
     if (a->pl) d->cs.DestroyPipelineLayout(dev, a->pl, NULL);
     if (a->dsl) d->cs.DestroyDescriptorSetLayout(dev, a->dsl, NULL);
     if (a->sm) d->cs.DestroyShaderModule(dev, a->sm, NULL);

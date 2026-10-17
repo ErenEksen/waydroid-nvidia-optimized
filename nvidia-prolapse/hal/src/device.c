@@ -604,7 +604,8 @@ VkResult VKAPI_CALL nvhal_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreate
             for (size_t i = 0; i < N_OF(required_exts_1_0); i++)
                 ok &= add_prereq(names, &nn, required_exts_1_0[i], AHB_EXT " on a 1.0 device");
     }
-    /* ASTC LDR emulation (astc.c): decided per physical device; rewrites the enabled features */
+    /* compressed-format emulation (astc.c: ASTC LDR, ETC2/EAC): decided per physical device; rewrites the enabled
+     * features */
     struct nvhal_astc_ci_storage astc_st;
     VkDeviceCreateInfo aci;
     bool astc = false, maint2 = false;
@@ -616,11 +617,11 @@ VkResult VKAPI_CALL nvhal_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreate
     }
     if (maint2) {
         if (!nvhal_ext_in(icd, n_icd, "VK_KHR_maintenance2")) {
-            NVHAL_ERR("vkCreateDevice: the ASTC emulation on an API 1.0 device needs VK_KHR_maintenance2 (image view "
-                      "usage, EXTENDED_USAGE), which the ICD lacks -> VK_ERROR_EXTENSION_NOT_PRESENT");
+            NVHAL_ERR("vkCreateDevice: the compressed-format emulation on an API 1.0 device needs VK_KHR_maintenance2 "
+                      "(image view usage, EXTENDED_USAGE), which the ICD lacks -> VK_ERROR_EXTENSION_NOT_PRESENT");
             ok = false;
         } else {
-            ok &= add_prereq(names, &nn, "VK_KHR_maintenance2", "the ASTC emulation on a 1.0 device");
+            ok &= add_prereq(names, &nn, "VK_KHR_maintenance2", "the compressed-format emulation on a 1.0 device");
         }
     }
     free(icd);
@@ -770,10 +771,16 @@ VkResult VKAPI_CALL nvhal_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreate
              : start_r != VK_SUCCESS ? start_r : VK_ERROR_OUT_OF_HOST_MEMORY;
     }
     NVHAL_TRACE("vkCreateDevice: VkDevice %p (%s), effective API %u.%u, %u extension(s) to the ICD, "
-                "VK_ANDROID_native_buffer %s, " AHB_EXT " %s, ASTC LDR %s, %u queue timeline(s) started (%s, %.3f ms)",
+                "VK_ANDROID_native_buffer %s, " AHB_EXT " %s, ASTC LDR %s, ETC2/EAC %s, %u queue timeline(s) started (%s, "
+                "%.3f ms)",
                 (void *)dev, props.deviceName, VK_API_VERSION_MAJOR(api), VK_API_VERSION_MINOR(api), nn,
                 anb ? "enabled" : "not requested", ahb_ext ? "enabled" : "not requested",
-                d->astc ? "emulated" : d->astc_pd->state == NVHAL_ASTC_NATIVE ? "native" : "unavailable", n_started,
+                d->astc_pd->state == NVHAL_ASTC_NATIVE ? "native" : d->astc_pd->state == NVHAL_ASTC_EMULATE ? "emulated"
+                                                                                                          : "unavailable",
+                d->astc_pd->etc2_state == NVHAL_ASTC_NATIVE    ? "native"
+                : d->astc_pd->etc2_state == NVHAL_ASTC_EMULATE ? "emulated"
+                                                               : "unavailable",
+                n_started,
                 sync_fence_fd ? "fence export" : sync_sem_fd ? "semaphore export" : "no sync_fd extension: none needed",
                 start_ms);
     *pDevice = dev;

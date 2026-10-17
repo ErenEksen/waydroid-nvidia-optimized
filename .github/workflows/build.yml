@@ -478,7 +478,7 @@ jobs:
           done
           for target in android:ELF64:'Advanced Micro Devices X86-64' android32:ELF32:'Intel 80386'; do
             t=${target%%:*}; rest=${target#*:}; cls=${rest%%:*}; mach=${rest#*:}
-            for prog in vk-compute vk-graphics vk-interop anb-roundtrip astc-roundtrip gl-triangle gl-dmabuf gl-skia-shaders gl-yuv; do
+            for prog in vk-compute vk-graphics vk-interop anb-roundtrip astc-roundtrip etc2-roundtrip gl-triangle gl-dmabuf gl-skia-shaders gl-yuv; do
               f="native/gate/bin/$t/$prog"; test -f "$f"
               LC_ALL=C readelf -h "$f" | grep -q "Class:.*$cls"; LC_ALL=C readelf -h "$f" | grep -q "Machine:.*$mach"
             done

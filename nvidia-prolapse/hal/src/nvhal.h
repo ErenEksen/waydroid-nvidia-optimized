@@ -81,15 +81,18 @@ size_t nvhal_hash_sweep(struct nvhal_hash *h, bool (*pred)(void *val, void *arg)
 /* ---- ICD (hal.c) ---- */
 extern PFN_vkGetInstanceProcAddr nvhal_icd_gipa;
 
-/* ---- ASTC LDR emulation, per physical device (astc.c) ---- */
+/* ---- compressed-format emulation (ASTC LDR, ETC2/EAC), per physical device (astc.c) ---- */
 enum nvhal_astc_state { NVHAL_ASTC_EMULATE = 1, NVHAL_ASTC_NATIVE, NVHAL_ASTC_UNAVAILABLE };
 struct nvhal_astc_pd {
     struct nvhal_astc_pd *next;
     VkPhysicalDevice pd;
-    enum nvhal_astc_state state;
+    enum nvhal_astc_state state;   /* ASTC LDR */
     char why[256];                 /* NVHAL_ASTC_UNAVAILABLE: the missing prerequisite */
     VkFormatFeatureFlags feat[2];  /* optimal-tiling features reported for ASTC [UNORM, SRGB] */
-    VkImageUsageFlags usage;       /* image usages the emulation accepts */
+    enum nvhal_astc_state etc2_state; /* ETC2/EAC, decided independently of ASTC */
+    char etc2_why[256];
+    VkFormatFeatureFlags etc2_feat[10]; /* per VkFormat - VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK */
+    VkImageUsageFlags usage;       /* image usages the emulation accepts (both families) */
     VkImageCreateFlags flags;      /* create flags the emulation accepts (sparse binding per device features) */
     uint32_t api_version;          /* the physical device's */
     uint32_t nq;

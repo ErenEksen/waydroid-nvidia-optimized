@@ -204,7 +204,7 @@ HAL behaviour (src/anb.c `nvhal_CreateImage`/`bind2`, src/ahb.c `nvhal_sc_*`, sr
 Host tests: `test/anb-roundtrip.c` (image C section, pixel round trip through the swapchain bind),
 `test/loader-pd.c` (private data; its control run shows the raw ICD dying with SIGSEGV on the same call).
 
-## 7. ASTC LDR emulation (added 2026-10-10; risk R8)
+## 7. ASTC LDR and ETC2/EAC emulation (ASTC added 2026-10-10, risk R8; ETC2/EAC 2026-10-18, 7.8)
 
 Sources: `src/astc.c` (`A`), `src/cmdstate.c` (`CS`), `src/imgxlate.c` (`X`), `src/anb.c`, `src/ahb.c`,
 `src/device.c`, `src/hal.c`; dEQP `external/vulkancts/modules/vulkan/api/vktApiFeatureInfo.cpp` (`FI`, CTS
@@ -292,6 +292,32 @@ vulkan-cts-1.4.6.2); Mesa `mesa-25.2.0` (`M`). Design reference: Mesa `src/vulka
 - Overhead per `vkCmdPushConstants` (2M calls, host): graphics-only 5.8 → 8.6 ns, compute stage 7.6 → 13.3 ns.
 - Guest (2026-10-10): astcprobe as 7.2/7.3; ASTC caselist 34,522 cases 0 fail; `dEQP-VK.api.*` 327,798 cases
   0 fail / 4 QualityWarning; Endfield past GfxDevice init.
+
+### 7.8 ETC2/EAC (added 2026-10-18)
+
+The same machinery emulates the 10 ETC2/EAC formats (`VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK` ... `VK_FORMAT_EAC_R11G11_SNORM_BLOCK`).
+Neither driver mode has them on desktop GPUs (NVIDIA 615: `textureCompressionETC2 = 0`; NVK `nvk_physical_device.c`:
+`textureCompressionETC2 = false`), while Android's Vulkan baseline (`VP_ANDROID_baseline_2021`) requires the feature, and
+Chrome's Skia compositor refuses its ETC1 tab thumbnails without `ETC2_R8G8B8_UNORM` (white tab strip). ASTC and ETC2 are
+probed and decided independently (`nvhal_astc_pd.state` / `.etc2_state`).
+
+| Item | Behaviour | Where |
+|---|---|---|
+| Probe | `R8G8B8A8_UINT`, `R16_UINT`, `R16G16_UINT` STORAGE; `R32G32_UINT` and `R32G32B32A32_UINT` SAMPLED+TRANSFER; `shaderStorageImageWriteWithoutFormat`; 8x8 workgroups; a compute queue; each decoded format has SAMPLED\|BLIT_SRC\|FILTER_LINEAR; else one error "(ETC2 gap)" and nothing advertised | A `probe_etc2` |
+| Advertised | `textureCompressionETC2 = 1`; optimal features = the decoded format's & (SAMPLED\|BLIT_SRC\|FILTER_LINEAR\|TRANSFER_SRC\|TRANSFER_DST\|FILTER_MINMAX), no linear/buffer features, no host image transfer; image format properties as for ASTC (7.2) | A `fmt_features`, `ifp_check` |
+| Decoded image (the app's handle) | Mesa `vk_texcompress_etc2_emulation_format`: RGB8/RGB8A1/RGBA8 -> `R8G8B8A8_UNORM`/`_SRGB`, R11 -> `R16_UNORM`/`_SNORM`, RG11 -> `R16G16_UNORM`/`_SNORM` | A `efmt_get` |
+| Block images | one per mip, one texel per 4x4 block: `R32G32_UINT` (RGB8, RGB8A1, R11: 64-bit blocks), `R32G32B32A32_UINT` (RGBA8, RG11) | A `efmt_get` |
+| Decoder | `src/etc2_decoder.comp` (written from the Khronos Data Format Specification's ETC2 chapter), one invocation per texel, 8x8 workgroups, specialization KIND (RGB8, RGB8A1, RGBA8, R11, RG11) x SIGNED; writes through `R8G8B8A8_UINT` / `R16_UINT` / `R16G16_UINT` views; push `{start, end}` (16 B); same barriers and compute-state restore as 7.5 | A `etc2_pipeline`, `record_decode` |
+| Views | formats of the image's decode class only: ETC2 UNORM/SRGB twins (same bytes); EAC UNORM and SNORM decode to different values, so an R11 UNORM image with an R11 SNORM view (or format list entry) is refused, like block-texel views | A `build_cis`, `nvhal_astc_CreateImageView` |
+| Copies | as ASTC (7.4); between two emulated images the decoded texels are copied only within one decode class, otherwise the destination's blocks are decoded (e.g. ETC2 RGBA8 blocks copied into an EAC RG11 image decode as RG11) | A `nvhal_astc_cmd_copy_image` |
+
+Test: `test/etc2-roundtrip.c` (reference: Mesa's CPU decoder `src/mesa/main/texcompress_etc.c` at the pinned commit,
+`test/etc2-ref.c` + stand-in headers `test/etc2-ref/`): queries incl. the dEQP image_format_properties loop, refusals,
+12 pixel cases (all 10 formats, NPOT sizes with partial edge blocks, mip chains to 1x1, layers, 2 sparse-bound),
+blocks steered so that every ETC2 mode (individual, differential, T, H, planar, punchthrough transparent) and every EAC
+corner (multiplier 0, signed base -128) occurs; every texel must match bit for bit (RGBA8 bytes, R11/RG11 as 16-bit
+UNORM/SNORM), raw readback bit-exact, same-format / 64-/128-bit UINT / cross-class copies, blit; API 1.3 and 1.0.
+Host (RTX 5090, 615.71.09): 1,279,739 texels bit-exact per run, 0 differences, 64- and 32-bit.
 
 ## 8. Queue-timeline start at vkCreateDevice (added 2026-10-11; NVIDIA defect D1)
 

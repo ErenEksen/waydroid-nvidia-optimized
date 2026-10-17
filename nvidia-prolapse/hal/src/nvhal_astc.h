@@ -27,4 +27,9 @@ extern const struct nvhal_astc_lut nvhal_astc_partition_tables[NVHAL_ASTC_NUM_PA
 extern const uint32_t nvhal_astc_spv[];
 extern const size_t nvhal_astc_spv_size; /* bytes */
 
+/* the ETC2/EAC decoder: src/etc2_decoder.comp compiled by glslangValidator -V -S comp -x (out/gen/etc2_spv.h,
+ * src/etc2_spv.c) */
+extern const uint32_t nvhal_etc2_spv[];
+extern const size_t nvhal_etc2_spv_size; /* bytes */
+
 #endif

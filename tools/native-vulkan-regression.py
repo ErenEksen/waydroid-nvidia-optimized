@@ -40,7 +40,8 @@ def cases(target, suite):
         # The strict default requires an actually pending release fd. Never
         # carry --allow-synchronous-submit into an asynchronous regression gate.
         result += [("anb", [tests / "anb-roundtrip", hal, "--bounded"]),
-                   ("astc", [tests / "astc-roundtrip", hal])]
+                   ("astc", [tests / "astc-roundtrip", hal]),
+                   ("etc2", [tests / "etc2-roundtrip", hal])]
         if target == "host":
             result += [("ahb", [tests / "ahb-roundtrip", hal]),
                        ("ahb-yuv", [tests / "ahb-yuv", hal])]

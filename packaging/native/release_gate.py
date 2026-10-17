@@ -264,6 +264,7 @@ def vulkan_cases(gate, target):
     gate.run(target, 'interop', [b / 'vk-interop', '--driver', icd])
     gate.run(target, 'anb', [b / 'anb-roundtrip', hal, '--bounded'])
     gate.run(target, 'astc', [b / 'astc-roundtrip', hal])
+    gate.run(target, 'etc2', [b / 'etc2-roundtrip', hal])
 
 
 def gl_cases(gate, target):
