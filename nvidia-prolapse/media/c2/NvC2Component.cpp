@@ -383,7 +383,16 @@ public:
                                                              : HAL_PIXEL_FORMAT_YCBCR_420_888;
         const uint32_t block_w = yv12 ? align_up(width, 128) : (width + 1) & ~1u;
         std::shared_ptr<C2GraphicBlock> block;
-        const C2MemoryUsage usage = C2AndroidMemoryUsage::FromGrallocUsage(kGrallocUsageVideoDecoder);
+        /*
+         * Such a client reads every block on the CPU, so the block carries CPU_READ
+         * (GRALLOC_USAGE_SW_READ_OFTEN, C2AllocatorGralloc.cpp C2AndroidMemoryUsage::asGrallocUsage),
+         * as AOSP's software decoders fetch theirs ({CPU_READ, CPU_WRITE}, C2SoftAvcDec.cpp:784
+         * at android-13.0.0_r75): gralloc then places it in CPU-cached memory (minigbm
+         * vendor patch 0007). The GPU writes it, so no CPU_WRITE.
+         */
+        C2MemoryUsage usage = C2AndroidMemoryUsage::FromGrallocUsage(kGrallocUsageVideoDecoder);
+        if (cpu_client)
+            usage.expected |= C2MemoryUsage::CPU_READ;
         c2_status_t err = mC->mOutputPool->fetchGraphicBlock(block_w, (height + 1) & ~1u, hal, usage, &block);
         if (err == C2_BLOCKING || err == C2_TIMED_OUT)
             return -EAGAIN;

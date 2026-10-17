@@ -98,7 +98,7 @@ check: out/android/$(SONAME) out/android32/$(SONAME)
 	$(READELF) -h $$lib | grep -q "Class:.*$$class" || { echo "FAIL: $$lib is not $$class"; exit 1; }; \
 	exports=$$($(READELF) --dyn-syms --wide $$lib | awk '$$1 ~ /^[0-9]+:$$/ && $$7 != "UND" && $$5 != "LOCAL" && $$8 != "" {print $$8}' | sort -u); \
 	echo "exports: $$exports"; \
-	[ "$$exports" = "$$(printf 'get_gbm_layout_ops\nget_gbm_map_flags_ops\nget_gbm_ops')" ] || { echo "FAIL: dynamic exports must be exactly get_gbm_ops + get_gbm_map_flags_ops + get_gbm_layout_ops"; exit 1; }; \
+	[ "$$exports" = "$$(printf 'get_gbm_alloc_flags_ops\nget_gbm_layout_ops\nget_gbm_map_flags_ops\nget_gbm_ops')" ] || { echo "FAIL: dynamic exports must be exactly get_gbm_ops + get_gbm_map_flags_ops + get_gbm_layout_ops + get_gbm_alloc_flags_ops"; exit 1; }; \
 	soname=$$($(READELF) -d $$lib | sed -n 's/.*(SONAME).*\[\(.*\)\]/\1/p'); \
 	echo "SONAME: $$soname"; \
 	[ "$$soname" = "$(SONAME)" ] || { echo "FAIL: SONAME"; exit 1; }; \
@@ -301,6 +301,7 @@ check-header: $(MG_SRC)/.stamp
 	git -C $(MINIGBM) rev-parse HEAD | grep -qx 16844babfbd83d7c206ca22256257cbf26ca7de1 && \
 	tail -n +8 include/gbm_mesa_wrapper_map_flags.h | cmp - $(MG_SRC)/gbm_mesa_driver/gbm_mesa_wrapper_map_flags.h && \
 	tail -n +8 include/gbm_mesa_wrapper_layout.h | cmp - $(MG_SRC)/gbm_mesa_driver/gbm_mesa_wrapper_layout.h && \
+	tail -n +8 include/gbm_mesa_wrapper_alloc_flags.h | cmp - $(MG_SRC)/gbm_mesa_driver/gbm_mesa_wrapper_alloc_flags.h && \
 	echo "check-header: OK (identical to minigbm 16844ba / to the patched tree)"
 
 clean:

@@ -38,6 +38,7 @@
 #include <vulkan/vulkan.h>
 
 #include "gbm_mesa_wrapper.h"
+#include "gbm_mesa_wrapper_alloc_flags.h"
 
 static int failures;
 static char gpu_pci[32]; /* PCI address of the GPU under test, from sysfs */
@@ -518,6 +519,8 @@ static uint16_t pat16(uint32_t x, uint32_t y)
 }
 
 static struct gbm_ops *ops;
+static const struct gbm_alloc_flags_ops *aflags_ops;
+static uint32_t alloc_flags; /* != 0: allocate through get_gbm_alloc_flags_ops() */
 static struct gbm_device *gdev;
 static struct vkctx V;
 
@@ -533,7 +536,7 @@ static int alloc_buf(uint32_t w, uint32_t h, uint32_t fmt, bool cpu, bool scanou
 	a->force_linear = cpu;
 	a->needs_map_stride = cpu;
 	a->out_fd = -1;
-	return ops->alloc(a);
+	return alloc_flags ? aflags_ops->alloc(a, alloc_flags) : ops->alloc(a);
 }
 
 static void print_alloc(const char *what, const struct alloc_args *a)
@@ -636,15 +639,19 @@ static void test_a(void)
 /* (b) CPU buffer: LINEAR, CPU write -> GPU read, GPU write -> CPU read */
 static uint32_t patpx(uint32_t bpp, uint32_t x, uint32_t y)
 {
-	return bpp == 2 ? pat16(x, y) : pat32(x, y);
+	return bpp == 1 ? (x * 7 + y * 13) & 0xffu : bpp == 2 ? pat16(x, y) : pat32(x, y);
 }
 static uint32_t getpx(const void *row, uint32_t bpp, uint32_t x)
 {
-	return bpp == 2 ? ((const uint16_t *)row)[x] : ((const uint32_t *)row)[x];
+	return bpp == 1   ? ((const uint8_t *)row)[x]
+	       : bpp == 2 ? ((const uint16_t *)row)[x]
+			  : ((const uint32_t *)row)[x];
 }
 static void setpx(void *row, uint32_t bpp, uint32_t x, uint32_t v)
 {
-	if (bpp == 2)
+	if (bpp == 1)
+		((uint8_t *)row)[x] = (uint8_t)v;
+	else if (bpp == 2)
 		((uint16_t *)row)[x] = (uint16_t)v;
 	else
 		((uint32_t *)row)[x] = v;
@@ -654,7 +661,8 @@ static void test_b(uint32_t w, uint32_t h, uint32_t drm_fmt, const char *fname, 
 		   uint32_t bpp, bool check_refusal)
 {
 	struct alloc_args a;
-	printf("(b) CPU buffer %ux%u %s, force_linear + needs_map_stride\n", w, h, fname);
+	printf("(b) CPU buffer %ux%u %s, force_linear + needs_map_stride, alloc flags 0x%x\n", w, h,
+	       fname, alloc_flags);
 	int r = alloc_buf(w, h, drm_fmt, true, false, &a);
 	if (r) {
 		FAIL("alloc returned %d", r);
@@ -713,7 +721,7 @@ static void test_b(uint32_t w, uint32_t h, uint32_t drm_fmt, const char *fname, 
 	EXPECT(!bad, "CPU-written pattern read on the GPU: %u/%u pixels wrong", bad, w * h);
 
 	/* GPU clear -> CPU map: R=10/31 G=40/63 B=20/31 is exact in 565 */
-	const uint32_t want = bpp == 2 ? (10u << 11) | (40u << 5) | 20u : 0x44332211u;
+	const uint32_t want = bpp == 1 ? 0x11u : bpp == 2 ? (10u << 11) | (40u << 5) | 20u : 0x44332211u;
 	const VkClearColorValue cc =
 	    bpp == 2 ? (VkClearColorValue){ .float32 = { 10 / 31.0f, 40 / 63.0f, 20 / 31.0f, 1.0f } }
 		     : (VkClearColorValue){ .float32 = { 0x11 / 255.0f, 0x22 / 255.0f,
@@ -1043,6 +1051,29 @@ int main(int argc, char **argv)
 	/* odd width: the CPU stride must come from the driver's rowPitch */
 	test_b(1001, 37, DRM_FORMAT_ABGR8888, "ABGR8888", VK_FORMAT_R8G8B8A8_UNORM, 4, false);
 	test_b(333, 17, DRM_FORMAT_RGB565, "RGB565", VK_FORMAT_R5G6B5_UNORM_PACK16, 2, false);
+	/* (b) again for buffers the CPU reads often: the wrapper places them in cached
+	 * memory; the CPU-write -> GPU-read and GPU-clear -> CPU-read checks are the
+	 * coherence contract of that placement */
+	const struct gbm_alloc_flags_ops *(*get_af)(void) =
+	    (const struct gbm_alloc_flags_ops *(*)(void))dlsym(h, GBM_GET_ALLOC_FLAGS_OPS_SYMBOL);
+	aflags_ops = get_af ? get_af() : NULL;
+	EXPECT(aflags_ops && aflags_ops->version == GBM_ALLOC_FLAGS_OPS_VERSION && aflags_ops->alloc,
+	       "%s exported, version %u", GBM_GET_ALLOC_FLAGS_OPS_SYMBOL,
+	       aflags_ops ? aflags_ops->version : 0u);
+	if (aflags_ops && aflags_ops->alloc) {
+		alloc_flags = GBM_ALLOC_FLAG_CPU_READ_OFTEN;
+		test_b(1001, 37, DRM_FORMAT_ABGR8888, "ABGR8888", VK_FORMAT_R8G8B8A8_UNORM, 4, false);
+		test_b(333, 17, DRM_FORMAT_RGB565, "RGB565", VK_FORMAT_R5G6B5_UNORM_PACK16, 2, false);
+		/* the R8 carrier minigbm allocates for a 1920x816 YV12 decoder output block */
+		test_b(4096, 574, DRM_FORMAT_R8, "R8", VK_FORMAT_R8_UNORM, 1, false);
+		alloc_flags = 1u << 31;
+		struct alloc_args a;
+		const int r = alloc_buf(64, 64, DRM_FORMAT_R8, true, false, &a);
+		EXPECT(r == -EINVAL, "unknown allocation flag refused: %d", r);
+		if (!r)
+			close(a.out_fd);
+		alloc_flags = 0;
+	}
 	test_c();
 	test_d();
 

@@ -65,6 +65,7 @@
 #include "gbm_mesa_wrapper.h"
 #include "gbm_mesa_wrapper_map_flags.h"
 #include "gbm_mesa_wrapper_layout.h"
+#include "gbm_mesa_wrapper_alloc_flags.h"
 
 #ifndef NVG_ICD_SONAME
 #ifdef NVG_SOURCE_RM
@@ -727,7 +728,7 @@ static bool modifier_fits_height(uint64_t modifier, uint32_t height)
 	return (modifier & 0xf) <= max_log2;
 }
 
-static int nvg_alloc(struct alloc_args *args)
+static int nvg_alloc_impl(struct alloc_args *args, uint32_t alloc_flags)
 {
 	if (!args || !args->gbm) {
 		LOGE("alloc: no args/device");
@@ -966,10 +967,22 @@ static int nvg_alloc(struct alloc_args *args)
 	vk->GetImageMemoryRequirements(vk->device, image, &reqs);
 
 	/* --- memory type ------------------------------------------------------ */
+	/*
+	 * A LINEAR buffer the CPU reads often (GBM_ALLOC_FLAG_CPU_READ_OFTEN) needs
+	 * CPU-cached system memory: the dma-buf mmap keeps the allocation's caching
+	 * (open-gpu-kernel-modules nv-dmabuf.c nv_dma_buf_mmap: nv_encode_caching with
+	 * the handle's cache_type), and CPU reads of the uncached type run at ~90 MB/s
+	 * against several GB/s cached (README "Memory placement"). It must be coherent:
+	 * the GPU writes it (decoder copy) and mappers have no cache maintenance call.
+	 * No such type is a loud failure, never an uncached or BAR placement.
+	 */
+	const bool cpu_read_often = linear && (alloc_flags & GBM_ALLOC_FLAG_CPU_READ_OFTEN);
 	const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
-					   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+					   VK_MEMORY_PROPERTY_HOST_COHERENT_BIT |
+					   (cpu_read_often ? VK_MEMORY_PROPERTY_HOST_CACHED_BIT : 0);
 	uint32_t type = UINT32_MAX;
-	for (int pass = linear ? 0 : 1; pass < 2 && type == UINT32_MAX; pass++) {
+	for (int pass = linear ? 0 : 1; pass < (cpu_read_often ? 1 : 2) && type == UINT32_MAX;
+	     pass++) {
 		const VkMemoryPropertyFlags want = pass == 0 ? host
 							      : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
 		for (uint32_t i = 0; i < vk->memprops.memoryTypeCount; i++) {
@@ -979,7 +992,12 @@ static int nvg_alloc(struct alloc_args *args)
 				break;
 			}
 		}
-		if (linear && pass == 0 && type == UINT32_MAX)
+		if (cpu_read_often && type == UINT32_MAX)
+			LOGE("alloc %ux%u %s: memoryTypeBits 0x%x has no HOST_VISIBLE|HOST_COHERENT|"
+			     "HOST_CACHED type for a buffer the CPU reads often; refusing an uncached "
+			     "placement",
+			     w, h, f->name, reqs.memoryTypeBits);
+		else if (linear && pass == 0 && type == UINT32_MAX)
 			LOGT("alloc %ux%u %s: memoryTypeBits 0x%x has no HOST_VISIBLE|HOST_COHERENT "
 			     "type; CPU buffer goes to DEVICE_LOCAL (mmap through BAR1)",
 			     w, h, f->name, reqs.memoryTypeBits);
@@ -1091,9 +1109,9 @@ static int nvg_alloc(struct alloc_args *args)
 	fd = -1;
 	ret = 0;
 
-	LOGT("alloc %ux%u %s %s scanout=%d -> fd %d modifier 0x%016" PRIx64 " stride %u size %" PRIu64
+	LOGT("alloc %ux%u %s %s scanout=%d flags 0x%x -> fd %d modifier 0x%016" PRIx64 " stride %u size %" PRIu64
 	     " memtype %u (0x%x) usage 0x%x%s, from [%s]",
-	     w, h, f->name, kind, args->use_scanout, args->out_fd, args->out_modifier,
+	     w, h, f->name, kind, args->use_scanout, alloc_flags, args->out_fd, args->out_modifier,
 	     args->out_stride, (uint64_t)reqs.size, type,
 	     vk->memprops.memoryTypes[type].propertyFlags, usage,
 	     dedicated_only ? " dedicated-only" : "",
@@ -1977,6 +1995,25 @@ static int nvg_plane_layout(struct gbm_device *gbm, uint32_t drm_format, uint32_
 	return 0;
 }
 
+static int nvg_alloc(struct alloc_args *args)
+{
+	return nvg_alloc_impl(args, 0);
+}
+
+static int nvg_alloc_flags(struct alloc_args *args, uint32_t flags)
+{
+	if (flags & ~GBM_ALLOC_FLAG_CPU_READ_OFTEN) {
+		LOGE("alloc: unknown allocation flags 0x%x", flags & ~GBM_ALLOC_FLAG_CPU_READ_OFTEN);
+		return -EINVAL;
+	}
+	return nvg_alloc_impl(args, flags);
+}
+
+static const struct gbm_alloc_flags_ops nvg_alloc_flags_ops = {
+	.version = GBM_ALLOC_FLAGS_OPS_VERSION,
+	.alloc = nvg_alloc_flags,
+};
+
 static const struct gbm_layout_ops nvg_layout_ops = {
 	.version = GBM_LAYOUT_OPS_VERSION,
 	.plane_layout = nvg_plane_layout,
@@ -2006,4 +2043,9 @@ NVG_EXPORT const struct gbm_map_flags_ops *get_gbm_map_flags_ops(void)
 NVG_EXPORT const struct gbm_layout_ops *get_gbm_layout_ops(void)
 {
 	return &nvg_layout_ops;
+}
+
+NVG_EXPORT const struct gbm_alloc_flags_ops *get_gbm_alloc_flags_ops(void)
+{
+	return &nvg_alloc_flags_ops;
 }

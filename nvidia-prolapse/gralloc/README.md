@@ -32,11 +32,12 @@ logic of the baseline's host-side `vtest_gpu_alloc.c`) in the guest process.
   NVIDIA driver on our behalf. A failed setup is sticky and is reported again,
   with its remedy, on every later `alloc` or block-linear lock.
 - minigbm's own gbm_mesa core (`libminigbm_gralloc_gbm_mesa.so`, 64- and 32-bit) is
-  rebuilt from the pinned minigbm with five patches (`minigbm/`: 0001 "Layout rule",
+  rebuilt from the pinned minigbm with six patches (`minigbm/`: 0001 "Layout rule",
   0002 lock access flags, see "Lock/unlock", 0003 FP16/1010102 render targets, see "Format whitelist",
   0004 NV12/P010 decoder output layout, 0005 wrapper import on the first CPU map, so any process
   can lock a buffer allocated without CPU usage, e.g. CCodec copying decoder output; host test
-  `make import-lock-test`, guest test `test/guest-import-lock.c`) and bound over the image's files; the
+  `make import-lock-test`, guest test `test/guest-import-lock.c`, 0006 CPU-cached memory for buffers the
+  CPU reads often, see "Memory placement") and bound over the image's files; the
   mapper and allocator binaries stay the image's.
 - Exports: `get_gbm_ops` (minigbm's ABI), `get_gbm_map_flags_ops` (the optional
   map/unmap-with-access-flags ABI our patch 0002 adds, `include/gbm_mesa_wrapper_map_flags.h`,
@@ -46,6 +47,8 @@ logic of the baseline's host-side `vtest_gpu_alloc.c`) in the guest process.
   and size of that plane of a DISJOINT image of the same pitches) and returns the buffer size.
   NVIDIA 615 binds plane by plane with 64 KiB granularity (a CbCr plane off a page samples zeros,
   the image needs more than the packed layout); NVK's rule leaves the packed layout unchanged.
+  And `get_gbm_alloc_flags_ops` (patch 0006, `include/gbm_mesa_wrapper_alloc_flags.h`): `alloc()` with
+  `GBM_ALLOC_FLAG_CPU_READ_OFTEN`, see "Memory placement".
 - The library is linked `-z nodelete`. minigbm `dlclose()`s the wrapper when
   its driver object dies, and the process-wide `VkDevice` must not be
   unloaded while buffers are alive.
@@ -140,14 +143,32 @@ LINEAR exactly when `force_linear`; with an unpatched minigbm (both flags togeth
 - If no modifier qualifies, the allocation fails and the log names the device modifiers. Nothing substitutes
   another layout.
 - Memory is always a dedicated allocation (block-linear reports DEDICATED_ONLY). Block-linear buffers use a
-  DEVICE_LOCAL type; LINEAR buffers a HOST_VISIBLE|HOST_COHERENT type when the image allows one, otherwise
-  DEVICE_LOCAL (NVIDIA's dma-buf mmap works for both).
+  DEVICE_LOCAL type; LINEAR buffers see "Memory placement".
 - After export, the `VkImage` is destroyed and the `VkDeviceMemory` freed. The dma-buf fd keeps the allocation
   alive, which `test/alloc-test` verifies.
 - Results: `out_fd` is the dma-buf (`O_CLOEXEC`), `out_modifier` the modifier the driver chose, `out_stride` the
   plane-0 `rowPitch` (the offset must be 0).
 
-### Map stride
+#### Memory placement
+
+LINEAR buffers get the first memory type the image allows that is HOST_VISIBLE|HOST_COHERENT, or DEVICE_LOCAL
+when none is (NVIDIA's dma-buf mmap works for both). On NVK that is VRAM behind the BAR
+(DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT); on NVIDIA's own driver uncached system memory. Both are fine for the
+CPU writing and the GPU reading, and very slow for CPU reads, because the dma-buf mmap keeps the allocation's
+caching (open-gpu-kernel-modules `nv-dmabuf.c` `nv_dma_buf_mmap`).
+
+A buffer the CPU reads often and that is not scanned out (minigbm `BO_USE_SW_READ_OFTEN` without
+`BO_USE_SCANOUT`, passed by patch 0006 as `GBM_ALLOC_FLAG_CPU_READ_OFTEN`, the rule minigbm's amdgpu backend
+uses for GTT USWC) goes to a HOST_VISIBLE|HOST_COHERENT|HOST_CACHED type; there is no other choice for it, and
+no such type is a loud failure. Example: hardware decoder output that a Codec2 client without a Surface copies
+out on the CPU (the decoder fetches its blocks with CPU_READ).
+
+Measured (RTX 5090, 615.71.09, 4096x1224 R8 LINEAR, full CPU read of the mapping): NVK BAR 22 MB/s, NVIDIA
+uncached system memory 92 MB/s, cached system memory 9-11 GB/s on both. Allocation 0.2-0.3 ms either way.
+In the guest, ByteBuffer-mode H.264 decode (c2.nvprolapse.avc.decoder) went from 31 to 1065 fps at
+1920x816 and from 25 to 971 fps at 1920x1080; AOSP's software decoder from 36 to 491 / 26 to 381 fps.
+
+## Map stride
 
 minigbm reads `map_stride` only for CPU buffers and falls back to `strides[0]` when it is 0 (drv.c:734-738); the
 result becomes the handle's `pixel_stride`, computed once in the allocator, the stride every CPU user of a lock
@@ -262,7 +283,7 @@ Gallery reports "Can't play this video".
 make host        # out/host/libgbm_mesa_wrapper.so (gcc, /usr/include/vulkan, libdrm drm_fourcc.h)
 make android     # out/android/libgbm_mesa_wrapper.so (NDK r30 x86_64-linux-android33-clang)
 make android32   # out/android32/libgbm_mesa_wrapper.so (NDK r30 i686-linux-android33-clang)
-make check       # both Android builds: ELF class, exports == get_gbm_ops, SONAME, DT_NEEDED ⊆ {libc,libdl,liblog,libm}.so, NODELETE
+make check       # both Android builds: ELF class, exports == the four get_gbm_*ops, SONAME, DT_NEEDED ⊆ {libc,libdl,liblog,libm}.so, NODELETE
 make check-header  # include/gbm_mesa_wrapper.h == build/minigbm (16844ba)
 make test        # host: alloc-test, lock-test (64-bit) and lock-test (32-bit build, out/host32), ~30 s
 make minigbm     # out/android{,32}/libminigbm_gralloc_gbm_mesa.so: minigbm 16844ba + minigbm/*.patch (x86_64, i686)
@@ -299,6 +320,8 @@ reported stride and modifier. It covers:
   import and read back through another;
 - LINEAR CPU buffers (64×64 RGB565, 1001×37 ABGR8888, 333×17 RGB565): CPU
   writes are verified on the GPU and GPU clears through `map`;
+- the same for buffers allocated with `GBM_ALLOC_FLAG_CPU_READ_OFTEN` (cached memory; 1001×37 ABGR8888,
+  333×17 RGB565, the 4096×574 R8 carrier of a 1920×816 YV12 decoder block), and an unknown flag refused;
 - `map` of the block-linear buffer from above through the staging copy (pattern exact);
 - the whitelist, every whitelisted format in both layouts, and the R8 carrier;
 - 200 alloc/free cycles of 1920×1080. These check fds, VmRSS, the GPU's
