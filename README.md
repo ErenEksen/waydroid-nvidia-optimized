@@ -7,6 +7,13 @@ system; the rest of the driver is built from source.
 This `public-test` branch is the next version and replaces `main` once testers confirm it works.
 Please report problems as issues titled `[public-test] ...` ([what to include](docs/troubleshooting.md#reporting-a-problem)).
 
+## Why switch from Venus
+
+- **Up to 4× faster:** no proxy, the driver runs right inside Android
+- **No shader stutter:** Minecraft's first item switch ~0.2 s (Venus: 1.8 s)
+- **Hardware video decode:** H.264, HEVC, VP9, AV1 (RTX 20 and newer)
+- **Closed kernel module works too**, and older GPUs (GTX 10/900, Titan V) are in testing
+
 ## Does my setup work?
 
 ✅ works in Waydroid · 🧪 driver tests pass, Waydroid not tried yet · ⚠️ known bug · ⚪ untested · ❌ no
