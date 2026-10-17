@@ -246,7 +246,7 @@ def prepare_gl_source(args):
     # android-egl-suffix.patch only changes Android library naming.
     for name in NVK_PATCHES + ("gallium-nvrm.patch", "mesa-oes-texture-stencil8.patch",
                                "mesa-nv-polygon-mode.patch", "nak-panic-message.patch",
-                               "android-egl-suffix.patch"):
+                               "android-egl-suffix.patch", "mesa-glapi-narrow-args.patch"):
         run(["git", "-C", GL_SOURCE, "apply", HERE / name])
     rm_source = GL_SOURCE / "src/nouveau/vulkan/nvkmd/rm"
     rm_source.mkdir(parents=True, exist_ok=True)

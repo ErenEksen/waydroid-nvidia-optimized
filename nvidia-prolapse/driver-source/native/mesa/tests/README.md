@@ -647,3 +647,15 @@ TSan: build the driver with `-Dbuildtype=debugoptimized -Db_sanitize=thread -Db_
 test with `-fsanitize=thread -rdynamic ... native/mesa/tests/c11tsan.c` (mandatory: libtsan does
 not intercept glibc's C11 mtx/cnd that Mesa uses). 2026-10-17: no report in nvrm, util_queue, the
 program cache or disk_cache.
+
+## gl-narrow-args.c (GLboolean arguments with garbage above bit 7)
+
+Calls `glColorMask`, `glColorMaski{,OES,EXT}` and `glDepthMask` through function pointers typed with
+32-bit parameters (exported symbols and `eglGetProcAddress` results), passing what an arm64 Unity game
+running under Android's ARM translation passed for `glColorMask(0, 0, 0, 1)`: r=0x0 g=0x10000 b=0x100
+a=0x1. PASS = `GL_COLOR_WRITEMASK` / `GL_DEPTH_WRITEMASK` follow the low byte of every argument and a
+masked clear and a masked draw only change alpha. Build as gl-g0a-clear.c. The x86-64 psABI leaves the
+upper bits of narrow arguments unspecified; clang-built callees test whole registers, GCC-built ones the
+low byte, so only a clang-built Mesa (the Android NDK build, or a host build with CC=clang) fails without
+mesa-glapi-narrow-args.patch: before (clang host build) the exported and GetProcAddress `glColorMask`
+calls give writemask 0111, after 0001.
