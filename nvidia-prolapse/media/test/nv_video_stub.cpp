@@ -187,11 +187,12 @@ int nv_video_copy_out(NvVideoSession *s, uint64_t id, const NvVideoTarget *t, in
 {
     g_stub.copies++;
     const bool p010 = t->format == NV_VIDEO_FORMAT_P010;
-    if (t->format != NV_VIDEO_FORMAT_NV12 && !p010) {
+    const bool planar = t->format == NV_VIDEO_FORMAT_YUV420P;
+    if (t->format != NV_VIDEO_FORMAT_NV12 && !p010 && !planar) {
         set_err("stub: bad target format");
         return NV_VIDEO_E_INVALID;
     }
-    if (t->dmabuf_fd[0] < 0 || t->dmabuf_fd[1] < 0) {
+    if (t->dmabuf_fd[0] < 0 || t->dmabuf_fd[1] < 0 || (planar && t->cr_dmabuf_fd < 0)) {
         set_err("stub: bad fd");
         return NV_VIDEO_E_INVALID;
     }

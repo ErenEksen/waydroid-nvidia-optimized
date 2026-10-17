@@ -72,7 +72,10 @@ pub struct NvVideoTarget {
     pub width: u32,
     pub height: u32,
     pub acquire_fence_fd: i32,
-    pub reserved: [u32; 6],
+    pub cr_dmabuf_fd: i32,
+    pub cr_pitch: u32,
+    pub cr_offset: u64,
+    pub reserved: [u32; 2],
 }
 
 fn null<T>(p: *const T, what: &str) -> Result<(), VideoError> {
@@ -266,9 +269,9 @@ pub unsafe extern "C" fn nv_video_copy_out(
         let fd = unsafe { &mut *s }.0.copy_out(
             id,
             &Target {
-                dmabuf_fd: t.dmabuf_fd,
-                offset: t.offset,
-                pitch: t.pitch,
+                dmabuf_fd: [t.dmabuf_fd[0], t.dmabuf_fd[1], t.cr_dmabuf_fd],
+                offset: [t.offset[0], t.offset[1], t.cr_offset],
+                pitch: [t.pitch[0], t.pitch[1], t.cr_pitch],
                 modifier: t.modifier,
                 format: t.format,
                 width: t.width,
@@ -296,3 +299,6 @@ pub unsafe extern "C" fn nv_video_picture_release(s: *mut NvVideoSession, id: u6
 pub extern "C" fn nv_video_last_error() -> *const std::ffi::c_char {
     LAST_ERROR.with(|l| l.borrow().as_ptr())
 }
+
+// The C struct keeps its v1 size (the Cr-plane fields took over reserved words).
+const _: () = assert!(std::mem::size_of::<NvVideoTarget>() == 80);

@@ -32,6 +32,7 @@ struct TestPool : OutputPool {
     std::vector<Buf> bufs;
     unsigned fetches = 0, discards = 0;
     uint32_t last_w = 0, last_h = 0, last_fmt = 0;
+    uint32_t target_fmt = 0; /* format the pool writes into the target (0 = leave it to the core) */
     explicit TestPool(int n)
     {
         for (int i = 0; i < n; i++) {
@@ -60,6 +61,12 @@ struct TestPool : OutputPool {
                 out->target.width = w;
                 out->target.height = h;
                 out->target.acquire_fence_fd = -1;
+                out->target.format = target_fmt;
+                if (target_fmt == NV_VIDEO_FORMAT_YUV420P) {
+                    out->target.cr_dmabuf_fd = bufs[i].fd;
+                    out->target.cr_offset = 8192;
+                    out->target.cr_pitch = 128;
+                }
                 out->cookie = i;
                 return 0;
             }
@@ -320,6 +327,28 @@ static void test_fence_passthrough(NvVideoDevice *dev)
     delete d;
 }
 
+/* A front may lay an 8-bit picture out planar (YUV420P, e.g. Android YV12 for a CPU client); the
+ * core passes that through, and refuses any other format the front picks. */
+static void test_front_target_format(NvVideoDevice *dev)
+{
+    reset_stub();
+    TestPool pool(4);
+    pool.target_fmt = NV_VIDEO_FORMAT_YUV420P;
+    Decoder *d = make(dev, NV_VIDEO_CODEC_AV1);
+    std::vector<Output> out;
+    CHECK(q(d, unit(KEY | SHOW, 640, 360), 0, pool, out) == Status::Ok);
+    CHECK(out.size() == 1 && pool.last_fmt == NV_VIDEO_FORMAT_NV12);
+    CHECK(g_stub.last_copy_format == NV_VIDEO_FORMAT_YUV420P);
+    if (!out.empty())
+        pool.give_back(out[0]);
+    out.clear();
+    /* 10-bit picture: planar 8-bit is not P010 */
+    CHECK(q(d, unit(KEY | SHOW, 640, 360, 0, 10), 1, pool, out) == Status::Error);
+    CHECK(d->error().find("output pool returned target format 3") != std::string::npos);
+    CHECK(pool.discards == 1);
+    delete d;
+}
+
 int main()
 {
     NvVideoDevice *dev = nullptr;
@@ -332,6 +361,7 @@ int main()
     test_backpressure(dev);
     test_device_lost(dev);
     test_fence_passthrough(dev);
+    test_front_target_format(dev);
     nv_video_device_close(dev);
     if (g_fail) {
         fprintf(stderr, "core_test: %d check(s) FAILED\n", g_fail);

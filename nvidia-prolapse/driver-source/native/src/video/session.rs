@@ -16,7 +16,7 @@ use super::{
     channel::{wait_sync_file, NvdecChannel},
     open_render_node, open_rm, Allocator, BuildContext, CodecDecoder, DecodeJob, Job, NvdecGen,
     PictureInfo, SurfaceLayout, SurfaceRef, VResult, VideoDevice, VideoError, FORMAT_NV12,
-    FORMAT_P010,
+    FORMAT_P010, FORMAT_YUV420P,
 };
 use crate::{
     events::RmEvents,
@@ -669,8 +669,13 @@ impl Session {
         // p010le), so P010 is a plain copy like NV12; no depth conversion in either direction.
         let bps =
             match (t.format, info.bit_depth) {
-                (FORMAT_NV12, 8) => 1u32,
+                (FORMAT_NV12 | FORMAT_YUV420P, 8) => 1u32,
                 (FORMAT_P010, 10) => 2u32,
+                (FORMAT_YUV420P, d) => {
+                    return Err(VideoError::Unsupported(format!(
+                        "planar YUV 4:2:0 target for a {d}-bit picture (8-bit only)"
+                    )))
+                }
                 (FORMAT_NV12 | FORMAT_P010, d) => {
                     return Err(VideoError::Unsupported(format!(
                     "{} target for a {d}-bit picture (NV12 carries 8-bit, P010 10-bit pictures; \
@@ -694,25 +699,34 @@ impl Session {
             )));
         }
         let dst = TargetLayout::parse(t, self.copy.copy_class, bps)?;
-        // Import (fds stay the caller's; RM keeps its own reference).
+        // Planes written: Y + CbCr (NV12/P010), or Y + Cb + Cr (planar).
+        let planes = dst.planes();
+        // Import (fds stay the caller's; RM keeps its own reference). Planes that share a
+        // dma-buf share its import.
         let mut imports: Vec<(Rc<Memory>, GpuMapping)> = Vec::new();
-        let mut plane_va = [0u64; 2];
+        let mut import_of = [0usize; 3];
+        let mut plane_va = [0u64; 3];
         #[allow(clippy::needless_range_loop)] // p indexes fd, offset and plane_va together
-        for p in 0..2 {
+        for p in 0..planes {
             let fd = t.dmabuf_fd[p];
             if fd < 0 {
                 return Err(VideoError::Invalid(format!("plane {p} dma-buf fd {fd}")));
             }
-            let same = p == 1 && t.dmabuf_fd[1] == t.dmabuf_fd[0];
-            if !same {
-                // SAFETY: the caller lends a live fd for the duration of the call.
-                let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-                let mem = crate::external::import(&self.device, self.drm.as_fd(), borrowed)
-                    .map_err(|e| VideoError::Invalid(format!("dma-buf import plane {p}: {e}")))?;
-                let va = self.space.map(&mem)?;
-                imports.push((mem, va));
+            match (0..p).find(|&q| t.dmabuf_fd[q] == fd) {
+                Some(q) => import_of[p] = import_of[q],
+                None => {
+                    // SAFETY: the caller lends a live fd for the duration of the call.
+                    let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+                    let mem = crate::external::import(&self.device, self.drm.as_fd(), borrowed)
+                        .map_err(|e| {
+                            VideoError::Invalid(format!("dma-buf import plane {p}: {e}"))
+                        })?;
+                    let va = self.space.map(&mem)?;
+                    imports.push((mem, va));
+                    import_of[p] = imports.len() - 1;
+                }
             }
-            let (mem, va) = imports.last().expect("imported");
+            let (mem, va) = &imports[import_of[p]];
             let rows = if p == 0 { ch } else { ch.div_ceil(2) };
             let need = t.offset[p] + dst.plane_bytes(p, rows, cw, bps);
             if need > mem.size as u64 {
@@ -734,10 +748,19 @@ impl Session {
         let mut w = Vec::new();
         method(&mut w, 4, 0, &[self.copy.copy_class]); // SET_OBJECT
         #[allow(clippy::needless_range_loop)] // plane index selects several per-plane values
-        for p in 0..2 {
+        for p in 0..planes {
             let src = self.surface_refs[surface];
+            // Planar chroma: the engine's CbCr plane is split by component remapping
+            // (SET_REMAP_COMPONENTS, LAUNCH_DMA REMAP_ENABLE; cl90b5.h). With remapping on,
+            // X dimensions (source width, origin, line length) count elements of
+            // NUM_SRC_COMPONENTS * COMPONENT_SIZE bytes, pitches stay in bytes, as NVK's
+            // nouveau_copy_rect programs them (Mesa 26.2.5 nvk_cmd_copy.c:195-215, 257, 286, 296,
+            // 368). Element = one CbCr pair (2 x 1 byte); Cb is component X, Cr component Y.
+            let remap = (p > 0 && planes == 3).then_some(if p == 1 { 0u32 } else { 1u32 });
             let (src_va, rows_alloc, rows, line_bytes, ox, oy) = if p == 0 {
                 (src.luma, self.layout.luma_rows, ch, cw * bps, cl * bps, ct)
+            } else if remap.is_some() {
+                (src.chroma, self.layout.chroma_rows, ch.div_ceil(2), cw.div_ceil(2), cl / 2, ct / 2)
             } else {
                 (
                     src.chroma,
@@ -748,16 +771,23 @@ impl Session {
                     ct / 2,
                 )
             };
+            let src_width = if remap.is_some() { self.layout.pitch / 2 } else { self.layout.pitch };
             // Source: engine block linear, 1-GOB wide, 2-GOB high blocks.
-            let gob_kind = if blackwell_ce { src_kinds[p] << 16 } else { 0 };
+            let gob_kind = if blackwell_ce { src_kinds[p.min(1)] << 16 } else { 0 };
             method(&mut w, 4, 0x728, &[1 << 4 | 1 << 12 | gob_kind]); // SET_SRC_BLOCK_SIZE
-            method(&mut w, 4, 0x72c, &[self.layout.pitch, rows_alloc, 1, 0]); // SRC W/H/D/LAYER
+            method(&mut w, 4, 0x72c, &[src_width, rows_alloc, 1, 0]); // SRC W/H/D/LAYER
             method(&mut w, 4, 0x744, &[ox, oy]); // SRC_ORIGIN_X/Y
             let mut launch = 2 | 1 << 2 | 1 << 9; // non-pipelined, flush, multi-line
+            if let Some(component) = remap {
+                // DST_X = SRC_X (Cb) or SRC_Y (Cr), DST_Y/Z/W = NO_WRITE (6), COMPONENT_SIZE ONE,
+                // NUM_SRC_COMPONENTS TWO, NUM_DST_COMPONENTS ONE.
+                method(&mut w, 4, 0x708, &[component | 6 << 4 | 6 << 8 | 6 << 12 | 1 << 20]);
+                launch |= 1 << 10; // REMAP_ENABLE
+            }
             match dst.block {
                 None => launch |= 1 << 8, // DST pitch
                 Some((h, kinds)) => {
-                    let dk = if blackwell_ce { kinds[p] << 16 } else { 0 };
+                    let dk = if blackwell_ce { kinds[p.min(1)] << 16 } else { 0 };
                     method(&mut w, 4, 0x70c, &[h << 4 | 1 << 12 | dk]); // SET_DST_BLOCK_SIZE
                     let dst_rows = rows.next_multiple_of(8 << h);
                     method(
@@ -865,9 +895,10 @@ impl Drop for Session {
 
 /// Target description (NvVideoTarget, fds borrowed).
 pub struct Target {
-    pub dmabuf_fd: [i32; 2],
-    pub offset: [u64; 2],
-    pub pitch: [u32; 2],
+    /// Y, CbCr (NV12/P010) or Y, Cb, Cr (FORMAT_YUV420P); [2] unused for the bi-planar formats.
+    pub dmabuf_fd: [i32; 3],
+    pub offset: [u64; 3],
+    pub pitch: [u32; 3],
     pub modifier: u64,
     pub format: u32,
     pub width: u32,
@@ -880,7 +911,9 @@ pub struct Target {
 #[derive(Debug)]
 struct TargetLayout {
     block: Option<(u32, [u32; 2])>,
-    pitch: [u32; 2],
+    pitch: [u32; 3],
+    /// Y + Cb + Cr planes (planar 4:2:0) instead of Y + CbCr.
+    planar: bool,
 }
 
 const DRM_FORMAT_MOD_LINEAR: u64 = 0;
@@ -890,8 +923,15 @@ impl TargetLayout {
     /// DRM_FORMAT_MOD_NVIDIA_BLOCK_LINEAR_2D(c, s, g, k, h) (drm_fourcc.h):
     /// 0x10 | h[3:0] | k[19:12] | g[21:20] | s[22] | c[25:23].
     fn parse(t: &Target, copy_class: u32, bytes_per_sample: u32) -> VResult<Self> {
+        let planar = t.format == FORMAT_YUV420P;
+        if planar && t.modifier != DRM_FORMAT_MOD_LINEAR {
+            return Err(VideoError::Unsupported(format!(
+                "planar YUV 4:2:0 target with modifier {:#x} (LINEAR only)",
+                t.modifier
+            )));
+        }
         if t.modifier == DRM_FORMAT_MOD_LINEAR {
-            for p in 0..2 {
+            for p in 0..if planar { 3 } else { 2 } {
                 if t.pitch[p] == 0 || !t.pitch[p].is_multiple_of(4) {
                     return Err(VideoError::Invalid(format!(
                         "LINEAR plane {p} pitch {}",
@@ -902,6 +942,7 @@ impl TargetLayout {
             return Ok(Self {
                 block: None,
                 pitch: t.pitch,
+                planar,
             });
         }
         let v = t.modifier & ((1 << 56) - 1);
@@ -935,12 +976,22 @@ impl TargetLayout {
         };
         Ok(Self {
             block: Some((h, kinds)),
-            pitch: [0, 0],
+            pitch: [0, 0, 0],
+            planar: false,
         })
+    }
+    fn planes(&self) -> usize {
+        if self.planar {
+            3
+        } else {
+            2
+        }
     }
     fn plane_bytes(&self, p: usize, rows: u32, width: u32, bps: u32) -> u64 {
         let line = if p == 0 {
             width * bps
+        } else if self.planar {
+            width.div_ceil(2) * bps
         } else {
             width.div_ceil(2) * 2 * bps
         };
@@ -958,9 +1009,9 @@ mod tests {
     use super::*;
     fn target(modifier: u64) -> Target {
         Target {
-            dmabuf_fd: [3, 3],
-            offset: [0, 0],
-            pitch: [256, 256],
+            dmabuf_fd: [3, 3, -1],
+            offset: [0, 0, 0],
+            pitch: [256, 256, 0],
             modifier,
             format: FORMAT_NV12,
             width: 64,
@@ -993,6 +1044,21 @@ mod tests {
                 .plane_bytes(1, 32, 63, 1),
             256 * 31 + 64
         );
+        // Planar 4:2:0: LINEAR only, three pitched planes, chroma rows of width/2 samples.
+        let planar = |modifier, pitch: [u32; 3]| Target {
+            dmabuf_fd: [3, 3, 3],
+            offset: [0, 0, 0],
+            pitch,
+            modifier,
+            format: FORMAT_YUV420P,
+            width: 64,
+            height: 64,
+            acquire_fence_fd: -1,
+        };
+        let t = TargetLayout::parse(&planar(0, [128, 64, 64]), 0xcab5, 1).unwrap();
+        assert_eq!((t.planes(), t.plane_bytes(2, 32, 63, 1)), (3, 64 * 31 + 32));
+        assert!(TargetLayout::parse(&planar(0, [128, 64, 0]), 0xcab5, 1).is_err()); // no Cr pitch
+        assert!(TargetLayout::parse(&planar(bl(0, 1, 3, 0xfe, 4), [0; 3]), 0xcab5, 1).is_err());
     }
     #[test]
     fn admission_never_refuses_an_idle_caller() {

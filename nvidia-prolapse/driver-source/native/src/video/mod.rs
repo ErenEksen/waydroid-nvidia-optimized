@@ -32,6 +32,7 @@ pub const CODEC_VP9: u32 = 3;
 pub const CODEC_AV1: u32 = 4;
 pub const FORMAT_NV12: u32 = 1;
 pub const FORMAT_P010: u32 = 2;
+pub const FORMAT_YUV420P: u32 = 3;
 
 /// nv_video error classes (NvVideoError). Every variant carries the reason
 /// that nv_video_last_error() reports.

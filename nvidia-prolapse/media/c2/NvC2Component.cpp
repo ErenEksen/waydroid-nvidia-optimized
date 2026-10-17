@@ -5,7 +5,10 @@
  * (nv_video_copy_out) into a gralloc block fetched from the framework's output pool
  * (BufferQueue when decoding to a Surface): HAL_PIXEL_FORMAT_YCBCR_420_888 -> NV12 or
  * HAL_PIXEL_FORMAT_YCBCR_P010 -> P010, LINEAR (minigbm gbm_mesa R8 carrier layout,
- * nvidia-prolapse/gralloc/minigbm/0004). The copy's sync_file is waited for here before
+ * nvidia-prolapse/gralloc/minigbm/0004). Exception: an output pool on the plain gralloc
+ * allocator (no Surface: the client maps every block on the CPU, ByteBuffer/Image mode) gets
+ * 8-bit pictures as HAL_PIXEL_FORMAT_YV12, written planar (see Component::Pool::fetch).
+ * The copy's sync_file is waited for here before
  * the work is returned. Not verified: whether the image's (LineageOS 20) HIDL Codec2
  * client/C2Fence code carries a sync_file fence across the HAL; until that is checked the
  * copy fence stays inside the component (copy_out of a 4K frame measured ~0.5 ms).
@@ -38,6 +41,8 @@ constexpr uint64_t kGrallocUsageVideoDecoder = 1ull << 22; /* BufferUsage::VIDEO
 constexpr int kCopyFenceTimeoutMs = 2000;
 /* minigbm cros_gralloc/cros_gralloc_helpers.h:35 (pinned 16844ba) */
 constexpr uint32_t kCrosGrallocMagic = 0xABCDDCBA;
+
+constexpr uint32_t align_up(uint32_t v, uint32_t a) { return (v + a - 1) / a * a; }
 
 /* Size-implied level ceilings (MaxPicSize/MaxLumaPs/MaxFS of each spec); nv_video caps
  * carry sizes and bit depths, and max_level only where the backend knows it. */
@@ -357,16 +362,33 @@ public:
     explicit Pool(Component *c) : mC(c) {}
     int fetch(uint32_t width, uint32_t height, uint32_t format, OutputBuffer *out) override
     {
+        /*
+         * Without a Surface (output pool on the plain gralloc allocator, not BUFFERQUEUE) the
+         * client maps each block on the CPU (CCodec ByteBuffer/Image output). Waydroid's system
+         * image does that for YCbCr_420_888 and YV12 blocks with a computed Android YV12 layout
+         * instead of gralloc's (C2AllocationGralloc::map, waydroid/android_vendor_waydroid
+         * waydroid-patches/base-patches-33/frameworks/av/0019-C2Gralloc-Drop-lockYCbCr-use.patch:
+         * Y stride ALIGN(block width, 16), chroma stride ALIGN(y stride / 2, 16), Cr at
+         * y stride * crop height, then Cb), so an NV12 block reads as stripes there. 8-bit
+         * pictures for such a pool are YV12 blocks written in exactly that layout, which is
+         * also gralloc's YV12 layout (system/core graphics.h HAL_PIXEL_FORMAT_YV12) and what
+         * AOSP's software decoders fetch (frameworks/av C2SoftAvcDec.cpp:783-786 at
+         * android-13.0.0_r75: YV12, width ALIGN128). Block width ALIGN(width, 128) keeps every
+         * stride a 16-byte multiple; block height = the picture's display height (made even).
+         */
+        const bool cpu_client = mC->mOutputPool->getAllocatorId() == C2PlatformAllocatorStore::GRALLOC;
+        const bool yv12 = cpu_client && format == NV_VIDEO_FORMAT_NV12;
         const uint32_t hal = format == NV_VIDEO_FORMAT_P010 ? HAL_PIXEL_FORMAT_YCBCR_P010
-                                                            : HAL_PIXEL_FORMAT_YCBCR_420_888;
+                             : yv12                          ? HAL_PIXEL_FORMAT_YV12
+                                                             : HAL_PIXEL_FORMAT_YCBCR_420_888;
+        const uint32_t block_w = yv12 ? align_up(width, 128) : (width + 1) & ~1u;
         std::shared_ptr<C2GraphicBlock> block;
         const C2MemoryUsage usage = C2AndroidMemoryUsage::FromGrallocUsage(kGrallocUsageVideoDecoder);
-        c2_status_t err = mC->mOutputPool->fetchGraphicBlock((width + 1) & ~1u, (height + 1) & ~1u, hal, usage,
-                                                             &block);
+        c2_status_t err = mC->mOutputPool->fetchGraphicBlock(block_w, (height + 1) & ~1u, hal, usage, &block);
         if (err == C2_BLOCKING || err == C2_TIMED_OUT)
             return -EAGAIN;
         if (err != C2_OK) {
-            ALOGE("fetchGraphicBlock(%ux%u, format 0x%x) failed: %d", width, height, hal, err);
+            ALOGE("fetchGraphicBlock(%ux%u, format 0x%x) failed: %d", block_w, height, hal, err);
             return -EIO;
         }
         native_handle_t *nh = UnwrapNativeCodec2GrallocHandle(block->handle());
@@ -376,11 +398,40 @@ public:
         }
         const auto *h = reinterpret_cast<const cros_gralloc_handle *>(nh);
         int rc = 0;
-        if (h->magic != kCrosGrallocMagic || h->num_planes < 2 || nh->numFds < 1) {
-            ALOGE("output block is not a 2-plane minigbm buffer (magic 0x%x, planes %u): "
+        if (h->magic != kCrosGrallocMagic || nh->numFds < 1 || (!yv12 && h->num_planes < 2)) {
+            ALOGE("output block is not a %s minigbm buffer (magic 0x%x, planes %u): "
                   "the decoder needs minigbm gbm_mesa with nvidia-prolapse/gralloc",
-                  h->magic, h->num_planes);
+                  yv12 ? "YV12" : "2-plane", h->magic, h->num_planes);
             rc = -EINVAL;
+        } else if (yv12) {
+            /* Android YV12: Y, then Cr, then Cb, both chroma planes at the chroma stride. */
+            const uint32_t ys = align_up(h->width, 16), cs = align_up(ys / 2, 16);
+            const uint64_t cr = (uint64_t)ys * h->height;
+            const uint64_t cb = cr + (uint64_t)cs * (h->height / 2);
+            const uint64_t end = cb + (uint64_t)cs * (h->height / 2);
+            if (h->strides[0] != ys || end > h->total_size) {
+                ALOGE("YV12 output block %ux%u: stride %u, %llu bytes; the Android YV12 layout "
+                      "needs stride %u and %llu bytes",
+                      h->width, h->height, h->strides[0], (unsigned long long)h->total_size, ys,
+                      (unsigned long long)end);
+                rc = -EINVAL;
+            } else {
+                out->target = NvVideoTarget{};
+                out->target.dmabuf_fd[0] = h->fds[0];
+                out->target.dmabuf_fd[1] = h->fds[0];
+                out->target.cr_dmabuf_fd = h->fds[0];
+                out->target.offset[0] = 0;
+                out->target.offset[1] = cb;
+                out->target.cr_offset = cr;
+                out->target.pitch[0] = ys;
+                out->target.pitch[1] = cs;
+                out->target.cr_pitch = cs;
+                out->target.modifier = 0; /* the R8 carrier is LINEAR */
+                out->target.format = NV_VIDEO_FORMAT_YUV420P;
+                out->target.width = h->width;
+                out->target.height = h->height;
+                out->target.acquire_fence_fd = -1; /* fetchGraphicBlock waited for the dequeue fence */
+            }
         } else {
             out->target = NvVideoTarget{};
             /* fds stay open until the block is returned (we keep nh until then) */
@@ -391,9 +442,12 @@ public:
             out->target.pitch[0] = h->strides[0];
             out->target.pitch[1] = h->strides[1];
             out->target.modifier = h->format_modifier;
+            out->target.format = format;
             out->target.width = h->width;
             out->target.height = h->height;
             out->target.acquire_fence_fd = -1; /* fetchGraphicBlock waited for the dequeue fence */
+        }
+        if (rc == 0) {
             out->cookie = mC->mNextCookie++;
             mC->mBlocks[out->cookie] = block;
             mC->mHandles[out->cookie] = nh;

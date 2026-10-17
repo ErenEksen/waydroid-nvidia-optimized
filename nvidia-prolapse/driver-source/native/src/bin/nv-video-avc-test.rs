@@ -4,13 +4,15 @@
 //! software (FFmpeg) NV12 reference. Annex-B H.264 (.h264/.264) or HEVC (.hevc/.265), one
 //! access unit per nv_video_decode() call.
 //! usage: nv-video-avc-test <in.h264|in.hevc> <reference.nv12|-> <max_w> <max_h>
+//! NV_VIDEO_TARGET=yuv420p: copy out to a planar Y/Cb/Cr target (YV12 plane order and pitches)
+//! and compare it repacked as NV12.
 //! NV_VIDEO_BIT_DEPTH=10: create a 10-bit session and copy out P010 (references and dumps are then
 //! p010le: 16-bit little-endian samples, 10 MSBs).
 //! NV_VIDEO_DUMP=<out.nv12>: also write every output picture (display order,
 //! display window, tightly packed NV12, concatenated) to that file.
 use nv_bionic_native::video::{
     bits::access_units, ffi::*, NvVideoDeviceInfo, TestDmaBuf, VideoDevice, CODEC_H264, CODEC_HEVC,
-    FORMAT_NV12, FORMAT_P010,
+    FORMAT_NV12, FORMAT_P010, FORMAT_YUV420P,
 };
 use std::time::{Duration, Instant};
 
@@ -76,6 +78,11 @@ fn main() {
     let bit_depth: u32 =
         std::env::var("NV_VIDEO_BIT_DEPTH").map_or(8, |v| v.parse().expect("NV_VIDEO_BIT_DEPTH"));
     let bps = if bit_depth > 8 { 2usize } else { 1 };
+    let planar = match std::env::var("NV_VIDEO_TARGET").as_deref() {
+        Ok("yuv420p") => true,
+        Ok("nv12") | Err(_) => false,
+        Ok(other) => panic!("NV_VIDEO_TARGET={other}: nv12 or yuv420p"),
+    };
     let si = NvVideoSessionInfo {
         codec: if hevc { CODEC_HEVC } else { CODEC_H264 },
         max_width: max_w,
@@ -122,16 +129,30 @@ fn main() {
             let pic = unsafe { pic.assume_init() };
             let (w, h) = (pic.crop_width as usize, pic.crop_height as usize);
             target.fill(0xa5).unwrap();
+            // NV_VIDEO_TARGET=yuv420p: planar target laid out like an Android YV12 buffer (Y, then
+            // Cr, then Cb; chroma pitch = luma pitch / 2), repacked to NV12 for the comparison.
+            let cpitch = pitch / 2;
+            let cr = luma as u64;
+            let cb = cr + u64::from(cpitch) * u64::from(max_h.div_ceil(2));
             let t = NvVideoTarget {
                 dmabuf_fd: [tfd, tfd],
-                offset: [0, luma as u64],
-                pitch: [pitch, pitch],
+                offset: [0, if planar { cb } else { luma as u64 }],
+                pitch: [pitch, if planar { cpitch } else { pitch }],
                 modifier: 0,
-                format: if bps == 2 { FORMAT_P010 } else { FORMAT_NV12 },
+                format: if planar {
+                    FORMAT_YUV420P
+                } else if bps == 2 {
+                    FORMAT_P010
+                } else {
+                    FORMAT_NV12
+                },
                 width: max_w,
                 height: max_h,
                 acquire_fence_fd: -1,
-                reserved: [0; 6],
+                cr_dmabuf_fd: if planar { tfd } else { -1 },
+                cr_pitch: if planar { cpitch } else { 0 },
+                cr_offset: if planar { cr } else { 0 },
+                reserved: [0; 2],
             };
             let mut fence = -1;
             let t0 = Instant::now();
@@ -147,9 +168,16 @@ fn main() {
                 nv12.extend_from_slice(&out[y * pitch as usize..][..w * bps]);
             }
             for y in 0..h.div_ceil(2) {
-                nv12.extend_from_slice(
-                    &out[luma + y * pitch as usize..][..w.div_ceil(2) * 2 * bps],
-                );
+                if planar {
+                    let row = |base: u64| &out[base as usize + y * cpitch as usize..][..w.div_ceil(2)];
+                    for (u, v) in row(cb).iter().zip(row(cr)) {
+                        nv12.extend_from_slice(&[*u, *v]);
+                    }
+                } else {
+                    nv12.extend_from_slice(
+                        &out[luma + y * pitch as usize..][..w.div_ceil(2) * 2 * bps],
+                    );
+                }
             }
             if let Some(d) = dump.as_mut() {
                 std::io::Write::write_all(d, &nv12).expect("write NV_VIDEO_DUMP");

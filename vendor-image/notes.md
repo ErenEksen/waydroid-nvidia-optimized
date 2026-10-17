@@ -158,7 +158,7 @@ Lunch `lineage_nvidia_waydroid_x86_64-userdebug`, out dir `out-vendor-l20-prolap
     - `hardware/interfaces` with `patches/hardware/interfaces`: composer 2.1 HAL 0001 makes a primary display
       reconnect safe while frames are in flight (hwc2on1 re-reads the configs without holding its state mutex
       across the Display's; ComposerClient keeps the display's cached buffer handles instead of freeing them).
-    - `external/minigbm` with `patches/external/minigbm`: gralloc 0001-0005 rebased onto e5a7769; e5a7769's YVU420
+    - `external/minigbm` with `patches/external/minigbm`: gralloc 0001-0006 (0001-0005 rebased onto e5a7769; 0006 YV12 decoder output + carrier size); e5a7769's YVU420
       fix is carried into our first-map import.
     - `external/wayland-protocols`: the 7 XMLs hwcomposer uses, at wayland-protocols 1.49.
   - Everything is on standard `/vendor/<lib>{,/hw,/egl}` and `/odm` paths. Nothing needs `/vendor_extra` or a

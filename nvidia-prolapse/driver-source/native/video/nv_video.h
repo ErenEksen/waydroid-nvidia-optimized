@@ -132,6 +132,9 @@ int nv_video_flush(struct NvVideoSession *s);
 enum NvVideoFormat {
    NV_VIDEO_FORMAT_NV12 = 1,    /* 8-bit Y plane + interleaved CbCr plane */
    NV_VIDEO_FORMAT_P010 = 2,    /* 16-bit containers, 10 MSBs */
+   NV_VIDEO_FORMAT_YUV420P = 3, /* 8-bit Y, Cb and Cr planes (planar 4:2:0), LINEAR only; plane 1
+                                 * is Cb, the Cr plane is cr_dmabuf_fd/cr_offset/cr_pitch (an
+                                 * Android YV12 buffer passes its third plane as plane 1) */
 };
 
 /* Destination buffer of copy_out. Planes may share one dma-buf. modifier is a
@@ -145,7 +148,11 @@ struct NvVideoTarget {
    uint32_t format;             /* enum NvVideoFormat */
    uint32_t width, height;      /* buffer size; the picture's display window is written at (0,0) */
    int acquire_fence_fd;        /* -1 or a sync_file the copy must wait for (buffer free) */
-   uint32_t reserved[6];
+   /* NV_VIDEO_FORMAT_YUV420P only (ignored otherwise): the Cr plane; may share a dma-buf */
+   int cr_dmabuf_fd;
+   uint32_t cr_pitch;
+   uint64_t cr_offset;
+   uint32_t reserved[2];
 };
 
 /* Copies picture `id` (display window, film grain applied for AV1) into

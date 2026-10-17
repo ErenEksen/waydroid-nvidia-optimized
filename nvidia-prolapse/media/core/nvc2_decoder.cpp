@@ -134,7 +134,20 @@ Status Decoder::emit_picture(const NvVideoPicture &pic, OutputPool *pool, std::v
         return Status::Error;
     }
     have_held_ = false;
-    buf.target.format = fmt;
+    /* A front that leaves the target format 0 gets the picture's format. It may instead lay an
+     * 8-bit picture out planar (YUV420P) where its client expects that; any other format is a
+     * front bug. */
+    if (buf.target.format == 0)
+        buf.target.format = fmt;
+    if (buf.target.format != fmt && !(fmt == NV_VIDEO_FORMAT_NV12 && buf.target.format == NV_VIDEO_FORMAT_YUV420P)) {
+        const uint32_t got = buf.target.format;
+        pool->discard(buf);
+        nv_video_picture_release(session_, pic.id);
+        dead_ = true;
+        error_ = "output pool returned target format " + std::to_string(got) + " for a " +
+                 std::to_string(pic.bit_depth) + "-bit picture (wants " + std::to_string(fmt) + ")";
+        return Status::Error;
+    }
     int fence = -1;
     rc = nv_video_copy_out(session_, pic.id, &buf.target, &fence);
     /* copy_out consumed (or ignored) the acquire fence; the front must not reuse it */
