@@ -56,7 +56,10 @@ deleted, that step stops and tells you to run `sudo waydroid init -f`. Installs 
 also have left `/var/lib/waydroid/nvidia-source-native-*` and `/var/lib/waydroid/nvidia-prolapse`; you can delete
 them.
 
-To verify a downloaded asset by hand (releases from v0.2.0-rc2 on carry the bundles):
+## Verify a download
+
+The installer does this for you. To check a release file by hand (releases from v0.2.0-rc2 on), use
+`gh attestation verify <asset> --repo Shiro836/waydroid-nvidia`, or without a GitHub login:
 
 ```sh
 COSIGN_MAX_ATTACHMENT_SIZE=300000000 cosign verify-blob-attestation \

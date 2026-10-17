@@ -537,21 +537,14 @@ jobs:
           # every tag starts as a DRAFT (invisible to users and install.sh) until it passed an install +
           # reboot test; publish with `gh release edit <tag> --draft=false`. rc tags are prereleases.
           PRE=""; case "$TAG" in *-rc*) PRE="--prerelease" ;; esac
+          # human-written notes, one file per tag; a tag without one does not get a release
+          NOTES="release-notes/$TAG.md"
+          [ -s "$NOTES" ] || { echo "::error::$NOTES missing: write the release notes before tagging"; exit 1; }
+          { cat "$NOTES"
+            printf '\n---\nEvery file is built by CI from source and signed. The installer checks this for you; '
+            printf 'to check a file by hand see [Verify a download](https://github.com/%s/blob/%s/docs/install-manual.md#verify-a-download).\n' \
+              "$GITHUB_REPOSITORY" "$TAG"
+          } > notes.md
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft $PRE \
-            --title "waydroid-nvidia $TAG" \
-            --notes "Every asset is CI-built from pinned sources and carries a SLSA
-          provenance attestation (the surfaceflinger build runs on the maintainer's
-          registered self-hosted runner; its provenance says so). Verify with
-          \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`, or without a GitHub login with cosign
-          (>= 2.4.3) and the <file>.sigstore.json bundle next to each asset:
-          \`cosign verify-blob-attestation --bundle <file>.sigstore.json --type slsaprovenance1
-          --certificate-identity https://github.com/$GITHUB_REPOSITORY/.github/workflows/build.yml@refs/tags/$TAG
-          --certificate-oidc-issuer https://token.actions.githubusercontent.com <file>\`
-          (COSIGN_MAX_ATTACHMENT_SIZE=300000000 for the vendor zip, which is above cosign's 128 MiB default).
-
-          waydroid-nvidia-vendor-*: the nvidia-prolapse driver mode as a Waydroid vendor image built from
-          source (NVK + Rust RM + nvrm + Codec2 NVDEC + our gralloc, hwcomposer and ANGLE as vendor modules),
-          as a Waydroid OTA zip with its channel JSON; waydroid-nvidia-native-*: the same drivers with the
-          install-time gate programs and build record. Install: AUR waydroid-nvidia-bin, or
-          packaging/install.sh on other distros, then sudo waydroid-nvidia-setup (README, Install)." \
+            --title "waydroid-nvidia $TAG" --notes-file notes.md \
             out/*.tar.zst out/*.zip out/*.json out/SHA256SUMS

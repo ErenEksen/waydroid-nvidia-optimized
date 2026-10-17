@@ -42,6 +42,8 @@ CI never runs on branch pushes or pull requests, only on `v*` tags and by hand
    ```sh
    git tag v<X.Y.Z>[-rcN] && git push origin v<X.Y.Z>[-rcN]
    ```
+   Before tagging, commit `release-notes/<tag>.md`: what changed for users, in plain words, and the install
+   commands (see the earlier files there). The release job refuses a tag without it.
 
 3. **Test the draft like a user, then publish.** Drafts are invisible to users and to install.sh.
    ```sh
