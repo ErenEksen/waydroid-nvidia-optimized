@@ -14,7 +14,8 @@
  * local memory, shader heap reclaim, dirty-state groups.
  * G1 (GLES 3.0): 8 colour targets with per-target blend/write mask, MSAA
  * 2/4/8 render targets (standard sample positions, layout also on clears)
- * + u_blitter resolves, NIR disk cache (program binaries), transform feedback with
+ * + u_blitter resolves, NIR disk cache (program binaries; NAK binaries too since
+ * shader-f, nvrm_shader_cache.c), transform feedback with
  * pause/resume, occlusion / primitives generated / xfb written queries,
  * conditional render, 2_10_10_10 vertex formats, separate-Z/S maps,
  * stencil blits via u_blitter's per-bit fallback (NAK has no stencil
@@ -67,6 +68,9 @@
 #include "util/u_dynarray.h"
 #include "util/set.h"
 #include "compiler/nir/nir.h"
+#include "nak.h"
+#include "util/disk_cache.h"
+#include "util/u_queue.h"
 
 struct nak_compiler;
 struct nak_shader_bin;
@@ -311,12 +315,50 @@ struct nvrm_screen {
    uint64_t bo_cache_bytes;
 
    /* NAK's options plus lower_uniforms_to_ubo, so st/mesa hands us
-    * load_ubo(0, offset) for the default uniform block. */
+    * load_ubo(0, offset) for the default uniform block, minus doubles
+    * lowering (see nvrm_screen_create). */
    struct nir_shader_compiler_options nir_options;
+
+   /* In-memory program cache (nvrm_shader_cache.c): cache key ->
+    * struct nvrm_shader_bin, one table reference per entry, for the
+    * screen's lifetime (radeonsi's sscreen->shader_cache). */
+   simple_mtx_t shader_bins_mutex;
+   struct hash_table *shader_bins;
+
+   /* Shader compiles (nvrm_shader_compile_job): one queue per screen, as
+    * every gallium driver with a compile queue (iris_screen.c:820-841,
+    * radeonsi si_pipe.c, ir3_gallium.c). Workers hold a reference on the
+    * GLSL type singleton through glsl_types_ref. */
+   struct util_queue compile_queue;
+   bool glsl_types_ref;
+};
+
+/* A compiled shader: NAK's output plus what nvrm derived from the NIR,
+ * shared (refcounted) between the program cache and every nvrm_shader
+ * created from the same key. Immutable once published. */
+struct nvrm_shader_bin {
+   uint32_t refcnt;
+   cache_key key;
+   struct nak_shader_info info;
+   uint32_t code_size;
+   void *code;
+   unsigned tex_units, image_units;
+   uint32_t cbuf_mask;
+   bool uses_desc;
 };
 
 struct nvrm_shader {
-   struct nak_shader_bin *bin;
+   /* Compile state (nvrm_compile_shader): `ready` signals when the job has
+    * run (or was dropped); until then only the job touches the fields below
+    * it. `failure` names why the compile failed (logged by the job); the
+    * first nvrm_shader_wait aborts with it. */
+   struct util_queue_fence ready;
+   struct nvrm_screen *screen;
+   nir_shader *nir; /* input, owned until the job takes it */
+   bool debug;      /* NVRM_DEBUG_SHADERS at creation: compiled inline */
+   const char *failure;
+
+   struct nvrm_shader_bin *bin; /* one reference */
    uint64_t heap_addr, heap_size; /* range in screen->shader_vma */
    unsigned tex_units; /* GL texture units used (BITSET_LAST_BIT) */
    bool uses_desc; /* reads the descriptor cbuf (SSBOs, compute sysvals/UBOs) */
@@ -627,6 +669,18 @@ void nvrm_init_draw_functions(struct pipe_context *pctx);
 void nvrm_slm_ensure(struct nvrm_context *ctx, uint32_t bytes_per_lane, uint32_t crs_per_warp);
 struct nvrm_shader *nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir);
 void nvrm_free_shader(struct nvrm_context *ctx, struct nvrm_shader *shader);
+void nvrm_shader_wait(struct nvrm_shader *shader);
+
+/* nvrm_shader_cache.c */
+extern const struct nak_fs_key nvrm_nak_fs_key;
+void nvrm_shader_cache_init(struct nvrm_screen *screen);
+void nvrm_shader_cache_fini(struct nvrm_screen *screen);
+void nvrm_shader_cache_key(struct nvrm_screen *screen, nir_shader *nir, cache_key key);
+struct nvrm_shader_bin *nvrm_shader_cache_find(struct nvrm_screen *screen, const cache_key key,
+                                               mesa_shader_stage stage);
+struct nvrm_shader_bin *nvrm_shader_cache_add(struct nvrm_screen *screen, const cache_key key,
+                                              struct nvrm_shader_bin *bin);
+void nvrm_shader_bin_unref(struct nvrm_shader_bin *bin);
 
 /* nvrm_mme.c: MME macros for indirect draws/dispatches: Turing+ DMA-read
  * the commands (mme_tu104_read_fifoed), older classes take them as push

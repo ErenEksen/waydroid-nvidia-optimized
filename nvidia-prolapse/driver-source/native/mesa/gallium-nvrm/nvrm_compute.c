@@ -362,13 +362,9 @@ nvrm_create_compute_state(struct pipe_context *pctx, const struct pipe_compute_s
       nvrm_error("variable workgroup size is not advertised\n");
       abort();
    }
-   struct nvrm_shader *shader = nvrm_compile_shader(pctx, nir);
-   if (shader->bin->info.cs.smem_size > NVRM_MAX_SHARED_SIZE) {
-      nvrm_error("compute shader needs %u B shared memory (max %u)\n",
-                 shader->bin->info.cs.smem_size, NVRM_MAX_SHARED_SIZE);
-      abort();
-   }
-   return shader;
+   /* The shared memory limit is checked by the compile job
+    * (nvrm_shader_compile_job) on NAK's result. */
+   return nvrm_compile_shader(pctx, nir);
 }
 
 static void
@@ -391,6 +387,7 @@ nvrm_get_compute_state_info(struct pipe_context *pctx, void *s,
                             struct pipe_compute_state_object_info *info)
 {
    struct nvrm_shader *shader = s;
+   nvrm_shader_wait(shader);
    info->max_threads = 1024;
    info->preferred_simd_size = 32;
    info->simd_sizes = 32;
@@ -479,6 +476,7 @@ nvrm_launch_grid(struct pipe_context *pctx, const struct pipe_grid_info *info)
       nvrm_error("launch_grid without a compute shader bound\n");
       abort();
    }
+   nvrm_shader_wait(cs);
    if (info->variable_shared_mem || info->work_dim > 3 ||
        info->grid_base[0] || info->grid_base[1] || info->grid_base[2]) {
       nvrm_error("launch_grid with variable shared memory / base groups "

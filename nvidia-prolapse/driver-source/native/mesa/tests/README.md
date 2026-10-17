@@ -623,3 +623,27 @@ The host build reads driconf from files (expat), hence DRIRC_CONFIGDIR; Android 
 2026-10-16, RTX 5090: NVK 26.2.5 unpatched = NaN for max/min at d < 0 (clamp 0); stock 615.71.09 =
 0 for every engine name; patched NVK with engine "ANGLE" = PASS, engine "nvk-nan-test" or "ANGLEx" =
 NaN (upstream), `nvk_force_nan_preserve_min_max=true` in the environment = PASS for any engine.
+
+## gl-shader-async.c (nvrm program cache + asynchronous compile, shader-f 2026-10-17)
+
+Share-group test of nvrm's compile queue: per round (1) link + immediate delete (in round 0 the NAK
+jobs are cold, so the delete drops queued jobs and waits for running ones), (2) context A links and
+hands each program to a shared context B on another thread, which makes the first use (the wait),
+draws and deletes it, (3) `glMaxShaderCompilerThreadsKHR` + `GL_COMPLETION_STATUS_KHR` polling, then
+a draw per program. Input: a shbench-format directory, e.g. MC set A
+(36 programs from Minecraft's ActorForwardPBR material; not distributed).
+
+    B=build/nvrm-host-shader-f
+    cc -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror -Ibuild/mesa-gl-source-shader-f/include \
+       nvidia-prolapse/driver-source/native/mesa/tests/gl-shader-async.c \
+       -L$B/src/egl -L$B/src/mesa/glapi/es2api -Wl,-rpath-link,$B/src/gallium/targets/dri \
+       -lEGL -lGLESv2 -lpthread -o gl-shader-async
+    LD_LIBRARY_PATH=$B/src/egl:$B/src/mesa/glapi/es2api:$B/src/gallium/targets/dri \
+       MESA_SHADER_CACHE_DISABLE=true ./gl-shader-async DIR 2      # also NVRM_FORCE_SMALL_BAR=1,
+                                                                   # and MESA_SHADER_CACHE_DIR=<dir> (warm)
+
+PASS = every link succeeds, no GL error after any draw, all programs complete within 60 s.
+TSan: build the driver with `-Dbuildtype=debugoptimized -Db_sanitize=thread -Db_lundef=false` and the
+test with `-fsanitize=thread -rdynamic ... native/mesa/tests/c11tsan.c` (mandatory: libtsan does
+not intercept glibc's C11 mtx/cnd that Mesa uses). 2026-10-17: no report in nvrm, util_queue, the
+program cache or disk_cache.

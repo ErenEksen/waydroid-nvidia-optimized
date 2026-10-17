@@ -111,6 +111,14 @@ Mesa's GLSL frontend keeps float min/max NaN-preserving and NVIDIA FMNMX/stock r
 non-NaN operand. GTA SA's vehicle specular `max(pow(x<0, 10.0), 0.0)` rendered car paint black
 under ANGLE on 26.2 (`tests/vk-nan-minmax.c`, live A/B 2026-10-16).
 
+GL-only Mesa util patches for nvrm's program cache (upstream-style messages in each file):
+`mesa-disk-cache-create-with-path.patch` (`disk_cache_create_with_path()`: a cache at an absolute,
+per-application directory, enabled on every platform, driver_flags kept),
+`mesa-disk-cache-keep-file-backend.patch` (`disk_cache_set_callbacks` leaves a cache with a working
+file backend alone, so Android libEGL's blob-cache callbacks do not take it over) and
+`mesa-disk-cache-evict-invalid-item.patch` (a multi-file item that fails validation is removed on load;
+before, it blocked every later write of its key and the key missed forever).
+
 Dropped on 26.2: `p100-bisect.patch` (opt-in GP100 Xid 13 diagnostic; the bisection
 ruled its suspects out and the cause was R19, RM depth kinds),
 `mesa-gles3-immutable-levels.patch` (upstream 75a0cd6e2cdc),

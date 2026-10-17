@@ -13,6 +13,7 @@ files_libnvrm = files(
   'nvrm_query.c',
   'nvrm_resource.c',
   'nvrm_screen.c',
+  'nvrm_shader_cache.c',
   'nvrm_texture.c',
 )
 

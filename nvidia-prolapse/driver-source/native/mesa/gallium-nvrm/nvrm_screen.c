@@ -39,6 +39,9 @@
 #include "util/u_screen.h"
 #include "util/os_file.h"
 #include "util/disk_cache.h"
+#include "util/u_cpu_detect.h"
+#include "util/u_queue.h"
+#include "compiler/glsl_types.h"
 #include "util/hex.h"
 #include "util/mesa-blake3.h"
 #include <inttypes.h>
@@ -1020,38 +1023,45 @@ nvrm_init_fence_functions(struct pipe_screen *pscreen)
 
 /* ---------------------------------------------------------------- screen */
 
-/* As nouveau_disk_cache_create (Mesa 26.2 nouveau_screen.c:177-197, BLAKE3
- * since disk_cache moved off SHA-1): keyed by this
- * library's build id; the 3D class goes into the flags because caps (and so
- * st/mesa's NIR) depend on the GPU class. */
-static void
-nvrm_disk_cache_create(struct nvrm_screen *screen)
-{
-   blake3_hasher ctx;
-   unsigned char blake3[BLAKE3_KEY_LEN];
-   char cache_id[BLAKE3_HEX_LEN];
-
-   _mesa_blake3_init(&ctx);
-   if (!disk_cache_get_function_identifier(nvrm_disk_cache_create, &ctx))
-      return;
-   _mesa_blake3_final(&ctx, blake3);
-   mesa_bytes_to_hex(cache_id, blake3, BLAKE3_KEY_LEN);
-   screen->disk_cache = disk_cache_create("nvrm", cache_id, screen->info.cls_eng3d);
-}
-
 static struct disk_cache *
 nvrm_get_disk_shader_cache(struct pipe_screen *pscreen)
 {
    return nvrm_screen(pscreen)->disk_cache;
 }
 
+/* KHR_parallel_shader_compile (main/hint.c:136-145): the worker count of
+ * the compile queue, as iris_set_max_shader_compiler_threads
+ * (iris_program.c:3961-3968). */
+static void
+nvrm_set_max_shader_compiler_threads(struct pipe_screen *pscreen, unsigned max_threads)
+{
+   util_queue_adjust_num_threads(&nvrm_screen(pscreen)->compile_queue, max_threads, false);
+}
+
+/* GL_COMPLETION_STATUS (main/shaderapi.c): non-blocking. */
+static bool
+nvrm_is_parallel_shader_compilation_finished(struct pipe_screen *pscreen, void *shader,
+                                             mesa_shader_stage stage)
+{
+   return util_queue_fence_is_signalled(&((struct nvrm_shader *)shader)->ready);
+}
+
 static void
 nvrm_screen_destroy(struct pipe_screen *pscreen)
 {
    struct nvrm_screen *screen = nvrm_screen(pscreen);
+   /* Compile workers first: a job may still be using the channel (small-BAR
+    * upload), the shader arena, the program cache and the NAK compiler
+    * (iris_screen_destroy order, iris_screen.c:524-530). Contexts deleted
+    * their shaders (dropping their jobs) before the screen goes. */
+   if (util_queue_is_initialized(&screen->compile_queue))
+      util_queue_destroy(&screen->compile_queue);
    /* Recycled buffer memory goes back while the device is open. */
    nvrm_bo_cache_fini(screen);
+   /* Pending cache writes finish here (disk_cache_destroy drains its
+    * queue); every shader is gone, so the in-memory table goes too. */
    disk_cache_destroy(screen->disk_cache);
+   nvrm_shader_cache_fini(screen);
    if (screen->channel)
       nv_rm_context_destroy(screen->rm, screen->channel);
    nvrm_bo_free(screen, &screen->zero_page);
@@ -1078,6 +1088,8 @@ nvrm_screen_destroy(struct pipe_screen *pscreen)
    simple_mtx_destroy(&screen->submit_mutex);
    simple_mtx_destroy(&screen->shader_mutex);
    close(screen->fd);
+   if (screen->glsl_types_ref)
+      glsl_type_singleton_decref();
    FREE(screen);
 }
 
@@ -1214,6 +1226,16 @@ nvrm_screen_create(int fd, const struct pipe_screen_config *config)
 
    screen->nir_options = *nak_nir_options(screen->nak);
    screen->nir_options.lower_uniforms_to_ubo = true;
+   /* st/mesa sees no doubles lowering; the NIR handed to NAK carries NAK's
+    * own options again (nvrm_compile_shader), which is NVK's contract
+    * (nvk_get_nir_options = nak_nir_options, nvk_shader.c:86-94) and lets
+    * NAK lower doubles and int64 itself (nak_nir.c:1766-1767). With
+    * lower_doubles_options set, st_glsl_to_nir.cpp:290-347 scalarizes
+    * every phi (nir_lower_phis_to_scalar is not limited to 64-bit ones),
+    * re-vectorizes and runs a whole gl_nir_opts loop on every program
+    * although nvrm exposes no fp64 or int64 (no doubles/int64 caps):
+    * measured -3.2 ms per Minecraft program on the host. */
+   screen->nir_options.lower_doubles_options = 0;
 
    /* Shader heap: NVK's contiguous shader arena (nvk_device.c:257-260,
     * nvk_mem_arena.c): reserve the whole 4 GiB VA range now (its base is the
@@ -1239,6 +1261,33 @@ nvrm_screen_create(int fd, const struct pipe_screen_config *config)
    if (!nvrm_screen_init_channel(screen))
       goto fail;
 
+   /* Compile queue (nvrm_compile_shader). Workers use NIR, so they hold
+    * their own reference on the GLSL type singleton: libGL's reference is
+    * dropped at exit before u_queue's atexit handler stops the workers
+    * (iris_screen.c:814, si_pipe.c). Thread count as iris
+    * (iris_screen.c:820-831): 3/4 of the CPUs from 12 up; the queue starts
+    * with one worker and adds them on demand. Normal priority: draws wait
+    * for these jobs. Default stack: the compile path needs < 80 KiB
+    * (measured); bionic's default thread stack is 1 MiB - 32 KiB. */
+   glsl_type_singleton_init_or_ref();
+   screen->glsl_types_ref = true;
+   {
+      const unsigned cpus = util_get_cpu_caps()->nr_cpus;
+      unsigned threads = 1;
+      if (cpus >= 12)
+         threads = cpus * 3 / 4;
+      else if (cpus >= 6)
+         threads = cpus - 2;
+      else if (cpus >= 2)
+         threads = cpus - 1;
+      if (!util_queue_init(&screen->compile_queue, "nvrmsh", 64, threads,
+                           UTIL_QUEUE_INIT_RESIZE_IF_FULL |
+                           UTIL_QUEUE_INIT_SET_FULL_THREAD_AFFINITY, NULL)) {
+         nvrm_error("could not create the shader compile queue (%u threads)\n", threads);
+         goto fail;
+      }
+   }
+
    struct pipe_screen *ps = &screen->base;
    ps->destroy = nvrm_screen_destroy;
    ps->get_name = nvrm_get_name;
@@ -1252,6 +1301,8 @@ nvrm_screen_create(int fd, const struct pipe_screen_config *config)
    for (unsigned i = 0; i < MESA_SHADER_MESH_STAGES; i++)
       ps->nir_options[i] = &screen->nir_options;
    ps->get_disk_shader_cache = nvrm_get_disk_shader_cache;
+   ps->set_max_shader_compiler_threads = nvrm_set_max_shader_compiler_threads;
+   ps->is_parallel_shader_compilation_finished = nvrm_is_parallel_shader_compilation_finished;
    ps->context_create = nvrm_context_create;
    ps->fence_reference = nvrm_fence_reference;
    ps->fence_finish = nvrm_fence_finish;
@@ -1260,7 +1311,7 @@ nvrm_screen_create(int fd, const struct pipe_screen_config *config)
    nvrm_init_fence_functions(ps);
    nvrm_init_shader_caps(screen);
    nvrm_init_screen_caps(screen);
-   nvrm_disk_cache_create(screen);
+   nvrm_shader_cache_init(screen);
 
    mesa_logi("nvrm: %s (chipset 0x%x, 3D class 0x%04x, SM%u) on channel %" PRIu64
              ", VRAM %" PRIu64 " MiB, BAR1 %" PRIu64 " MiB (%s BAR)\n",

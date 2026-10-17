@@ -11,7 +11,8 @@ parser.add_argument("--image", type=Path, default=Path("/var/lib/waydroid/images
 args = parser.parse_args()
 out = ROOT / "build/nvk-android32/runtime"
 out.mkdir(parents=True, exist_ok=True)
-pending = ["libcutils.so", "libhardware.so", "liblog.so", "libsync.so", "libnativewindow.so", "linker"]
+# libz.so: nvrm's shader cache (Mesa disk_cache, -Dzlib=enabled on Android).
+pending = ["libcutils.so", "libhardware.so", "liblog.so", "libsync.so", "libnativewindow.so", "libz.so", "linker"]
 seen = set()
 while pending:
     name = pending.pop()

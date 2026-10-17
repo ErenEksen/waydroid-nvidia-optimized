@@ -224,8 +224,14 @@ def prepare_gl_source(args):
     run(["git", "-C", GL_SOURCE, "clean", "-qfdx", "-e", "subprojects/packagecache"])
     # GL-only Mesa core fixes (st/mesa, main/) on top of the NVK stack;
     # android-egl-suffix.patch only changes Android library naming.
+    # mesa-disk-cache-*: nvrm's program cache in an explicit per-application
+    # directory (create_with_path), not redirected into the EGL blob cache
+    # (keep-file-backend), self-healing after a damaged item (evict-invalid).
     for name in NVK_PATCHES + ("gallium-nvrm.patch", "mesa-oes-texture-stencil8.patch",
                                "mesa-nv-polygon-mode.patch", "nak-panic-message.patch",
+                               "mesa-disk-cache-create-with-path.patch",
+                               "mesa-disk-cache-keep-file-backend.patch",
+                               "mesa-disk-cache-evict-invalid-item.patch",
                                "android-egl-suffix.patch"):
         run(["git", "-C", GL_SOURCE, "apply", HERE / name])
     rm_source = GL_SOURCE / "src/nouveau/vulkan/nvkmd/rm"
@@ -324,8 +330,16 @@ def build_gl_android(args, env, target):
     rust_lib = profiles.rust_library(ROOT, target, args.rust_profile).parent
     if not (rust_lib / "libnv_bionic_native.so").is_file():
         raise SystemExit(f"Missing {rust_lib / 'libnv_bionic_native.so'}")
-    cross = android_cross_file(bits, out=ROOT / f"build/nvrm-{target}-cross{_GL_SUFFIX}",
-                               download=args.download_deps)
+    cross_dir = ROOT / f"build/nvrm-{target}-cross{_GL_SUFFIX}"
+    cross = android_cross_file(bits, out=cross_dir, download=args.download_deps)
+    # nvrm's program cache (Mesa disk_cache, nvrm_shader_cache.c) needs a
+    # compressor: the NDK sysroot ships zlib (an NDK stable library, libz.so in
+    # every image's /system/lib*); libzstd is not in the NDK.
+    ndk_zlib = (NDK / "sysroot/usr/include/zlib.h").read_text()
+    zlib_version = next(line.split('"')[1].split("-")[0] for line in ndk_zlib.splitlines()
+                        if line.startswith("#define ZLIB_VERSION "))
+    (cross_dir / "pkgconfig/zlib.pc").write_text(
+        f"Name: zlib\nDescription: NDK sysroot zlib\nVersion: {zlib_version}\nLibs: -lz\nCflags:\n")
     linker_args = [f"-L{rust_lib}"]
     options = ["--cross-file", cross,
                "-Dvulkan-drivers=nouveau", "-Dgallium-drivers=nvrm",
@@ -334,8 +348,8 @@ def build_gl_android(args, env, target):
                "-Degl=enabled", "-Dgles1=enabled", "-Dgles2=enabled", "-Dopengl=true",
                f"-Degl-lib-suffix={GL_ANDROID_SUFFIX}", f"-Dgles-lib-suffix={GL_ANDROID_SUFFIX}",
                "-Dglx=disabled", "-Dgbm=disabled", "-Dglvnd=disabled", "-Dllvm=disabled",
-               "-Dmesa-clc=system", "-Dexpat=disabled", "-Dzstd=disabled", "-Dzlib=disabled",
-               "-Dshader-cache=disabled", "-Dbuild-tests=false", "-Dvideo-codecs=",
+               "-Dmesa-clc=system", "-Dexpat=disabled", "-Dzstd=disabled", "-Dzlib=enabled",
+               "-Dshader-cache=enabled", "-Dbuild-tests=false", "-Dvideo-codecs=",
                "-Dvalgrind=disabled", "-Dlibunwind=disabled", "-Dbuildtype=release",
                "-Dc_link_args=" + json.dumps(linker_args),
                "-Dcpp_link_args=" + json.dumps(linker_args + ["-static-libstdc++", f"-Wl,-rpath-link,{runtime}"])]

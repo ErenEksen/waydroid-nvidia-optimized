@@ -144,21 +144,16 @@ nvrm_create_shader_state(struct pipe_context *pctx,
    return nvrm_compile_shader(pctx, nir);
 }
 
-/* Lowers, compiles (NAK) and uploads one shader of any stage; takes
- * ownership of `nir`. Compute shaders come from nvrm_compute.c. */
-struct nvrm_shader *
-nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
+/* Lowers and compiles (NAK) one shader of any stage; takes ownership of
+ * `nir`. Returns a new nvrm_shader_bin (one reference), or NULL with the
+ * reason logged and named in *failure. Uses no context state: the result is
+ * a function of the NIR, the screen's NAK compiler and this library's build,
+ * so it runs on a compile-queue worker (nvrm_shader_compile_job). */
+static struct nvrm_shader_bin *
+nvrm_nak_compile(struct nvrm_screen *screen, nir_shader *nir, bool debug,
+                 const char **failure)
 {
-   struct nvrm_screen *screen = nvrm_screen(pctx->screen);
    const mesa_shader_stage stage = nir->info.stage;
-   /* NVRM_DEBUG_SHADERS=1 on the host. On Android Mesa's os_get_option falls
-    * back to the property system (util/os_misc.c os_get_android_option), so
-    * `setprop debug.mesa.nvrm.debug.shaders 1` turns it on for every process
-    * (SurfaceFlinger included) without an environment; read per shader, so
-    * it applies to shaders created after the setprop. Output goes through
-    * mesa_log line by line (logcat tag MESA) instead of stderr, which Android
-    * services send to /dev/null. */
-   const bool debug = debug_get_bool_option("NVRM_DEBUG_SHADERS", false);
 
    if (stage == MESA_SHADER_VERTEX) {
       /* st/mesa numbers vertex elements by driver_location (compacted);
@@ -191,13 +186,17 @@ nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
    if (tex_units > NVRM_MAX_TEX_UNITS) {
       nvrm_error("%s shader uses %u texture units (max %u)\n",
                  _mesa_shader_stage_to_string(stage), tex_units, NVRM_MAX_TEX_UNITS);
-      abort();
+      *failure = "too many texture units";
+      ralloc_free(nir);
+      return NULL;
    }
    const unsigned image_units = BITSET_LAST_BIT(nir->info.images_used);
    if (image_units > NVRM_MAX_IMAGES) {
       nvrm_error("%s shader uses %u image units (max %u)\n",
                  _mesa_shader_stage_to_string(stage), image_units, NVRM_MAX_IMAGES);
-      abort();
+      *failure = "too many image units";
+      ralloc_free(nir);
+      return NULL;
    }
    /* Mesa 26 NAK no longer sets lower_cs_local_index_to_id (nak/api.rs
     * nir_options; 25.2 had it) and panics on load_local_invocation_index in
@@ -223,22 +222,26 @@ nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
    if (nir->constant_data_size > 0) {
       nvrm_error("%s shader has %u B of constant data: not implemented in G0b\n",
                  _mesa_shader_stage_to_string(stage), nir->constant_data_size);
-      abort();
+      *failure = "shader constant data is not implemented";
+      ralloc_free(nir);
+      return NULL;
    }
 
    /* NAK lowers the shader in place, so keep the exact NIR it is handed for
     * the failure report below. */
    nir_shader *handed = nir_shader_clone(NULL, nir);
-   struct nak_fs_key fs_key = { 0 };
+   /* robust2_modes 0 and nvrm_nak_fs_key: both are inputs of the program
+    * cache key (nvrm_shader_cache_key). */
    struct nak_shader_bin *bin =
       nak_compile_shader(nir, debug, screen->nak, 0,
-                         stage == MESA_SHADER_FRAGMENT ? &fs_key : NULL,
+                         stage == MESA_SHADER_FRAGMENT ? &nvrm_nak_fs_key : NULL,
                          false /* has_task_shader: no mesh/task in GL */);
    ralloc_free(nir);
    if (!bin) {
       /* NAK panicked (it catches its own panics and returns NULL). Log the
-       * panic message and the NIR it was given, then stop: there is no
-       * fallback compiler. */
+       * panic message (thread-local: read on the thread that compiled) and
+       * the NIR it was given; the first use of the shader stops the process
+       * (nvrm_shader_wait): there is no fallback compiler. */
       const char *panic = nak_compile_shader_panic_message();
       nvrm_error("NAK failed to compile the %s shader; NAK panic: %s\n",
                  _mesa_shader_stage_to_string(stage), panic ? "" : "(none recorded)");
@@ -246,7 +249,9 @@ nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
          nvrm_log_text(MESA_LOG_ERROR, panic);
       mesa_loge("nvrm: NIR handed to NAK:");
       nir_log_shadere(handed);
-      abort();
+      ralloc_free(handed);
+      *failure = "NAK failed to compile it (panic logged above)";
+      return NULL;
    }
    ralloc_free(handed);
    if (debug && bin->asm_str) {
@@ -254,11 +259,36 @@ nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
       nvrm_log_text(MESA_LOG_INFO, bin->asm_str);
    }
 
-   /* Upload layout as nvk_shader_upload (nvk_shader.c:527-600): header then
-    * code; Kepler..Volta put the header 0x30 B before a 0x80-aligned code
-    * start, Turing+ have a 128 B header and 0x80-aligned start. */
-   /* Compute shaders have no shader program header (nvk_shader.c:531-537):
-    * the QMD points at the first instruction. */
+   struct nvrm_shader_bin *sbin = CALLOC_STRUCT(nvrm_shader_bin);
+   void *code = malloc(MAX2(bin->code_size, 1));
+   if (!sbin || !code) {
+      nvrm_error("out of memory for a %u B %s shader binary\n", bin->code_size,
+                 _mesa_shader_stage_to_string(stage));
+      abort();
+   }
+   sbin->refcnt = 1;
+   sbin->info = bin->info;
+   sbin->code_size = bin->code_size;
+   memcpy(code, bin->code, bin->code_size);
+   sbin->code = code;
+   sbin->tex_units = tex_units;
+   sbin->image_units = image_units;
+   sbin->cbuf_mask = cbuf_mask;
+   sbin->uses_desc = uses_desc;
+   nak_shader_bin_destroy(bin);
+   return sbin;
+}
+
+/* Upload layout as nvk_shader_upload (nvk_shader.c:527-600): header then
+ * code; Kepler..Volta put the header 0x30 B before a 0x80-aligned code
+ * start, Turing+ have a 128 B header and 0x80-aligned start. Compute shaders
+ * have no shader program header (nvk_shader.c:531-537): the QMD points at the
+ * first instruction. */
+static void
+nvrm_shader_upload(struct nvrm_screen *screen, struct nvrm_shader *shader,
+                   struct nvrm_shader_bin *bin)
+{
+   const mesa_shader_stage stage = shader->stage;
    const uint32_t hdr_size = stage == MESA_SHADER_COMPUTE ? 0 :
                              screen->info.cls_eng3d >= TURING_A ?
                              TU102_SHADER_HEADER_SIZE : GF100_SHADER_HEADER_SIZE;
@@ -282,22 +312,37 @@ nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
          abort();
       }
    }
-   if (hdr_size)
-      nvrm_shader_heap_write(screen, heap_addr + hdr_offset, bin->info.hdr, hdr_size);
-   nvrm_shader_heap_write(screen, heap_addr + code_offset, bin->code, bin->code_size);
+   if (screen->bar_full) {
+      /* CPU copy into the BAR1-mapped arena (reads shader_mem[], which a
+       * concurrent grow appends to: under the mutex). */
+      if (hdr_size)
+         nvrm_shader_heap_write(screen, heap_addr + hdr_offset, bin->info.hdr, hdr_size);
+      nvrm_shader_heap_write(screen, heap_addr + code_offset, bin->code, bin->code_size);
+   } else {
+      /* Small BAR: the copy-engine upload waits for the GPU. The range is
+       * ours alone once allocated, so the copy runs outside the mutex and
+       * another thread's allocation or a context flush (which takes the
+       * mutex to recycle freed ranges) never waits for this GPU copy. */
+      simple_mtx_unlock(&screen->shader_mutex);
+      if (hdr_size)
+         nvrm_shader_heap_write(screen, heap_addr + hdr_offset, bin->info.hdr, hdr_size);
+      nvrm_shader_heap_write(screen, heap_addr + code_offset, bin->code, bin->code_size);
+      simple_mtx_lock(&screen->shader_mutex);
+   }
    /* Every context's next draw invalidates the instruction cache once
-    * (nvrm_emit_invalidates; nvc0 after each upload, nvc0_program.c:944). */
+    * (nvrm_emit_invalidates; nvc0 after each upload, nvc0_program.c:944).
+    * Bumped after the code is in place and before the shader's fence
+    * signals, so the first draw using the shader (after nvrm_shader_wait)
+    * sees the new generation. */
    p_atomic_inc(&screen->shader_gen);
    simple_mtx_unlock(&screen->shader_mutex);
    const uint64_t off = heap_addr - screen->shader_base;
 
-   struct nvrm_shader *shader = CALLOC_STRUCT(nvrm_shader);
    shader->bin = bin;
-   shader->stage = stage;
-   shader->tex_units = tex_units;
-   shader->image_units = image_units;
-   shader->uses_desc = uses_desc;
-   shader->cbuf_mask = cbuf_mask;
+   shader->tex_units = bin->tex_units;
+   shader->image_units = bin->image_units;
+   shader->uses_desc = bin->uses_desc;
+   shader->cbuf_mask = bin->cbuf_mask;
    shader->heap_addr = heap_addr;
    shader->heap_size = heap_size;
    shader->hdr_addr = screen->shader_base + off + hdr_offset;
@@ -307,7 +352,111 @@ nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
       shader->hdr_addr -= screen->shader_base;
       assert(shader->hdr_addr < UINT32_MAX);
    }
+}
+
+/* The compile job (a screen compile-queue worker, or inline under
+ * NVRM_DEBUG_SHADERS): program cache lookup, NAK on a miss, upload. It reads
+ * and writes only `shader` (not yet visible to any draw: every user waits on
+ * shader->ready, nvrm_shader_wait) and screen state behind its own locks
+ * (program cache, shader arena). A failure is logged here and named in
+ * shader->failure; the first use aborts with it. */
+static void
+nvrm_shader_compile_job(void *job, UNUSED void *gdata, UNUSED int thread_index)
+{
+   struct nvrm_shader *shader = job;
+   struct nvrm_screen *screen = shader->screen;
+   nir_shader *nir = shader->nir;
+   shader->nir = NULL;
+
+   struct nvrm_shader_bin *bin;
+   if (shader->debug) {
+      bin = nvrm_nak_compile(screen, nir, true, &shader->failure);
+   } else {
+      cache_key key;
+      nvrm_shader_cache_key(screen, nir, key);
+      bin = nvrm_shader_cache_find(screen, key, shader->stage);
+      if (bin) {
+         ralloc_free(nir);
+      } else {
+         bin = nvrm_nak_compile(screen, nir, false, &shader->failure);
+         if (bin)
+            bin = nvrm_shader_cache_add(screen, key, bin);
+      }
+   }
+   if (!bin)
+      return;
+   if (shader->stage == MESA_SHADER_COMPUTE &&
+       bin->info.cs.smem_size > NVRM_MAX_SHARED_SIZE) {
+      nvrm_error("compute shader needs %u B shared memory (max %u)\n",
+                 bin->info.cs.smem_size, NVRM_MAX_SHARED_SIZE);
+      shader->failure = "too much shared memory";
+      nvrm_shader_bin_unref(bin);
+      return;
+   }
+   nvrm_shader_upload(screen, shader, bin);
+}
+
+/* Creates the shader object and queues its compile (cache lookup, NAK,
+ * upload) on the screen's compile queue; takes ownership of `nir`. The
+ * object is usable at once: binding stores the pointer, and every reader of
+ * the compiled result waits first (nvrm_shader_wait: draw, launch, compute
+ * state info). radeonsi and freedreno defer the same way (radeonsi
+ * si_schedule_initial_compile + si_shader_select's wait at draw; ir3
+ * ir3_shader_state_create + ir3_get_shader's wait). Compute shaders come
+ * from nvrm_compute.c. Shader objects are shareable across the contexts of
+ * a share group (pipe caps shareable_shaders): any context may wait on or
+ * delete them. */
+struct nvrm_shader *
+nvrm_compile_shader(struct pipe_context *pctx, nir_shader *nir)
+{
+   struct nvrm_screen *screen = nvrm_screen(pctx->screen);
+   /* NVRM_DEBUG_SHADERS=1 on the host. On Android Mesa's os_get_option falls
+    * back to the property system (util/os_misc.c os_get_android_option), so
+    * `setprop debug.mesa.nvrm.debug.shaders 1` turns it on for every process
+    * (SurfaceFlinger included) without an environment; read per shader, so
+    * it applies to shaders created after the setprop. Output goes through
+    * mesa_log line by line (logcat tag MESA) instead of stderr, which Android
+    * services send to /dev/null. It bypasses the program cache: the dump is
+    * produced by compiling (NVK refuses to cache a shader with asm,
+    * nvk_shader.c nvk_shader_serialize), and it compiles on the calling
+    * thread so the dump of each shader stays in one piece and in order
+    * (radeonsi and ir3 also compile synchronously for shader dumps). */
+   const bool debug = debug_get_bool_option("NVRM_DEBUG_SHADERS", false);
+
+   /* st/mesa built the NIR with nvrm's st-facing options (no doubles
+    * lowering, nvrm_screen_create); from here on it is NAK's NIR, as in
+    * NVK (nvk_get_nir_options). Options are not serialized, so this does
+    * not enter the cache key. */
+   nir->options = nak_nir_options(screen->nak);
+
+   struct nvrm_shader *shader = CALLOC_STRUCT(nvrm_shader);
+   if (!shader) {
+      nvrm_error("out of memory for a shader object\n");
+      abort();
+   }
+   shader->screen = screen;
+   shader->stage = nir->info.stage;
+   shader->nir = nir;
+   shader->debug = debug;
+   util_queue_fence_init(&shader->ready); /* signalled */
+   if (debug)
+      nvrm_shader_compile_job(shader, NULL, -1);
+   else
+      util_queue_add_job(&screen->compile_queue, shader, &shader->ready,
+                         nvrm_shader_compile_job, NULL, 0);
    return shader;
+}
+
+/* Every reader of a shader's compiled result calls this first. */
+void
+nvrm_shader_wait(struct nvrm_shader *shader)
+{
+   util_queue_fence_wait(&shader->ready);
+   if (unlikely(shader->failure)) {
+      nvrm_error("%s shader used, but its compile failed: %s\n",
+                 _mesa_shader_stage_to_string(shader->stage), shader->failure);
+      abort();
+   }
 }
 
 static void
@@ -319,9 +468,20 @@ nvrm_delete_shader_state(struct pipe_context *pctx, void *s)
 void
 nvrm_free_shader(struct nvrm_context *ctx, struct nvrm_shader *shader)
 {
-   util_dynarray_append_typed(&ctx->shader_frees, uint64_t, shader->heap_addr);
-   util_dynarray_append_typed(&ctx->shader_frees, uint64_t, shader->heap_size);
-   nak_shader_bin_destroy(shader->bin);
+   /* A queued compile is dropped, a running one is waited for
+    * (util_queue_drop_job; radeonsi si_delete_shader_selector, ir3
+    * ir3_shader_state_delete). Afterwards the job either ran to its end or
+    * never started, and nothing else references the object. */
+   util_queue_drop_job(&shader->screen->compile_queue, &shader->ready);
+   if (shader->nir)
+      ralloc_free(shader->nir); /* dropped before it ran */
+   if (shader->heap_size) {
+      util_dynarray_append_typed(&ctx->shader_frees, uint64_t, shader->heap_addr);
+      util_dynarray_append_typed(&ctx->shader_frees, uint64_t, shader->heap_size);
+   }
+   if (shader->bin)
+      nvrm_shader_bin_unref(shader->bin);
+   util_queue_fence_destroy(&shader->ready);
    FREE(shader);
 }
 
@@ -1517,6 +1677,12 @@ nvrm_draw_vbo(struct pipe_context *pctx, const struct pipe_draw_info *info,
       nvrm_error("draw without a vertex and a fragment shader bound\n");
       abort();
    }
+   /* The bound shaders' compiles (nvrm_compile_shader) finish before
+    * anything below reads them. */
+   nvrm_shader_wait(ctx->vs);
+   nvrm_shader_wait(ctx->fs);
+   if (ctx->gs)
+      nvrm_shader_wait(ctx->gs);
    /* Local memory before any push is opened: growing it flushes. */
    const struct nvrm_shader *gs = ctx->gs;
    nvrm_slm_ensure(ctx, MAX3(ctx->vs->bin->info.slm_size, ctx->fs->bin->info.slm_size,

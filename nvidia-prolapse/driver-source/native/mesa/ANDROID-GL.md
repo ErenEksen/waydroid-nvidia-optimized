@@ -24,7 +24,8 @@ usable yet (driver gaps below).
 - Mesa options: `-Dplatforms=android -Dplatform-sdk-version=33 -Dgallium-drivers=nvrm
   -Dvulkan-drivers=nouveau` (NAK/nil only; libvulkan is not built) `-Degl=enabled -Dgles1=enabled
   -Dgles2=enabled -Degl-lib-suffix=_nvrm -Dgles-lib-suffix=_nvrm -Dandroid-libbacktrace=disabled
-  -Dllvm=disabled -Dexpat/zstd/zlib=disabled -Dshader-cache=disabled -Dbuildtype=debugoptimized`.
+  -Dllvm=disabled -Dexpat/zstd=disabled -Dzlib=enabled -Dshader-cache=enabled -Dbuildtype=debugoptimized`
+  (zlib = the NDK sysroot's libz, a `zlib.pc` written into the GL cross pkg-config dir).
   `android.hardware.graphics.mapper` is not in the pkg-config dir, so u_gralloc has the cros,
   libdrm, qcom and fallback backends (no imapper4). The cros backend is what we use
   (`strings libEGL_nvrm.so | grep "CrOS Gralloc"`).
@@ -82,8 +83,15 @@ Properties / config:
   modifier, offsets, strides. Those buffers are allocated by our minigbm backend through NVK
   (block-linear NVIDIA modifiers or LINEAR). The image ships the 64-bit module; the 32-bit
   `vendor/lib/hw/gralloc.minigbm_gbm_mesa.so` was not checked here.
-- Shader cache: built with `-Dshader-cache=disabled`; Android's blob cache (EGL_ANDROID_blob_cache
-  via the loader) is the cache path to add later.
+- Shader cache (branch shader-f): built with `-Dshader-cache=enabled` + zlib. nvrm opens one Mesa
+  disk_cache (multi-file) per screen at `dirname($TMPDIR)/code_cache/nvrm_shader_cache` (the
+  application's code cache; the framework sets TMPDIR before any app code runs) through
+  `disk_cache_create_with_path` (mesa-disk-cache-create-with-path.patch). It holds st/mesa's GLSL/NIR
+  items and nvrm's NAK binaries (nvrm_shader_cache.c). libEGL's EGL_ANDROID_blob_cache callbacks are
+  ignored by such a cache (mesa-disk-cache-keep-file-backend.patch). Processes without an app code
+  cache (isolated, system_server, SurfaceFlinger, tools) log once and keep compiled shaders in memory;
+  their Mesa cache stays disabled as before and serves libEGL's in-memory blob cache. Enabling the cache
+  makes NUM_PROGRAM_BINARY_FORMATS 1 (was 0).
 
 Driver capabilities (G2, branch gl-dmabuf). The smoke test `tests/gl-android-smoke.py` is the
 capability gate: per ABI it runs `tests/gl-dmabuf.c` (no Vulkan) through the bionic linker, prints
