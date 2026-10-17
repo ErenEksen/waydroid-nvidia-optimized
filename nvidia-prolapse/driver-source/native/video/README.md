@@ -97,6 +97,12 @@ Copy engine, not a shader: the measured engine output is a layout the copy engin
   g = 2 → kind 0, g = 3 → kinds 1/2 for NV12, 2/0 for P010 on Blackwell copy classes; the P010
   block-linear write is not yet verified end to end). Target dma-bufs are imported
   per call (`external::import`) and kept until the copy retires; fds stay the caller's.
+- Planar 4:2:0 (`NV_VIDEO_FORMAT_YUV420P`, 8-bit, LINEAR only): Y, Cb and Cr planes, the Cr plane
+  in `cr_dmabuf_fd/cr_offset/cr_pitch`. The engine's CbCr plane is split by the copy engine's
+  component remapping (`SET_REMAP_COMPONENTS`: 1-byte components, 2 source / 1 destination,
+  DST_X = SRC_X for Cb, SRC_Y for Cr; `LAUNCH_DMA.REMAP_ENABLE`); with remapping on, source width,
+  origin X and line length count 2-byte elements, pitches stay bytes (NVK `nouveau_copy_rect`).
+  Bit-exact: `NV_VIDEO_TARGET=yuv420p nv-video-avc-test` (YV12 plane order and pitches).
 - Ordering: the copy queue acquires the NVDEC timeline (GPU wait); the release fence is the copy
   queue's semaphore sync_file. The acquire fence is waited on the CPU (open item).
 - NV12 from 8-bit pictures only; P010 → `E_UNSUPPORTED` until 10-bit decode exists.
