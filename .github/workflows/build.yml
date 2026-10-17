@@ -538,7 +538,7 @@ jobs:
           # reboot test; publish with `gh release edit <tag> --draft=false`. rc tags are prereleases.
           PRE=""; case "$TAG" in *-rc*) PRE="--prerelease" ;; esac
           # human-written notes, one file per tag; a tag without one does not get a release
-          NOTES="release-notes/$TAG.md"
+          NOTES="src/release-notes/$TAG.md"   # this job checks the repo out into src/
           [ -s "$NOTES" ] || { echo "::error::$NOTES missing: write the release notes before tagging"; exit 1; }
           { cat "$NOTES"
             printf '\n---\nEvery file is built by CI from source and signed. The installer checks this for you; '
