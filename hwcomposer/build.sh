@@ -89,6 +89,8 @@ SRCS=(
 )
 # patches/0014 adds the cross-GPU copy; absent when building fewer patches (HWC_PATCHES_UPTO)
 [ -f "$SRC/prime-copy.cpp" ] && SRCS+=("$SRC/prime-copy.cpp")
+# the window-following display resize (its own file: the only caller of hwc_procs_t::hotplug)
+[ -f "$SRC/display-resize.cpp" ] && SRCS+=("$SRC/display-resize.cpp")
 PROTOS=(wayland-android xdg-shell viewporter presentation-time linux-dmabuf-unstable-v1 tablet-unstable-v2
         relative-pointer-unstable-v1 pointer-constraints-unstable-v1 fractional-scale-v1
         idle-inhibit-unstable-v1 xdg-decoration-unstable-v1)

@@ -153,7 +153,11 @@ Lunch `lineage_nvidia_waydroid_x86_64-userdebug`, out dir `out-vendor-l20-prolap
   - Built in-tree:
     - `hardware/waydroid` with `patches/hardware/waydroid`: our hwcomposer 0001-0016 rebased onto 6e898e9 (0001
       conflicts resolved to our side; upstream's leak/null-handle/0660-FIFO fixes kept) plus an `Android.bp` commit
-      for prime-copy.cpp.
+      for prime-copy.cpp, and 0018: the Android display follows the window (a display reconnect sent from hwc's own
+      resize thread, enabled by `ro.vendor.composer.safe_primary_reconnect`, which `prolapse.mk` sets).
+    - `hardware/interfaces` with `patches/hardware/interfaces`: composer 2.1 HAL 0001 makes a primary display
+      reconnect safe while frames are in flight (hwc2on1 re-reads the configs without holding its state mutex
+      across the Display's; ComposerClient keeps the display's cached buffer handles instead of freeing them).
     - `external/minigbm` with `patches/external/minigbm`: gralloc 0001-0005 rebased onto e5a7769; e5a7769's YVU420
       fix is carried into our first-map import.
     - `external/wayland-protocols`: the 7 XMLs hwcomposer uses, at wayland-protocols 1.49.
