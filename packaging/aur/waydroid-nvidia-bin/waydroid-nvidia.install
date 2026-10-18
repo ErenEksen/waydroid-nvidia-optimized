@@ -4,7 +4,8 @@ waydroid-nvidia: next steps
   1. sudo waydroid-nvidia-setup          (runs `waydroid init` if needed, checks the host, tests the
                                           nvidia-prolapse vendor image on your GPU and kernel module,
                                           installs it next to the official system image (your official
-                                          vendor image is kept as a backup), activates it, starts the container)
+                                          vendor image is kept as a backup), activates it, starts the container;
+                                          -s GAPPS: Google apps, on a fresh install)
   2. waydroid session start              (or launch Waydroid from the app menu)
 
 Requires nvidia-drm.modeset=1. Venus mode instead: sudo waydroid-nvidia-setup --mode venus,

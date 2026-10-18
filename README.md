@@ -54,6 +54,10 @@ The installer verifies every download and will not overwrite files owned by a di
 your GPU, and only then installs our Android vendor image. Your official vendor image is kept as a backup. If a
 check fails, it says why and leaves everything as it was.
 
+On a fresh install the setup runs `waydroid init` for you. For Google apps, use `sudo waydroid-nvidia-setup -s GAPPS`
+instead (the default is `VANILLA`, without them). On an existing install `-s` only checks the system type; to switch,
+run `sudo waydroid init -f -s GAPPS`, then `sudo waydroid-nvidia-setup` again (apps and data are kept).
+
 Run `sudo waydroid-nvidia-setup` again after every NVIDIA driver or package update; Waydroid refuses to start until
 you do. `sudo waydroid-nvidia-setup --restore-official-vendor` takes you back to stock Waydroid. Uninstalling is
 described in [docs/install-manual.md](docs/install-manual.md#uninstall).

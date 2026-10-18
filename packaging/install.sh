@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # packaging/install.sh — install a waydroid-nvidia release on any systemd distro (Arch users: AUR
 # waydroid-nvidia-bin does the same). Installs exactly what the AUR package installs, then you run
-#   waydroid init; sudo waydroid-nvidia-setup; sudo systemctl enable --now waydroid-container; waydroid session start
+#   sudo waydroid-nvidia-setup [-s GAPPS] (runs waydroid init if needed, starts the container); waydroid session start
 #
 #   curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
 #   sudo packaging/install.sh [--tag vX.Y.Z[-rcN]] [--from DIR] [--check] [--no-deps]
@@ -312,6 +312,6 @@ cat <<'EOF'
 
 Next (README steps 2 and 3):
   sudo waydroid-nvidia-setup     (downloads the Android image if needed, checks your GPU, installs the vendor image,
-                                  starts the container)
+                                  starts the container; add -s GAPPS for Google apps on a fresh install)
   waydroid session start
 EOF

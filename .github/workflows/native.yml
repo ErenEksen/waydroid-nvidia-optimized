@@ -25,7 +25,7 @@ jobs:
       - name: Assemble patched Waydroid (pinned upstream + baseline + native-mounts patches)
         run: dev/build-waydroid
       - name: Unit tests
-        run: /usr/bin/python3 -m pytest -q -p no:cacheprovider waydroid/test_nvidia_native.py dev/test_driver_mode.py dev/test_source_native.py
+        run: /usr/bin/python3 -m pytest -q -p no:cacheprovider waydroid/test_nvidia_native.py dev/test_driver_mode.py dev/test_source_native.py packaging/test_setup.py
 
   rust-rm-host:
     name: Rust RM backend (host build, no GPU)

@@ -2,8 +2,13 @@
 # waydroid-nvidia-setup — provision Waydroid for NVIDIA GPUs. Run as root. Runs `waydroid init` first when
 # Waydroid is not initialized yet. Safe to re-run (it is also the remedy after an NVIDIA driver update).
 #
-#   waydroid-nvidia-setup [--mode nvidia-prolapse|venus] [--native-gl on|off] [--refresh <hz>|auto]
+#   waydroid-nvidia-setup [-s VANILLA|GAPPS] [--mode nvidia-prolapse|venus] [--native-gl on|off] [--refresh <hz>|auto]
 #   waydroid-nvidia-setup --restore-official-vendor
+#
+# -s, --system-type VANILLA|GAPPS|FOSS: the Android system image `waydroid init` downloads when Waydroid is not
+# initialized yet (the same values as `waydroid init -s`; GAPPS = with Google apps). Without it, Waydroid's default
+# (VANILLA, no Google apps). On an initialized Waydroid it only checks that the installed system image is that type,
+# and says how to switch if not; it never re-initializes over your install.
 #
 # What it does:
 #   1. checks the host: NVIDIA render node, nvidia-drm.modeset=Y, an initialized Waydroid (official system image);
@@ -34,10 +39,15 @@ die() { echo "waydroid-nvidia-setup: $*" >&2; exit 1; }
 say() { echo "== $*"; }
 [ "$(id -u)" = 0 ] || die "must run as root (sudo waydroid-nvidia-setup)"
 
-REFRESH="" MODE_ARG="" GL_ARG="" RESTORE=0
+REFRESH="" MODE_ARG="" GL_ARG="" RESTORE=0 SYSTEM_TYPE=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --restore-official-vendor) RESTORE=1; shift ;;
+        -s|--system-type|--system_type)
+            SYSTEM_TYPE="${2:?$1 needs VANILLA, GAPPS or FOSS}"; SYSTEM_TYPE="${SYSTEM_TYPE^^}"
+            [[ "$SYSTEM_TYPE" =~ ^(VANILLA|GAPPS|FOSS)$ ]] ||
+                die "$1 takes VANILLA, GAPPS (with Google apps) or FOSS, as 'waydroid init -s' does"
+            shift 2 ;;
         --refresh) REFRESH="${2:?--refresh needs a value}"; shift 2
                    [[ "$REFRESH" == auto || ( "$REFRESH" =~ ^[0-9]+$ && "$REFRESH" -ge 1 && "$REFRESH" -le 1000 ) ]] ||
                        die "--refresh takes a number of Hz (1-1000) or auto" ;;
@@ -58,7 +68,7 @@ BUNDLE=$NATIVE/release
 NV_GUEST=/var/lib/waydroid/nv/guest
 VENDOR_TOOL="python3 $NATIVE/packaging/native/vendor_image.py"
 [ -d "$GUEST" ] || die "$GUEST missing (broken package?)"
-[ "$RESTORE" = 0 ] || [ -z "$MODE_ARG$GL_ARG$REFRESH" ] || die "--restore-official-vendor takes no other option"
+[ "$RESTORE" = 0 ] || [ -z "$MODE_ARG$GL_ARG$REFRESH$SYSTEM_TYPE" ] || die "--restore-official-vendor takes no other option"
 
 lxc_state() { lxc-info -P /var/lib/waydroid/lxc -n waydroid -sH 2>/dev/null || echo STOPPED; }
 WAS_ACTIVE=0
@@ -127,10 +137,34 @@ EOF
     exit 0
 fi
 if [ ! -f "$CFG" ]; then
-    say "Waydroid is not initialized: running 'waydroid init' (LineageOS 20 images; for Google apps run
-   'sudo waydroid init -s GAPPS' instead, then this setup again)"
-    waydroid init || die "waydroid init failed (see above)"
+    if [ -n "$SYSTEM_TYPE" ]; then
+        say "Waydroid is not initialized: running 'waydroid init -s $SYSTEM_TYPE' (official LineageOS 20 images)"
+        waydroid init -s "$SYSTEM_TYPE" || die "waydroid init -s $SYSTEM_TYPE failed (see above)"
+    else
+        say "Waydroid is not initialized: running 'waydroid init' (official LineageOS 20 images without Google apps;
+   for Google apps press Ctrl+C now and run 'sudo waydroid-nvidia-setup -s GAPPS' instead)"
+        waydroid init || die "waydroid init failed (see above)"
+    fi
     [ -f "$CFG" ] || die "waydroid init wrote no $CFG"
+    # init leaves the nvidia-prolapse vendor image to this setup (it said so above): it is installed below
+elif [ -n "$SYSTEM_TYPE" ]; then
+    # system_ota = <channel>/<rom>/waydroid_<arch>/<system type>.json (upstream init), "None" for preinstalled images
+    SYSTEM_OTA=$(python3 -I -c 'import configparser,sys; c=configparser.ConfigParser(); c.read(sys.argv[1]); print(c.get("waydroid","system_ota",fallback=""))' "$CFG")
+    CURRENT_TYPE=$(basename -- "$SYSTEM_OTA" .json)
+    if [ "$CURRENT_TYPE" = "$SYSTEM_TYPE" ]; then
+        say "Waydroid is initialized with the $SYSTEM_TYPE system image"
+    elif [[ "$SYSTEM_OTA" != */*.json ]]; then
+        die "-s $SYSTEM_TYPE: Waydroid is initialized from images it does not download (system_ota = ${SYSTEM_OTA:-unset}
+in $CFG), so the system type is whatever system.img is installed there. Without -s this setup keeps it."
+    else
+        printf -v SWITCH '  %-34s %s\n  %-34s %s' "sudo waydroid init -f -s $SYSTEM_TYPE" \
+            "(downloads the $SYSTEM_TYPE images; apps and data are kept)" \
+            "sudo waydroid-nvidia-setup" "(installs the nvidia-prolapse vendor image again)"
+        die "-s $SYSTEM_TYPE: Waydroid is already initialized with the $CURRENT_TYPE system image (system_ota = $SYSTEM_OTA).
+This setup does not re-initialize an existing install. To switch to $SYSTEM_TYPE:
+$SWITCH
+Or keep $CURRENT_TYPE: run this setup without -s."
+    fi
 fi
 for tool in readelf debugfs python3 unshare lxc-info; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required (binutils, e2fsprogs, python3, util-linux, lxc)"
