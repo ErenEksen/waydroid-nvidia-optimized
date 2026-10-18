@@ -940,7 +940,7 @@ def check(root, active=False):
     return expected
 
 
-def invalidate_caches(backup):
+def invalidate_caches(backup, session=Path('/var/lib/waydroid/lxc/waydroid/config_session')):
     """Preserve obsolete HWUI/EGL disk caches before changing driver identity.
 
     Android13 BlobCache::clear forgets mTotalSize when ShaderCache invalidates a
@@ -951,8 +951,9 @@ def invalidate_caches(backup):
         raise RuntimeError('Shader-cache migration requires root')
     if container_state() != 'STOPPED':
         raise RuntimeError('Stop the container before shader-cache migration')
-    session = Path('/var/lib/waydroid/lxc/waydroid/config_session')
-    if not session.exists():
+    # a session start writes this file (lxc.py generate_session_lxc_config); `waydroid init` and `upgrade` only create
+    # it empty (set_lxc_config). Missing or empty: no session ever ran on this install, so no guest caches exist.
+    if not session.exists() or not session.read_text().strip():
         print('No previous user session; no shader caches to migrate')
         return
     data = None

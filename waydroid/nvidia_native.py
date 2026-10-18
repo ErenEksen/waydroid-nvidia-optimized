@@ -4,8 +4,9 @@
 #
 # Installed into the waydroid tree as tools/helpers/nvidia_native.py and called from
 # tools/helpers/lxc.py (generate_nodes_lxc_config, make_base_props, start),
-# tools/helpers/images.py (make_prop: per-session display properties) and
-# tools/actions/session_manager.py. The driver is chosen explicitly in waydroid.cfg:
+# tools/helpers/images.py (make_prop: per-session display properties), tools/actions/initializer.py (init_defaults;
+# init_nodes through generate_nodes_lxc_config) and tools/actions/session_manager.py. The driver is chosen explicitly
+# in waydroid.cfg:
 #
 #     [waydroid]
 #     nvidia_driver_mode = nvidia-prolapse | glibc-shim | venus
@@ -20,6 +21,8 @@
 #    the image's placeholder /odm/etc/media_codecs_c2.xml. The image is recognised positively by its build
 #    props (VERSION_PROP, BUILD_RECORD_PROP) and must match the record the setup wrote after gating it on
 #    the loaded kernel module (check_vendor_image()); a stock image refuses with the setup as the remedy.
+#    `waydroid init` only installs official images and runs before the setup has installed ours, so at init that
+#    refusal is deferred (init_nodes(): no mode entries, the next step logged) to the container start (check_start()).
 #  * dev-root (developers): a staged source root bind-mounted over the official vendor image (below).
 # glibc-shim, venus and dev-root run on the official vendor image and refuse ours (refuse_prolapse_image()).
 #
@@ -1622,6 +1625,13 @@ def check_vendor_image(dm, waydroid, state=None, packaged_record=None):
     return record
 
 
+def _codec_list_entry(state=None):
+    """The vendor-image install's bind of this GPU's Codec2 listing over the image's placeholder (the image's
+    /odm/etc/media_codecs_c2.xml lists no codecs, vendor-image/product)."""
+    return "lxc.mount.entry = {} vendor/{} none bind,ro 0 0".format(
+        os.path.join(state or VENDOR_IMAGE_STATE, VENDOR_IMAGE_XML), MEDIA_XML)
+
+
 def vendor_image_nodes(dm, waydroid, dev=None, existing=(), state=None):
     """lxc.mount.entry lines of the vendor-image install: device nodes and the codec listing, nothing else."""
     state = state or VENDOR_IMAGE_STATE
@@ -1630,9 +1640,7 @@ def vendor_image_nodes(dm, waydroid, dev=None, existing=(), state=None):
     devices = _device_nodes(dev, existing)
     check_media_device_access([os.path.join(dev, "nvidiactl")] + sorted(glob.glob(os.path.join(dev, "nvidia[0-9]*")))
                               + [nvidia_render_node()])
-    # the image's /odm/etc/media_codecs_c2.xml is a placeholder without codecs (vendor-image/product)
-    xml = "lxc.mount.entry = {} vendor/{} none bind,ro 0 0".format(os.path.join(state, VENDOR_IMAGE_XML), MEDIA_XML)
-    return devices + [xml]
+    return devices + [_codec_list_entry(state)]
 
 
 def refuse_prolapse_image(dm, waydroid):
@@ -1655,6 +1663,48 @@ def mode_nodes(dm, waydroid, existing=()):
         return vendor_image_nodes(dm, waydroid, existing=existing)
     refuse_prolapse_image(dm, waydroid)
     return lxc_nodes(dm.root, existing=existing) if dm.native else []
+
+
+# `waydroid init` installs official images only (downloaded or preinstalled); the nvidia-prolapse vendor image comes
+# from the setup afterwards, and on a fresh install the setup itself runs `waydroid init` first. So at init the
+# vendor-image install's entries are deferred instead of refused (init_nodes), and that refusal is made at container
+# start (check_start), where booting the wrong vendor image would actually happen.
+INIT_NEXT_STEP = ("NVIDIA driver mode nvidia-prolapse: Waydroid is initialized, but the container will not start "
+                  "until the nvidia-prolapse vendor image is installed. Next step: " + SETUP)
+
+
+def init_nodes(dm, waydroid, existing=()):
+    """`waydroid init` (initializer.py init -> lxc.py generate_nodes_lxc_config): mode_nodes(), except that the
+    vendor-image install accepts a vendor.img that is not (or no longer) the image the setup gated. Returns
+    (entries, pending): pending is None, or check_vendor_image()'s refusal; the entries then lack the mode's nodes
+    and the container start refuses (check_start) until the setup installed the image and regenerated them. Every
+    other check (the cfg, the other modes' roots and images) refuses here as it does at upgrade."""
+    if dm.vendor_image:
+        try:
+            check_vendor_image(dm, waydroid)
+        except OSError as e:
+            return [], "{} (deferred: 'waydroid init' installs official images only)".format(e)
+    return mode_nodes(dm, waydroid, existing=existing), None
+
+
+def check_start(dm, waydroid, config_nodes, state=None):
+    """Container start (lxc.py start), vendor-image install: the booted vendor.img is the image the setup gated
+    (check_vendor_image; a stock image after 'waydroid init -f' refuses here with the setup as the remedy), and
+    config_nodes carries the generator's entries for it, not the deferred set `waydroid init` wrote before the
+    image was installed (init_nodes). The other modes refuse at generator time only."""
+    if not dm.vendor_image:
+        return
+    check_vendor_image(dm, waydroid, state=state)
+    try:
+        with open(config_nodes) as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        raise OSError("NVIDIA driver mode nvidia-prolapse: cannot read {} ({}). Remedy: {}".format(
+            config_nodes, e.strerror, SETUP))
+    if _codec_list_entry(state) not in lines:
+        raise OSError("NVIDIA driver mode nvidia-prolapse ({} = vendor-image): {} was generated while the vendor "
+                      "image was not installed (by 'waydroid init'): it binds no NVIDIA device and no codec list. "
+                      "Remedy: {}".format(INSTALL_KEY, config_nodes, SETUP))
 
 
 def load_cfg(path):

@@ -23,7 +23,9 @@ nvidia_prolapse_install = vendor-image    # nvidia-prolapse only: vendor-image (
 ```
 
 `waydroid init` writes these defaults into a config that has no NVIDIA key yet. A config with no NVIDIA key at
-container start means stock Waydroid. Every key is explicit: nothing is guessed, and every refusal names the key
+container start means stock Waydroid. `waydroid init` installs the official vendor image, so in `vendor-image` it
+leaves out the NVIDIA mounts and logs that `sudo waydroid-nvidia-setup` comes next; until the setup installed our
+image, the container start refuses. Every key is explicit: nothing is guessed, and every refusal names the key
 and the command that fixes it. Old names (`rust-driver`, the `nvidia_*_root` path keys) are refused with the new
 name.
 

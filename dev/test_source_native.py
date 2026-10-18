@@ -997,5 +997,49 @@ class MediaStatusTest(SourceRootFixture):
         self.assertEqual(self.status(self.RUNNING, media=off)['c2 service'], 'FAIL')
 
 
+class ShaderCacheMigrationTest(unittest.TestCase):
+    """invalidate_caches(): a fresh `waydroid init` leaves config_session empty (no session ever ran)."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.top = Path(self._tmp.name)
+        self.session = self.top / 'config_session'
+        self.backup = self.top / 'backup'
+        for p in (mock.patch.object(sn.os, 'geteuid', lambda: 0),
+                  mock.patch.object(sn, 'container_state', lambda: 'STOPPED')):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def run_it(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sn.invalidate_caches(self.backup, session=self.session)
+        return out.getvalue()
+
+    def test_missing_or_empty_session_means_no_caches(self):
+        self.assertIn('No previous user session', self.run_it())
+        self.session.write_text('')                    # what set_lxc_config leaves after `waydroid init`
+        self.assertIn('No previous user session', self.run_it())
+        self.assertFalse(self.backup.exists())
+
+    def test_session_caches_are_moved_aside(self):
+        data = self.top / 'data'
+        cache = data / 'data/com.example/code_cache/com.android.skia.shaders_cache'
+        cache.parent.mkdir(parents=True)
+        cache.write_bytes(b'x')
+        self.session.write_text(f'lxc.mount.entry = {data} data none rbind 0 0\n')
+        self.assertIn('Preserved 1 obsolete shader caches', self.run_it())
+        self.assertFalse(cache.exists())
+        self.assertTrue((self.backup / 'shader-caches' / cache.relative_to(data)).is_file())
+
+    def test_session_without_a_data_mount_is_refused(self):
+        self.session.write_text('lxc.mount.entry = tmpfs run/xdg none create=dir 0 0\n')
+        with self.assertRaises(RuntimeError):
+            self.run_it()
+
+
 if __name__ == '__main__':
     unittest.main()

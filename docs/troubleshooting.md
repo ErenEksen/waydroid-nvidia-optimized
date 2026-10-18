@@ -25,7 +25,7 @@ python3 /usr/lib/waydroid-nvidia/native/dev/driver-mode status
 | Waydroid refuses to start after an NVIDIA driver or package update | the installed vendor image was tested on the old driver | `sudo waydroid-nvidia-setup` |
 | Waydroid is not running after a reboot ("no /dev/nvidia<N> device node found") | 0.2.0-rc1 started the container before the NVIDIA driver finished loading | update, then `sudo waydroid-nvidia-setup` once; until then `sudo systemctl start waydroid-container` |
 | Waydroid fails at boot with "NVIDIA GPU not up at container start" | the NVIDIA driver did not load within 90 s | check `journalctl -b -k \| grep -iE 'NVRM\|nvidia-drm'`, fix the driver, then `sudo systemctl start waydroid-container` |
-| Waydroid refuses to start after `waydroid init -f` | the official vendor image replaced ours | `sudo waydroid-nvidia-setup` |
+| Waydroid refuses to start after `waydroid init` or `waydroid init -f` | init installs the official vendor image, not ours | `sudo waydroid-nvidia-setup` |
 | Setup stops at `nvidia-drm.modeset` | without modeset the driver cannot share buffers at all | add `nvidia_drm.modeset=1` to the kernel command line or modprobe.d, reboot |
 | Setup stops at a failing test case | the driver does not work on this GPU or driver version | the message names a log in `/var/lib/waydroid-nvidia/gate-*`; [report it](#reporting-a-problem) and use `sudo waydroid-nvidia-setup --mode venus` meanwhile |
 | The display freezes or stutters on a monitor above about 333 Hz | Android's stock SurfaceFlinger merges vsyncs closer than 3 ms | `sudo waydroid-nvidia-setup --refresh 240` (`--refresh auto` removes the cap) |

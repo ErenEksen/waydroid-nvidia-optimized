@@ -1669,6 +1669,55 @@ class VendorImageTest(unittest.TestCase):
         make_vendor_img(self.img, STOCK_PROPS)
         nn.refuse_prolapse_image(nn.driver_mode({"nvidia_driver_mode": "venus"}), {"images_path": self.images})
 
+    # ---- `waydroid init` (init_nodes) and container start (check_start)
+    def test_init_defers_a_stock_image(self):
+        make_vendor_img(self.img, STOCK_PROPS)
+        entries, pending = nn.init_nodes(nn.driver_mode(self.cfg), self.cfg)
+        self.assertEqual(entries, [])
+        for needle in ("is not the nvidia-prolapse vendor image", "lineage_waydroid_x86_64", nn.SETUP,
+                       "'waydroid init' installs official images only"):
+            self.assertIn(needle, pending)
+        self.assertEqual(self.access, [])               # no device was looked at
+
+    def test_init_defers_every_vendor_image_refusal(self):
+        os.unlink(os.path.join(self.state, nn.VENDOR_IMAGE_RECORD))
+        entries, pending = nn.init_nodes(nn.driver_mode(self.cfg), self.cfg)
+        self.assertEqual(entries, [])
+        self.assertIn("never gated", pending)
+
+    def test_init_with_the_gated_image_emits_the_nodes(self):
+        entries, pending = nn.init_nodes(nn.driver_mode(self.cfg), self.cfg)
+        self.assertIsNone(pending)
+        self.assertEqual(entries, self.nodes())
+
+    def test_init_keeps_the_other_refusals(self):
+        """Only the vendor-image install defers; venus on our image still refuses at init."""
+        w = {"nvidia_driver_mode": "venus", "images_path": self.images}
+        with self.assertRaises(OSError) as cm:
+            nn.init_nodes(nn.driver_mode(w), w)
+        self.assertIn("runs on the official vendor image", str(cm.exception))
+
+    def test_start_check(self):
+        dm = nn.driver_mode(self.cfg)
+        config_nodes = os.path.join(self.top, "config_nodes")
+        with open(config_nodes, "w") as f:
+            f.write("lxc.mount.entry = tmpfs mnt tmpfs nodev 0 0\n" + "".join(e + "\n" for e in self.nodes()))
+        nn.check_start(dm, self.cfg, config_nodes)
+        with open(config_nodes, "w") as f:              # what init wrote before the setup installed the image
+            f.write("lxc.mount.entry = tmpfs mnt tmpfs nodev 0 0\n")
+        with self.assertRaises(OSError) as cm:
+            nn.check_start(dm, self.cfg, config_nodes)
+        self.assertIn("generated while the vendor image was not installed", str(cm.exception))
+        self.assertIn(nn.SETUP, str(cm.exception))
+        make_vendor_img(self.img, STOCK_PROPS)          # 'waydroid init -f' put the official image back
+        with self.assertRaises(OSError) as cm:
+            nn.check_start(dm, self.cfg, config_nodes)
+        self.assertIn("is not the nvidia-prolapse vendor image", str(cm.exception))
+        self.assertIn(nn.SETUP, str(cm.exception))
+        with self.assertRaises(OSError):
+            nn.check_start(dm, self.cfg, os.path.join(self.top, "absent"))
+        nn.check_start(nn.driver_mode({"nvidia_driver_mode": "venus"}), {}, os.path.join(self.top, "absent"))
+
 
 class VendorImageLxcTest(LxcIntegrationTest):
     """generate_nodes_lxc_config()/make_base_props() of build/waydroid with the vendor-image install."""
@@ -1705,6 +1754,82 @@ class VendorImageLxcTest(LxcIntegrationTest):
     def test_stock_image_fails_upgrade(self):
         make_vendor_img(os.path.join(self.vi.images, "vendor.img"), STOCK_PROPS)
         self.refused("is not the nvidia-prolapse vendor image", "sudo waydroid-nvidia-setup")
+
+    def test_fresh_init_on_the_official_image_then_setup(self):
+        """The first install: `waydroid init` (run by waydroid-nvidia-setup, or by hand) writes the default mode
+        (vendor-image) while vendor.img is the official image it just downloaded. init completes and says what is
+        next; the container start refuses with the setup as the remedy until the setup installed the vendor image
+        and regenerated the entries (`waydroid upgrade -o`); then it starts."""
+        import shutil
+        import tools.actions.initializer as initializer
+        import tools.config
+        helpers = initializer.helpers
+        ours = os.path.join(self.top, "ours.img")
+        shutil.copy2(self.vi.img, ours)                       # the gated image, as the setup will install it
+        make_vendor_img(self.vi.img, STOCK_PROPS)             # what init downloads: the official vendor image
+        os.unlink(self.args.config)                           # not initialized
+        lxc_dir = os.path.join(self.top, "lxc")
+        config_nodes = os.path.join(lxc_dir, "waydroid", "config_nodes")
+
+        def set_lxc_config(args):                             # upstream's tail: generate, then write config_nodes
+            nodes = self.lxc.generate_nodes_lxc_config(args)
+            os.makedirs(os.path.dirname(config_nodes), exist_ok=True)
+            with open(config_nodes, "w") as f:
+                f.writelines(n + "\n" for n in nodes)
+
+        started = []
+        self.args.__dict__.update(force=False, images_path=self.vi.images, system_channel=None, vendor_channel=None,
+                                  rom_type=None, system_type="GAPPS", log=os.path.join(self.top, "log"))
+        with mock.patch.dict(tools.config.defaults, {"lxc": lxc_dir, "rootfs": os.path.join(self.top, "rootfs"),
+                                                     "overlay": os.path.join(self.top, "overlay"),
+                                                     "overlay_rw": os.path.join(self.top, "overlay_rw"),
+                                                     "preinstalled_images_paths": []}), \
+                mock.patch.object(helpers.arch, "host", lambda: "x86_64"), \
+                mock.patch.object(helpers.props, "host_get", lambda args, prop: ""), \
+                mock.patch.object(helpers.drivers, "setupBinderNodes", lambda args: None), \
+                mock.patch.object(helpers.drivers, "probeAshmemDriver", lambda args: None), \
+                mock.patch.object(helpers.http, "retrieve",      # no device codename channel, MAINLINE's exists
+                                  lambda url, headers=None: (404, b"") if url.endswith("/.json") else (200, b"")), \
+                mock.patch.object(helpers.images, "get", lambda args: None), \
+                mock.patch.object(helpers.lxc, "setup_host_perms", lambda args: None), \
+                mock.patch.object(helpers.lxc, "set_lxc_config", set_lxc_config), \
+                mock.patch.object(helpers.gpu, "getDriNode", lambda args: (RENDER, "")), \
+                mock.patch.object(helpers.gpu, "getVulkanDriver", lambda args, node: ""), \
+                mock.patch.object(helpers.run, "user", lambda *a, **k: started.append(a)), \
+                mock.patch.object(self.lxc, "wait_for_running", lambda args: None):
+            with self.assertLogs(level="INFO") as logs:
+                initializer.init(self.args)
+            # init completed: the default mode in the cfg, the mode's properties, the deferred entries
+            waydroid, _ = nn.load_cfg(self.args.config)
+            self.assertEqual((waydroid["nvidia_driver_mode"], waydroid["nvidia_prolapse_install"]),
+                             ("nvidia-prolapse", "vendor-image"))
+            self.assertTrue(waydroid["system_ota"].endswith("/GAPPS.json"))
+            with open(config_nodes) as f:
+                nodes = f.read()
+            self.assertNotIn("nvidia", nodes)
+            self.assertNotIn("media_codecs_c2.xml", nodes)
+            with open(os.path.join(self.top, "waydroid_base.prop")) as f:
+                self.assertIn("ro.hardware.vulkan=nvidia\n", f.read())
+            warnings = [r.getMessage() for r in logs.records if r.levelname == "WARNING"]
+            self.assertEqual(len(warnings), 2, warnings)
+            self.assertIn("is not the nvidia-prolapse vendor image", warnings[0])
+            self.assertEqual(logs.records[-1].getMessage(), nn.INIT_NEXT_STEP)    # init ends with the next step
+            self.assertTrue(nn.INIT_NEXT_STEP.endswith("sudo waydroid-nvidia-setup"))
+            # container start: refused, lxc-start never runs
+            self.refused("is not the nvidia-prolapse vendor image", "Remedy: sudo waydroid-nvidia-setup",
+                         call=lambda: self.lxc.start(self.args))
+            self.assertEqual(started, [])
+            # the setup installs the gated image ...
+            shutil.copy2(ours, self.vi.img)
+            self.refused("generated while the vendor image was not installed", "sudo waydroid-nvidia-setup",
+                         call=lambda: self.lxc.start(self.args))
+            self.assertEqual(started, [])
+            # ... and runs `waydroid upgrade -o` (no init flag: the generator's strict path)
+            self.args.nvidia_init = False
+            set_lxc_config(self.args)
+            self.lxc.start(self.args)
+            self.assertEqual(len(started), 1)
+            self.assertEqual(started[0][1][:2], ["lxc-start", "-P"])
 
 
 for _name in [n for n in dir(LxcIntegrationTest) if n.startswith("test_")]:   # only its setUp/helpers are reused
