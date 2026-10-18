@@ -569,9 +569,9 @@ void nvhal_cs_restore(struct nvhal_device *d, VkCommandBuffer cb, const char *wh
 /* true while cb records inside vkCmdBeginConditionalRenderingEXT/End (a dispatch there obeys the app's predicate) */
 bool nvhal_cs_conditional(VkCommandBuffer cb);
 
-/* ---- ASTC LDR emulation (astc.c) ---- */
-bool nvhal_astc_format(VkFormat format);                 /* one of the 28 2D LDR ASTC formats */
-bool nvhal_no_astc(void);                               /* no emulated ASTC image exists in the process */
+/* ---- compressed-format emulation, ASTC LDR and ETC2/EAC (astc.c; the nvhal_astc_ names cover both) ---- */
+bool nvhal_astc_format(VkFormat format);  /* one of the 28 2D LDR ASTC or the 10 ETC2/EAC formats */
+bool nvhal_no_astc(void);                 /* no emulated compressed image exists in the process */
 const struct nvhal_astc_pd *nvhal_astc_pd_get(struct nvhal_instance *inst, VkPhysicalDevice pd);
 void nvhal_astc_instance_teardown(struct nvhal_instance *inst);
 void VKAPI_CALL nvhal_GetPhysicalDeviceFeatures(VkPhysicalDevice, VkPhysicalDeviceFeatures *);
@@ -583,19 +583,19 @@ void VKAPI_CALL nvhal_GetPhysicalDeviceFormatProperties2KHR(VkPhysicalDevice, Vk
 VkResult VKAPI_CALL nvhal_GetPhysicalDeviceImageFormatProperties(VkPhysicalDevice, VkFormat, VkImageType, VkImageTiling,
                                                                 VkImageUsageFlags, VkImageCreateFlags,
                                                                 VkImageFormatProperties *);
-/* vkGetPhysicalDeviceImageFormatProperties2 for an ASTC format on an emulating physical device (ahb.c's
- * gpdifp2 calls it first); false: not ASTC/not emulated, the caller continues */
+/* vkGetPhysicalDeviceImageFormatProperties2 for an emulated compressed format on an emulating physical device
+ * (ahb.c's gpdifp2 calls it first); false: not such a format/not emulated, the caller continues */
 bool nvhal_astc_gpdifp2(struct nvhal_instance *inst, VkPhysicalDevice pd, const VkPhysicalDeviceImageFormatInfo2 *info,
                         VkImageFormatProperties2 *p, PFN_vkGetPhysicalDeviceImageFormatProperties2 f, VkResult *r);
 /* vkCreateDevice (device.c): decides emulation for the device and rewrites the enabled features
- * (textureCompressionASTC_LDR is the HAL's, never the ICD's; shaderStorageImageWriteWithoutFormat is enabled
- * for the decoder). storage must outlive the ICD call. *maint2: the device also needs VK_KHR_maintenance2. */
+ * (textureCompressionASTC_LDR/ETC2 are the HAL's when emulated, never the ICD's; shaderStorageImageWriteWithoutFormat
+ * is enabled for the decoders). storage must outlive the ICD call. *maint2: the device also needs VK_KHR_maintenance2. */
 struct nvhal_astc_ci_storage { VkPhysicalDeviceFeatures feats; VkPhysicalDeviceFeatures2 f2; unsigned char chain[2048]; };
 VkResult nvhal_astc_device_ci(struct nvhal_instance *inst, VkPhysicalDevice pd, uint32_t api, const VkDeviceCreateInfo *ci,
                               VkDeviceCreateInfo *out, struct nvhal_astc_ci_storage *st, bool *emulate, bool *maint2);
 VkResult nvhal_astc_device_init(struct nvhal_device *d); /* after the ICD created the device */
 void nvhal_astc_device_teardown(struct nvhal_device *d);
-/* the image entry points; each returns false when the image/create info is not an emulated ASTC one */
+/* the image entry points; each returns false when the image/create info is not an emulated compressed one */
 bool nvhal_astc_CreateImage(struct nvhal_device *d, const VkImageCreateInfo *ci, const VkAllocationCallbacks *alloc,
                             VkImage *pImage, VkResult *r);
 bool nvhal_astc_DestroyImage(struct nvhal_device *d, VkImage image, const VkAllocationCallbacks *alloc);
