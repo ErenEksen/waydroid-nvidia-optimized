@@ -102,6 +102,22 @@ newest-first and re-applies it in order. Tests: HAL `test/ahb-yuv.c`,
 1920x1080 and 1280x720, packed and DISJOINT, every memory plane's offset and pitch equal
 the explicit layout given at creation, MEMORY_PLANE_i and PLANE_i requirements agree,
 binds through MEMORY_PLANE_i succeed.
+`nvk-shader-upload-publish.patch` + `nvk-shader-prefetch-in-range.patch`: shader programs are
+published the way the proprietary driver (libnvidia-eglcore 615.78.08) does. The shader heap is
+never CPU-mapped, also with a full BAR: every upload is a copy-engine copy from system-memory
+staging (`nvk_upload_queue`, LAUNCH_DMA NON_PIPELINED | FLUSH_ENABLE). `nvk_heap` counts uploads;
+in the first submission on a queue after the count moved, the queue acquires the upload queue's
+completion and then emits INVALIDATE_SHADER_CACHES_NO_WFI(INSTRUCTION) (3D class form, compute
+form on compute-only queues) ahead of the command buffers, with no wait-for-idle. Before, heap
+ranges of destroyed shaders were rewritten through a write-combined BAR1 mapping and reused at
+once with no instruction-cache invalidate, so a draw could run a header or code cached for the
+range's previous user (the rare Xid 13 "Shader Program Header 11/18 Error" under ANGLE decodes as
+a vertex header read at a fragment program address; no deterministic reproducer exists). On
+Ampere B and later programs start at 256 B and occupy whole 256 B blocks, so
+SET_PIPELINE_PROGRAM_PREFETCH never covers the neighbouring program. Tests:
+`tests/vk-shader-reuse.c` (recycled ranges, every pixel checked) and `native/tools/nvcap_publish.py`
+on a push capture (every program address used only after its copy, the acquire and the
+invalidate; prefetch inside the copied range).
 `nvk-angle-nan-preserve-min-max.patch`: driconf `nvk_force_nan_preserve_min_max` (RADV's
 `radv_force_nan_preserve_min_max` mechanism -> spirv `workarounds.force_nan_preserve_min_max`),
 set for engine `^ANGLE$` in `00-nvk-defaults.conf` and folded into the compiler flags (bit 15).
