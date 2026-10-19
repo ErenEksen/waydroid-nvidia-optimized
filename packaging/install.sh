@@ -28,6 +28,9 @@
 # packaging/install-from-release.sh; the verify-before-install --check mode follows
 # ErenEksen/waydroid-nvidia-optimized install.sh.
 set -euo pipefail
+# Tool output parsed here and in every child (readelf, debugfs, lxc-info, systemctl, ...) is the untranslated text
+export LC_ALL=C
+unset LANGUAGE
 
 GH_REPO=${WAYDROID_NVIDIA_REPO:-Shiro836/waydroid-nvidia}
 WAYDROID_UPSTREAM=https://github.com/waydroid/waydroid

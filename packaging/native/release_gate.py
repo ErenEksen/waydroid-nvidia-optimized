@@ -102,9 +102,89 @@ def elf_bits(path):
     return {1: 32, 2: 64}.get(head[4])
 
 
-def needed(path):
-    dynamic = subprocess.check_output(['readelf', '-dW', str(path)], text=True)
-    return re.findall(r'\(NEEDED\)\s+Shared library: \[(.+?)\]', dynamic)
+class ElfError(RuntimeError):
+    pass
+
+
+def elf_dynamic(path, remedy=REMEDY_BUNDLE):
+    """{'needed': [names], 'runpath': [entries]} of an ELF file's dynamic section, read through its program
+    headers (PT_LOAD maps DT_STRTAB, as the loader does). Raises ElfError for a file that is not a complete
+    dynamically linked ELF object. Parsed here rather than from readelf's text, which binutils localises."""
+    import struct
+    path = Path(path)
+    try:
+        data = path.read_bytes()
+    except OSError as error:
+        raise ElfError(f'cannot read {path}: {error.strerror}')
+
+    def bad(what):
+        return ElfError(f'{path}: {what}; the file is damaged or not an ELF object ({remedy})')
+    if len(data) < 52 or data[:4] != b'\x7fELF' or data[4] not in (1, 2) or data[5] not in (1, 2):
+        raise bad('no ELF header')
+    is64, end = data[4] == 2, '<' if data[5] == 1 else '>'
+
+    def unpack(fmt, offset):
+        size = struct.calcsize(end + fmt)
+        if offset < 0 or offset + size > len(data):
+            raise bad(f'truncated at offset {offset:#x}')
+        return struct.unpack_from(end + fmt, data, offset)
+    if is64:
+        phoff, = unpack('Q', 0x20)
+        phentsize, phnum = unpack('HH', 0x36)
+        phdr, dyn = 'IIQQQQQQ', 'qQ'
+    else:
+        phoff, = unpack('I', 0x1c)
+        phentsize, phnum = unpack('HH', 0x2a)
+        phdr, dyn = 'IIIIIIII', 'iI'
+    loads, dynamic = [], None
+    for i in range(phnum):
+        f = unpack(phdr, phoff + i * phentsize)
+        # (type, offset, vaddr, filesz): Elf64_Phdr has p_flags second, Elf32_Phdr seventh
+        ptype, offset, vaddr, filesz = (f[0], f[2], f[3], f[5]) if is64 else (f[0], f[1], f[2], f[4])
+        if ptype == 1:                                  # PT_LOAD
+            loads.append((vaddr, filesz, offset))
+        elif ptype == 2:                                # PT_DYNAMIC
+            dynamic = (offset, filesz)
+    if dynamic is None:
+        raise bad('no PT_DYNAMIC program header (not a dynamically linked object)')
+    tags = []
+    step = struct.calcsize(end + dyn)
+    for offset in range(dynamic[0], dynamic[0] + dynamic[1] - step + 1, step):
+        tag, value = unpack(dyn, offset)
+        if tag == 0:                                    # DT_NULL
+            break
+        tags.append((tag, value))
+    else:
+        raise bad('dynamic section without DT_NULL')
+    strtab = [v for t, v in tags if t == 5]             # DT_STRTAB (a virtual address)
+    strsz = [v for t, v in tags if t == 10]             # DT_STRSZ
+    if len(strtab) != 1 or len(strsz) != 1:
+        raise bad('dynamic section without exactly one DT_STRTAB and DT_STRSZ')
+    base = next((off + strtab[0] - va for va, size, off in loads if va <= strtab[0] < va + size), None)
+    if base is None or base + strsz[0] > len(data):
+        raise bad(f'DT_STRTAB {strtab[0]:#x} is outside the file\'s PT_LOAD segments')
+
+    def string(index):
+        if index >= strsz[0]:
+            raise bad(f'string offset {index:#x} beyond DT_STRSZ')
+        stop = data.find(b'\0', base + index, base + strsz[0])
+        if stop < 0:
+            raise bad(f'unterminated string at {index:#x}')
+        return data[base + index:stop].decode('utf-8', errors='strict')
+    runpath = [string(v) for t, v in tags if t in (15, 29)]   # DT_RPATH, DT_RUNPATH
+    return {'needed': [string(v) for t, v in tags if t == 1],  # DT_NEEDED
+            'runpath': [e for entry in runpath for e in entry.split(':')]}
+
+
+def needed(path, leaf_ok=False, remedy=REMEDY_BUNDLE):
+    """DT_NEEDED names of an ELF object. Every program and library the gate builds or ships links at least
+    bionic's libc.so, so an empty list is an error unless `leaf_ok` (libraries of the user's image, e.g.
+    ld-android.so, may need nothing)."""
+    names = elf_dynamic(path, remedy)['needed']
+    if not names and not leaf_ok:
+        raise ElfError(f'{path} has a dynamic section but no DT_NEEDED entry; every gate program and payload '
+                       f'library links bionic\'s libc.so, so the file is damaged ({remedy})')
+    return names
 
 
 def _dump(image, source, dest):
@@ -141,7 +221,8 @@ def extract_runtime(system_img, dest, sub, roots, provided):
         for source in candidates:
             if _dump(system_img, source, dest / name) and elf_bits(dest / name) == bits:
                 origin[name] = source
-                pending += needed(dest / name)
+                pending += needed(dest / name, leaf_ok=True, remedy=f'{source} in {system_img}; re-download the '
+                                  'images: sudo waydroid init -f')
                 break
         else:
             (dest / name).unlink(missing_ok=True)

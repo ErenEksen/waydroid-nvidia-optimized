@@ -1048,7 +1048,9 @@ def _debugfs(image, request):
     """stdout of `debugfs -R request image` (read-only open); raises OSError on failure."""
     import subprocess
     try:
-        out = subprocess.run(["debugfs", "-R", request, image], capture_output=True, timeout=60)
+        # the C locale: the listing is parsed, and waydroid-container.service runs in the system's locale
+        out = subprocess.run(["debugfs", "-R", request, image], capture_output=True, timeout=60,
+                             env=dict(os.environ, LC_ALL="C"))
     except (OSError, subprocess.TimeoutExpired) as e:
         raise OSError("NVIDIA native mode: cannot run debugfs on {} ({}); e2fsprogs is needed to compare "
                       "the staged /odm with the image".format(image, e))
