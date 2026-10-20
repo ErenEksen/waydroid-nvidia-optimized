@@ -118,6 +118,17 @@ SET_PIPELINE_PROGRAM_PREFETCH never covers the neighbouring program. Tests:
 `tests/vk-shader-reuse.c` (recycled ranges, every pixel checked) and `native/tools/nvcap_publish.py`
 on a push capture (every program address used only after its copy, the acquire and the
 invalidate; prefetch inside the copied range).
+`nvk-prevolta-modifier-memory-types.patch` (with the RM backend's `allocate_block_linear`):
+memory for a block-linear DRM-modifier image carries the image's kind on the physical allocation
+(NVOS32 FORMAT BLOCK_LINEAR, generic kind, no compression), as NVK does on nouveau
+(`nvk_device_memory.c` → `nouveau_bo.c` `tile_flags`) and as the proprietary driver requests it.
+Another process that imports the dma-buf maps it with the memory's own kind. Before Turing that
+kind decides how the GPU reads the pages, so a pitch-kind allocation sampled as block-linear
+faults (Xid 13 TEX LAYOUT in KWin on a GTX 1060/1080, closed 580). Before Turing, BAR1 also
+doesn't return the modifier's byte layout to the CPU, so these images get no host-visible VRAM
+memory type (the proprietary 580 driver offers none either: memoryTypeBits 0x82 on GP104);
+system-memory types stay. Turing and later are unchanged (generic kind 0x06; BAR1 reads back
+exactly on TU106 and GB202).
 `nvk-angle-nan-preserve-min-max.patch`: driconf `nvk_force_nan_preserve_min_max` (RADV's
 `radv_force_nan_preserve_min_max` mechanism -> spirv `workarounds.force_nan_preserve_min_max`),
 set for engine `^ANGLE$` in `00-nvk-defaults.conf` and folded into the compiler flags (bit 15).

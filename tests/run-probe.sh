@@ -2,15 +2,13 @@
 # waydroid-nvidia GPU import probe — run on any box with an NVIDIA GPU.
 # Works in docker containers too (screens the host via /proc and /sys first).
 # Exit: 0 = GPU fine for the stack, 1 = import quirks found (the bug!),
-#       2 = broken environment, 3 = host untestable (modeset off / closed KM).
+#       2 = broken environment, 3 = host untestable (modeset off).
 cd "$(dirname "$0")"
 
 echo "== kernel module:"
 head -1 /proc/driver/nvidia/version 2>/dev/null || echo "  (no /proc/driver/nvidia — driver not loaded?)"
-if head -1 /proc/driver/nvidia/version 2>/dev/null | grep -qv "Open Kernel Module"; then
-    echo "== UNTESTABLE: closed kernel module — no dma_buf support. Pick another host."
-    exit 3
-fi
+# Open and closed modules: the probe below tests dma_buf export itself
+# (closed 580 exports it with nvidia-drm.modeset=1, issue #30).
 
 echo "== nvidia-drm modeset:"
 ms=$(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null || echo unreadable)
