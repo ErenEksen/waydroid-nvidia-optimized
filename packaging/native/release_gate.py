@@ -400,6 +400,18 @@ def media_case(gate, sn, native, vendor_img):
     step('stage-odm', 'bash', REPO / 'nvidia-prolapse/media/stage-odm.sh', odm, vendor_img, service, wrapper)
     xml = workdir / native.MEDIA_XML
     step('xmlgen-check', wrapper, '--check', xml)
+    # Decode every advertised codec on the real GPU (the gate runs as root; /dev/dma_heap/system is
+    # root-only). A caps-only check cannot see a decode regression.
+    host_rust = REPO / 'build/nv-rm-rust/release/libnv_bionic_native.so'
+    if not host_rust.is_file():
+        raise RuntimeError(f'{host_rust} missing: the media gate cannot decode without the GNU host build '
+                           'of the nv_video backend (build native/mesa --rust-profile release)')
+    smoke = [sn.SMOKE_CODECS[t] for t in sn.media_codec_types(xml) if t in sn.SMOKE_CODECS]
+    if not smoke:
+        raise RuntimeError(f'{xml} advertises no codec the decode smoke can drive ({sn.media_codec_types(xml)})')
+    step('decode-smoke', 'make', '-B', '-C', REPO / 'nvidia-prolapse/media', 'smoke',
+         f'NV_VIDEO_LIB=-L{host_rust.parent} -lnv_bionic_native -Wl,-rpath,{host_rust.parent}',
+         'CODECS=' + ' '.join(smoke))
     want = set(native.MEDIA_ODM_FILES) | {'odm/etc/' + n for n in native.ODM_ORIGINALS}
     have = {str(p.relative_to(workdir)) for p in odm.rglob('*') if p.is_file() or p.is_symlink()}
     if have != want:
@@ -490,7 +502,12 @@ def media_case_image(gate, native, vendor_img):
     record.update(exit=0, finished=now(), log=str(log), closure={service.name: closure}, nv_video_symbols=sorted(want))
     return {'enabled': True, 'component': 'nvidia-prolapse/media Codec2 NVDEC decoder (vendor image)',
             'xml': str(xml), 'xml_sha256': sha256(xml), 'codecs': media_codecs(xml), 'gate': record,
-            'hardware_decode': hardware, 'reason': reason}
+            'hardware_decode': hardware, 'reason': reason,
+            # The vendor-image path has no GNU host build of the backend to link a decoder against;
+            # the decode smoke runs in the developer media gate (dev/source-native run_media_gate),
+            # which gates the same backend source before this image is built. Recorded, not silent.
+            'decode_smoke': {'ran': False, 'reason': 'vendor-image gate: no host backend; covered by the '
+                                                      'developer media gate decode-smoke step'}}
 
 
 def media_codecs(xml):

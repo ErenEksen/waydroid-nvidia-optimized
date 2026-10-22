@@ -551,6 +551,16 @@ def media_codecs(xml):
     return sorted(mc.get('name') for mc in ET.parse(xml).getroot().iter('MediaCodec'))
 
 
+def media_codec_types(xml):
+    """The MIME types the generated media_codecs_c2.xml advertises on this GPU."""
+    import xml.etree.ElementTree as ET
+    return sorted({mc.get('type') for mc in ET.parse(xml).getroot().iter('MediaCodec')})
+
+
+# Advertised MIME -> nvc2 decoder core codec name (test/real_codec_test.cpp), for the decode smoke.
+SMOKE_CODECS = {'video/avc': 'h264', 'video/hevc': 'hevc', 'video/x-vnd.on2.vp9': 'vp9', 'video/av01': 'av1'}
+
+
 def run_media_gate(rust_profile, android_rust, images=IMAGES):
     """Offline gate of the Codec2 decoder against the backend being staged. Returns (record, odm sources).
 
@@ -558,7 +568,8 @@ def run_media_gate(rust_profile, android_rust, images=IMAGES):
     3. nvc2-xmlgen relinked against the host build of the SAME Rust profile and source snapshot as the
        staged Android backend; 4. stage-odm.sh builds the /odm tree (vendor.img originals, rc, VINTF,
        seccomp, media_codecs_c2.xml generated from this GPU, the service); 5. nvc2-xmlgen --check of that
-       xml against the live caps; 6. ELF closure + nv_video symbols; 7. device node access for mediacodec.
+       xml against the live caps; 6. a decode smoke of every advertised codec (real GPU, tiny committed
+       streams with pinned hashes); 7. ELF closure + nv_video symbols; 8. device node access for mediacodec.
     """
     problems = media_staleness()
     if problems:
@@ -580,9 +591,9 @@ def run_media_gate(rust_profile, android_rust, images=IMAGES):
               'log': str(log), 'steps': [],
               'host_backend': profiles.identity(host_rust), 'android_backend': profiles.identity(android_rust)}
 
-    def step(name, *cmd):
+    def step(name, *cmd, as_root=False):
         argv, env = list(map(str, cmd)), dict(os.environ)
-        if user is not None:
+        if user is not None and not as_root:
             argv = ['runuser', '-u', user.pw_name, '--', *argv]
             env.update(HOME=user.pw_dir, USER=user.pw_name, LOGNAME=user.pw_name)
         print(f'Media gate [{name}]: {" ".join(argv)}', flush=True)
@@ -608,6 +619,19 @@ def run_media_gate(rust_profile, android_rust, images=IMAGES):
     step('stage-odm', 'bash', MEDIA / 'stage-odm.sh', odm, vendor_img, MEDIA_SERVICE_BIN, xmlgen)
     xml = workdir / native.MEDIA_XML
     step('xmlgen-check', xmlgen, '--check', xml)
+    # Decode every advertised codec on the real GPU: /dev/dma_heap/system is root-only, so this
+    # step runs as root (the gate itself is root); the build outputs it creates are given back.
+    smoke = [SMOKE_CODECS[t] for t in media_codec_types(xml) if t in SMOKE_CODECS]
+    if not smoke:
+        raise RuntimeError(f'{xml} advertises no codec the decode smoke can drive '
+                           f'({media_codec_types(xml)}): the generated caps and the decoder disagree')
+    step('decode-smoke', 'make', '-B', '-C', MEDIA, 'smoke',
+         f'NV_VIDEO_LIB=-L{libdir} -lnv_bionic_native -Wl,-rpath,{libdir}', 'CODECS=' + ' '.join(smoke),
+         as_root=True)
+    if user is not None:
+        for root, dirs, files in os.walk(MEDIA / 'out'):
+            for name in dirs + files:
+                os.chown(os.path.join(root, name), user.pw_uid, user.pw_gid)
     want = set(native.MEDIA_ODM_FILES) | {'odm/etc/' + n for n in native.ODM_ORIGINALS}
     have = {str(p.relative_to(workdir)) for p in odm.rglob('*') if p.is_file() or p.is_symlink()}
     if have != want:
