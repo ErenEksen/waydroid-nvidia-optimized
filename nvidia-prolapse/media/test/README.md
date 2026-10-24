@@ -40,5 +40,8 @@ make smoke NV_VIDEO_LIB="-L<dir> -lnv_bionic_native -Wl,-rpath,<dir>" CODECS="h2
 `c2_smoke.cpp` is the guest-side client: it decodes an MP4 through the public MediaCodec
 NDK on a ByteBuffer output (no Surface), i.e. through the shipped Codec2 service, the YV12
 gralloc path and the CPU_READ pool flag. Build it against the NDK with `make c2-smoke`,
-push it and the test MP4s to `/data/local/tmp`, and run it while `strace -f -c` is attached
+push it and the test MP4s to `/data/local/tmp`. `c2_smoke <in.mp4> [codec name]` prints every
+output-format change (size, and `hdr-static-info` as the client receives it), so an adaptive
+stream that switches size at a keyframe and an HDR stream's ST 2086 / CLL values can be checked
+end to end. Run it while `strace -f -c` is attached
 to `android.hardware.media.c2@1.2-service-nvprolapse` to re-measure the seccomp policy.

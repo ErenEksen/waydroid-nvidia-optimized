@@ -37,7 +37,7 @@ static int32_t format_int(AMediaFormat *f, const char *key, int32_t dflt)
 int main(int argc, char **argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "usage: c2_smoke <in.mp4>\n");
+        fprintf(stderr, "usage: c2_smoke <in.mp4> [codec name, e.g. c2.nvprolapse.hevc.decoder]\n");
         return 2;
     }
     int fd = open(argv[1], O_RDONLY | O_CLOEXEC);
@@ -73,7 +73,7 @@ int main(int argc, char **argv)
     const int32_t w = format_int(fmt, AMEDIAFORMAT_KEY_WIDTH, 0);
     const int32_t h = format_int(fmt, AMEDIAFORMAT_KEY_HEIGHT, 0);
 
-    AMediaCodec *codec = AMediaCodec_createDecoderByType(mime);
+    AMediaCodec *codec = argc > 2 ? AMediaCodec_createCodecByName(argv[2]) : AMediaCodec_createDecoderByType(mime);
     if (!codec) {
         fprintf(stderr, "no decoder for %s\n", mime);
         return 77;
@@ -124,7 +124,22 @@ int main(int argc, char **argv)
             if (info.flags & AMEDIACODEC_BUFFER_FLAG_END_OF_STREAM)
                 break;
         } else if (out == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED) {
+            /* size changes (adaptive streams) and HDR static info (MediaFormat "hdr-static-info":
+             * HDRStaticInfo type 1, little-endian u16 R/G/B/W xy in 0.00002, max/min display
+             * luminance in 1 / 0.0001 cd/m2, MaxCLL, MaxFALL) as the client sees them */
             AMediaFormat *of = AMediaCodec_getOutputFormat(codec);
+            printf("output format: %dx%d\n", format_int(of, AMEDIAFORMAT_KEY_WIDTH, 0),
+                   format_int(of, AMEDIAFORMAT_KEY_HEIGHT, 0));
+            void *hdr = nullptr;
+            size_t hdr_len = 0;
+            if (AMediaFormat_getBuffer(of, AMEDIAFORMAT_KEY_HDR_STATIC_INFO, &hdr, &hdr_len) && hdr_len >= 25) {
+                const uint8_t *b = (const uint8_t *)hdr;
+                auto u16 = [b](int i) { return (unsigned)(b[1 + 2 * i] | b[2 + 2 * i] << 8); };
+                printf("hdr-static-info: type %u R(%u,%u) G(%u,%u) B(%u,%u) W(%u,%u) maxL %u minL %u MaxCLL %u "
+                       "MaxFALL %u\n",
+                       b[0], u16(0), u16(1), u16(2), u16(3), u16(4), u16(5), u16(6), u16(7), u16(8), u16(9), u16(10),
+                       u16(11));
+            }
             AMediaFormat_delete(of);
         }
     }
