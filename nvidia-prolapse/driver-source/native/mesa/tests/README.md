@@ -631,6 +631,36 @@ WAIT_FOR_IDLE, as NVIDIA's driver emits it (libnvidia-eglcore.so 615.78.08 E 0xc
 10-24 (RTX 5090): 480 rounds per case at spin 0 / 300 / 2000 / 20000, all PASS; stock PASS; unordered FAIL on
 both (colour 60/60 and compute 57-60/60 bad rounds). 0 Xid.
 
+## vk-cs-join-reuse.c (compute -> compute barriers on re-executed and split command buffers)
+
+    T=build/cs-join-reuse; mkdir -p $T; S=nvidia-prolapse/driver-source/native/mesa/tests
+    glslangValidator -V -S comp $S/vk-cs-join-reuse.glsl --vn vk_cs_join_reuse_inc -o $T/vk-cs-join-reuse.inc.h
+    cc -std=c11 -Wall -Wextra -Werror -I$T $S/vk-cs-join-reuse.c -lvulkan -o $T/vk-cs-join-reuse
+    E="VK_DRIVER_FILES=$PWD/build/nvk-host/native-rm-icd.json VK_LOADER_LAYERS_DISABLE=~implicit~"
+    for spin in 0 2000 20000; do for m in reuse double clear split; do env $E $T/vk-cs-join-reuse 20 $spin $m; done; done
+    env $E $T/vk-cs-join-reuse 5 2000 unordered                     # negative control: must FAIL
+    NVK_DEBUG=push_dump env $E $T/vk-cs-join-reuse 1 2000 2>&1 | grep -c SET_INLINE_QMD_ADDRESS_A   # 40 on Blackwell B
+
+16 epochs x 3 dispatches, each dispatch a read-spin-write increment of its slice of a host-visible
+buffer, a COMPUTE storage write/read -> COMPUTE storage read/write memory barrier after every epoch;
+every element must equal the epoch count after each execution. `reuse` records once without
+ONE_TIME_SUBMIT and submits 20 times; `double` submits the SIMULTANEOUS_USE command buffer twice per
+vkQueueSubmit; `clear` adds a vkCmdClearColorImage (3D work) inside every epoch; `split` puts epoch 0
+in a first command buffer and starts the second with a one-workgroup dispatch and the barrier, so
+the barrier has to order the first command buffer's work too. On Blackwell B these barriers become
+join / link QMDs loaded inline (SET_INLINE_QMD_ADDRESS_A with INLINE_SIZE_INLINE_384, then
+LOAD_INLINE_QMD_DATA) and SEND_SIGNALING_PCAS2_B DECREMENT_DEPENDENCE, as NVIDIA's driver orders
+compute work (libnvidia-eglcore.so 615.78.08 E 0xd35a90 / E 0xd345d0 / E 0xd33fb0 / E 0xd36060);
+the first barrier of a command buffer and every barrier after 0x24 chained dispatches + QMDs keep
+the method path.
+10-24 (RTX 5090, Blackwell B): reuse / double / clear / split at spin 0, 2000, 20000, 20 executions each, all
+PASS; unordered FAIL (5/5 executions). Push dump of one execution: 40 inline QMDs, 76 dependency decrements,
+3 INVALIDATE_SHADER_CACHES{FLUSH_DATA} + 1 WAIT_FOR_IDLE (first barrier, two chain-limit fallbacks, the
+pending last barrier at vkEndCommandBuffer) where NVK without the join QMDs emits 16 flush-form invalidates.
+vk-barrier-order on the same build: 40 rounds at spin 0 / 300 / 2000 / 20000 PASS, unordered FAIL; its push
+dump goes from 90 to 78 WAIT_FOR_IDLE and 37 to 25 flush-form invalidates (the compute -> compute barrier of
+each round). 0 Xid.
+
 ## nak-qmd-membar.c (CWD_MEMBAR_TYPE in the QMDs of the built NVK)
 
     M=build/mesa-rm-source; B=build/nvk-host; S=nvidia-prolapse/driver-source/native/mesa/tests
