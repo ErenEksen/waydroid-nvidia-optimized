@@ -604,6 +604,43 @@ draw is RED in every round. Variants (`./gl-texpool-rebind ROUNDS ITERS [variant
 PASS, 0 wrong pixels of 4,194,304 per round (none/zero 6 rounds, wrap/ctx2/free 4 rounds); in `wrap` batch 2..8
 took 32.4 ms to submit (the ring-slot wait for batch 1). 0 Xid.
 
+## vk-barrier-order.c (pipeline-barrier ordering: colour -> sampled, compute -> compute, compute -> fragment)
+
+    T=build/barrier-order/test; mkdir -p $T; S=nvidia-prolapse/driver-source/native/mesa/tests
+    for x in QUAD:vert:quad FILL:frag:fill SAMPLE:frag:sample SSBO:frag:ssbo PRODUCE:comp:produce CONSUME:comp:consume; do
+      IFS=: read D ST NM <<< "$x"
+      glslangValidator -V -S $ST -D$D $S/vk-barrier-order.glsl --vn vk_barrier_order_$NM -o $T/vk-barrier-order.$NM.h
+    done
+    cc -std=c11 -Wall -Wextra -Werror -I$T $S/vk-barrier-order.c -lvulkan -o $T/vk-barrier-order
+    E="VK_DRIVER_FILES=$PWD/build/nvk-host/native-rm-icd.json VK_LOADER_LAYERS_DISABLE=~implicit~"
+    for spin in 0 300 2000 20000; do env $E $T/vk-barrier-order 40 $spin; done
+    env $E $T/vk-barrier-order 5 2000 unordered                            # negative control: must FAIL
+    VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json $T/vk-barrier-order 10 2000   # stock reference
+    NVK_DEBUG=push_dump env $E $T/vk-barrier-order 1 2000 2>&1 | grep -c PIXEL_SHADER_BARRIER   # 12 on Blackwell B
+
+Per round, with a producer that spins SPIN iterations before writing: colour (draw into C, barrier
+COLOR_ATTACHMENT_OUTPUT/WRITE -> FRAGMENT_SHADER/SAMPLED_READ as image barrier, memory barrier in GENERAL, and
+image barrier with BY_REGION, then a draw sampling C), compute (dispatch writes A, CS storage barrier, dispatch
+reads A), cs-gfx (dispatch writes A, barrier to FRAGMENT_SHADER/STORAGE_READ, draw reads A per pixel). 12 rounds per
+command buffer, every result compared exactly. PASS = 0 mismatches. `unordered` replaces the three barriers by
+TOP -> BOTTOM without accesses: colour and compute then fail on both drivers (stale previous-round values);
+cs-gfx passes even unordered on this host (the compute -> 3D switch orders it), so it only guards the
+CS -> FS case against corruption, not ordering. On Blackwell B the colour barrier is PIXEL_SHADER_BARRIER
+(words 0x80000378, 0x800003dd = method 0x0f74, then INVALIDATE_TEXTURE_DATA_CACHE_NO_WFI) instead of
+WAIT_FOR_IDLE, as NVIDIA's driver emits it (libnvidia-eglcore.so 615.78.08 E 0xc65e10 / E 0xc64090).
+10-24 (RTX 5090): 480 rounds per case at spin 0 / 300 / 2000 / 20000, all PASS; stock PASS; unordered FAIL on
+both (colour 60/60 and compute 57-60/60 bad rounds). 0 Xid.
+
+## nak-qmd-membar.c (CWD_MEMBAR_TYPE in the QMDs of the built NVK)
+
+    M=build/mesa-rm-source; B=build/nvk-host; S=nvidia-prolapse/driver-source/native/mesa/tests
+    cc -std=gnu11 -DHAVE_FUNC_ATTRIBUTE_PACKED -DHAVE_ENDIAN_H -DUTIL_ARCH_LITTLE_ENDIAN=1 -DUTIL_ARCH_BIG_ENDIAN=0 \
+       -I$M/src/nouveau/compiler -I$M/src/nouveau/headers -I$M/src/compiler -I$M/src/compiler/nir -I$B/src/compiler/nir \
+       -I$M/include -I$M/src -I$B/src/compiler -I$B/src $S/nak-qmd-membar.c -ldl -o build/nak-qmd-membar
+    build/nak-qmd-membar $B/src/nouveau/vulkan/libvulkan_nouveau.so
+
+PASS = CWD_MEMBAR_TYPE 3 (dword 19 = 0x00030000) for cec0 and 0 for cdc0. 10-24: PASS.
+
 ## vk-zcull-depth.c (depth-tested rendering with ZCULL active on the RM backend)
 
     T=build/zcull/test; mkdir -p $T; S=nvidia-prolapse/driver-source/native/mesa/tests

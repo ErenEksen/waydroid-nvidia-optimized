@@ -145,7 +145,8 @@ NVK_PATCHES = ("build-compat.patch", "rm-integration.patch", "pascal-a-clear.pat
                "mesa-disk-cache-create-with-path.patch", "mesa-disk-cache-keep-file-backend.patch",
                "mesa-disk-cache-evict-invalid-item.patch", "nvk-android-app-disk-cache.patch",
                "nvk-shader-upload-publish.patch", "nvk-shader-prefetch-in-range.patch",
-               "nvk-prevolta-modifier-memory-types.patch", "nvk-3d-view-of-2d-image.patch")
+               "nvk-prevolta-modifier-memory-types.patch", "nvk-3d-view-of-2d-image.patch",
+               "nvk-pixel-shader-barrier.patch", "nak-qmd-cwd-membar.patch")
 
 GL_TRIPLES = {"android": "x86_64-linux-android", "android32": "i686-linux-android"}
 # Android: distinct library names so the image's own Mesa (libEGL_mesa.so,
@@ -197,6 +198,11 @@ NVK_PATCH_LIST = [
     # A 3D view of a 2D image (invalid usage NVIDIA's driver accepts) is
     # described as a depth-1 3D image instead of tripping nil's assert.
     HERE / "nvk-3d-view-of-2d-image.patch",
+    # Blackwell B: colour-attachment output -> fragment reads drain with
+    # PIXEL_SHADER_BARRIER instead of WAIT_FOR_IDLE, and QMDs carry
+    # CWD_MEMBAR_TYPE = L1_MEMBAR, as NVIDIA's driver does.
+    HERE / "nvk-pixel-shader-barrier.patch",
+    HERE / "nak-qmd-cwd-membar.patch",
 ]
 
 def prepared_stamp(source, inputs):
