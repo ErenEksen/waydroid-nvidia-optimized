@@ -66,6 +66,14 @@ pub struct Info {
     vram_size: u64,
     bar_size: u64,
     name: [u8; 64],
+    /// GR_GET_ZCULL_INFO followed by the GRAPHICS_ZCULL context-switch buffer
+    /// size and alignment: the layout of Mesa's nv_zcull_device_info
+    /// (nv_device_info.h:17-30). Meaningful only when `has_zcull_info` is 1.
+    zcull: abi::ZcullInfo,
+    zcull_ctxsw_size: u32,
+    zcull_ctxsw_align: u32,
+    has_zcull_info: u32,
+    reserved: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1600,6 +1608,13 @@ fn query_info(d: &Device) -> Result<Info> {
     for (i, w) in name[1..].iter().enumerate() {
         text[i * 4..i * 4 + 4].copy_from_slice(&w.to_ne_bytes());
     }
+    let (zcull, zcull_ctxsw_size, zcull_ctxsw_align, has_zcull_info) = match query_zcull(d) {
+        Ok((info, ctxsw)) => (info, ctxsw.size, ctxsw.alignment, 1),
+        Err(e) => {
+            diag!("nvk Rust RM: ZCULL disabled on this device: {e}");
+            (abi::ZcullInfo::default(), 0, 0, 0)
+        }
+    };
     let c = d.card;
     Ok(Info {
         vendor_id: c.pci.vendor as u32,
@@ -1625,7 +1640,59 @@ fn query_info(d: &Device) -> Result<Info> {
         vram_size: fb[1] as u64 * 1024,
         bar_size: c.framebuffer_size,
         name: text,
+        zcull,
+        zcull_ctxsw_size,
+        zcull_ctxsw_align,
+        has_zcull_info,
+        reserved: 0,
     })
+}
+
+/// Most subregions Mesa's ZCULL layout code accepts (nil zcull.rs
+/// MAX_SUBREGIONS; it asserts beyond that).
+const ZCULL_MAX_SUBREGIONS: u32 = 16;
+
+/// ZCULL region geometry for NVK's ZCULL path, the RM counterpart of
+/// DRM_NOUVEAU_GET_ZCULL_INFO: the ten NV2080 GR_GET_ZCULL_INFO fields as the
+/// RM reports them (the stock 615.78.08 driver queries the same control,
+/// 0x28 bytes, once per subdevice at device open: libnvidia-eglcore loop
+/// E 0x4e3a70..0x4e3aa2, `mov $0x20801206,%ecx` at E 0x4e3a86; and the
+/// nouveau GSP path copies them field by field, linux
+/// nvkm/subdev/gsp/rm/r570/gr.c r570_gr_get_ctxbufs_and_zcull_info) plus the
+/// GRAPHICS_ZCULL context-switch buffer size and alignment that every
+/// graphics channel binds (gpu.rs bind_zcull). Values Mesa's layout code
+/// cannot handle (zero divisors or alignments, more than 16 subregions) are
+/// refused with the reason, so ZCULL stays off instead of aborting in nil.
+fn query_zcull(d: &Device) -> Result<(abi::ZcullInfo, abi::EngineContextProperties)> {
+    let mut info = abi::ZcullInfo::default();
+    d.client.control(d.subdevice, 0x20801206, &mut info)?;
+    let mut ctxsw = abi::EngineContextProperties {
+        engine: crate::gpu::ENGINE_GRAPHICS_ZCULL,
+        ..Default::default()
+    };
+    d.client.control(d.handle, 0x801707, &mut ctxsw)?;
+    let divisors = [
+        info.subregion_width_align_pixels,
+        info.subregion_height_align_pixels,
+        info.pixel_squares_by_aliquots,
+        info.subregion_count,
+    ];
+    if divisors.contains(&0) || info.subregion_count > ZCULL_MAX_SUBREGIONS {
+        return Err(Error::Contract(format!(
+            "GR_GET_ZCULL_INFO outside the supported range (subregion align {}x{}, \
+             pixels per aliquot {}, subregions {} of at most {ZCULL_MAX_SUBREGIONS})",
+            info.subregion_width_align_pixels,
+            info.subregion_height_align_pixels,
+            info.pixel_squares_by_aliquots,
+            info.subregion_count,
+        )));
+    }
+    if ctxsw.size == 0 {
+        return Err(Error::Contract(
+            "RM reports no GRAPHICS_ZCULL context size".into(),
+        ));
+    }
+    Ok((info, ctxsw))
 }
 /// Every C entry point runs inside this guard: a Rust panic on a caller
 /// thread must not unwind into C (process abort) and must not leave callers
@@ -2737,7 +2804,10 @@ mod tests {
     #[test]
     fn bridge_info_matches_independent_c_oracle() {
         // mesa/abi-check.c: host and Android compile from the public bridge header.
-        assert_eq!(size_of::<Info>(), 152);
+        assert_eq!(size_of::<Info>(), 208);
+        assert_eq!(offset_of!(Info, zcull), 152);
+        assert_eq!(offset_of!(Info, zcull_ctxsw_size), 192);
+        assert_eq!(offset_of!(Info, has_zcull_info), 200);
         assert_eq!(offset_of!(Info, generic_kind), 68);
         assert_eq!(offset_of!(Info, vram_size), 72);
         assert_eq!(offset_of!(Info, bar_size), 80);

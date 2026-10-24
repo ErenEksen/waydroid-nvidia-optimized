@@ -391,6 +391,25 @@ pub struct EngineContextProperties {
     pub size: u32,
 }
 
+/// NV2080_CTRL_GR_GET_ZCULL_INFO_PARAMS (ctrl2080gr.h): ten NvU32 fields in
+/// header order, identical in all 221 public tags (tools/probe-zcull.py).
+/// Same order as Mesa's nv_zcull_device_info / drm_nouveau_get_zcull_info
+/// (nv_device_info.h:17-30) without the trailing ctxsw size/alignment.
+#[repr(C)]
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ZcullInfo {
+    pub width_align_pixels: u32,
+    pub height_align_pixels: u32,
+    pub pixel_squares_by_aliquots: u32,
+    pub aliquot_total: u32,
+    pub region_byte_multiplier: u32,
+    pub region_header_size: u32,
+    pub subregion_header_size: u32,
+    pub subregion_count: u32,
+    pub subregion_width_align_pixels: u32,
+    pub subregion_height_align_pixels: u32,
+}
+
 /// NV2080_CTRL_GR_CTXSW_ZCULL_BIND_PARAMS (ctrl2080gr.h); identical in all
 /// 221 public tags (tools/probe-zcull.py).
 #[repr(C)]
@@ -413,6 +432,10 @@ pub fn layouts() -> Vec<(&'static str, usize)> {
         (
             "NV2080_CTRL_GR_CTXSW_ZCULL_BIND_PARAMS",
             size_of::<ZcullBind>(),
+        ),
+        (
+            "NV2080_CTRL_GR_GET_ZCULL_INFO_PARAMS",
+            size_of::<ZcullInfo>(),
         ),
         (
             "NV2080_CTRL_GR_CTXSW_ZCULL_BIND_PARAMS.vMemPtr",

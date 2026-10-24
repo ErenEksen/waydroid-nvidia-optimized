@@ -16,6 +16,15 @@
 #include <stddef.h>
 #include <stdint.h>
 struct NvRmDevice;
+/* NV2080_CTRL_GR_GET_ZCULL_INFO_PARAMS field order (ctrl2080gr.h), which is
+ * also the order of Mesa's nv_zcull_device_info. */
+struct NvRmZcullInfo {
+   uint32_t width_align_pixels, height_align_pixels;
+   uint32_t pixel_squares_by_aliquots, aliquot_total;
+   uint32_t region_byte_multiplier, region_header_size, subregion_header_size;
+   uint32_t subregion_count;
+   uint32_t subregion_width_align_pixels, subregion_height_align_pixels;
+};
 struct NvRmInfo {
    uint32_t vendor_id, device_id, chipset, sm;
    uint32_t pci_domain, pci_bus, pci_device, pci_function;
@@ -24,6 +33,13 @@ struct NvRmInfo {
    uint32_t generic_kind; /* NIL uncompressed color PTE kind: Fermi 0xfe, Turing+ 6 */
    uint64_t vram_size, bar_size;
    char name[64];
+   /* ZCULL region geometry (GR_GET_ZCULL_INFO) and the GRAPHICS_ZCULL
+    * context-switch buffer size/alignment. has_zcull_info is 0 when the RM
+    * query failed or returned values outside the supported range; the reason
+    * is logged at open. */
+   struct NvRmZcullInfo zcull;
+   uint32_t zcull_ctxsw_size, zcull_ctxsw_align;
+   uint32_t has_zcull_info, reserved;
 };
 struct NvRmAllocation {
    uint64_t id, size;

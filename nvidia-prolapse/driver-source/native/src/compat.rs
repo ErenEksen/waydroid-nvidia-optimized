@@ -252,6 +252,10 @@ impl Compat {
                 "NV2080_CTRL_CMD_GR_CTXSW_ZCULL_BIND",
                 "NV2080_CTRL_GR_CTXSW_ZCULL_BIND_PARAMS",
             ),
+            0x20801206 => (
+                "NV2080_CTRL_CMD_GR_GET_ZCULL_INFO",
+                "NV2080_CTRL_GR_GET_ZCULL_INFO_PARAMS",
+            ),
             0x2080122a => (
                 "NV2080_CTRL_CMD_GR_GET_GPC_MASK",
                 "NV2080_CTRL_GR_GET_GPC_MASK_PARAMS",
@@ -864,6 +868,18 @@ mod tests {
             "vMemPtr" => address,
             "zcullMode" => mode,
         );
+        fields!("NV2080_CTRL_GR_GET_ZCULL_INFO_PARAMS", abi::ZcullInfo,
+            "widthAlignPixels" => width_align_pixels,
+            "heightAlignPixels" => height_align_pixels,
+            "pixelSquaresByAliquots" => pixel_squares_by_aliquots,
+            "aliquotTotal" => aliquot_total,
+            "zcullRegionByteMultiplier" => region_byte_multiplier,
+            "zcullRegionHeaderSize" => region_header_size,
+            "zcullSubregionHeaderSize" => subregion_header_size,
+            "subregionCount" => subregion_count,
+            "subregionWidthAlignPixels" => subregion_width_align_pixels,
+            "subregionHeightAlignPixels" => subregion_height_align_pixels,
+        );
     }
     #[test]
     fn per_client_perf_vote_fields_and_encoded_flags_match_exact_c_headers() {
@@ -977,6 +993,7 @@ mod tests {
             control!(0x20801201, abi::GrInfo::default());
             control!(0x801707, abi::EngineContextProperties::default());
             control!(0x20801208, abi::ZcullBind::default());
+            control!(0x20801206, abi::ZcullInfo::default());
             c.require_constant(
                 "NV0080_CTRL_FIFO_GET_ENGINE_CONTEXT_PROPERTIES_ENGINE_ID_GRAPHICS_ZCULL",
                 8,
