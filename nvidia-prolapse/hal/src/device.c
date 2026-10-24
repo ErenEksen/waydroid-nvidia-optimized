@@ -697,6 +697,18 @@ VkResult VKAPI_CALL nvhal_CreateDevice(VkPhysicalDevice pd, const VkDeviceCreate
 #define XL_FETCH(type, field, name) DFN(xl.field, name);
     NVHAL_XL_FNS(XL_FETCH)
 #undef XL_FETCH
+    /* The app can hold our wrapper for an entry point the ICD's vkGetDeviceProcAddr withholds: hal.c's
+     * vkGetInstanceProcAddr hands the wrapper out whenever the ICD's vkGetInstanceProcAddr knows the name. NVIDIA's
+     * ICD (libnvidia-eglcore 615.78.08) returns every device-level command from vkGetInstanceProcAddr(instance, name)
+     * with no check of enabled extensions or API version (E 0xd73840: a device-table hit returns directly), while
+     * its vkGetDeviceProcAddr (E 0xd73900) returns only enabled commands, checking an instance extension's device
+     * command against the instance's enabled set. Measured: vkSetDebugUtilsObjectNameEXT without VK_EXT_debug_utils
+     * is NULL from vkGetDeviceProcAddr, non-NULL from vkGetInstanceProcAddr and returns VK_SUCCESS; 3DMark Wild Life
+     * Extreme calls it that way. So such a wrapper forwards to the entry point the app would have reached without
+     * the HAL. */
+#define XL_FETCH_GIPA(type, field, name) if (!d->xl.field) d->xl.field = (void *)nvhal_icd_gipa(inst->handle, name);
+    NVHAL_XL_FNS(XL_FETCH_GIPA)
+#undef XL_FETCH_GIPA
     /* the AHB-kind intercepts are also reachable through vkGetInstanceProcAddr on any device */
     DREQ(AllocateMemory, "vkAllocateMemory");
     DREQ(FreeMemory, "vkFreeMemory");
