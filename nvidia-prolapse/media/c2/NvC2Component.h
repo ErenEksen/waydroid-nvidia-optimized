@@ -112,6 +112,7 @@ private:
     std::map<uint64_t, std::shared_ptr<C2GraphicBlock>> mBlocks; /* cookie -> fetched block */
     std::map<uint64_t, native_handle_t *> mHandles;             /* cookie -> unwrapped gralloc handle */
     uint64_t mNextCookie = 1;
+    std::unique_ptr<C2StreamHdrStaticInfo::output> mHdr; /* last HDR static info reported */
 };
 
 } // namespace nvc2
