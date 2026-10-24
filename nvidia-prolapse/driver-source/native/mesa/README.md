@@ -129,6 +129,18 @@ doesn't return the modifier's byte layout to the CPU, so these images get no hos
 memory type (the proprietary 580 driver offers none either: memoryTypeBits 0x82 on GP104);
 system-memory types stay. Turing and later are unchanged (generic kind 0x06; BAR1 reads back
 exactly on TU106 and GB202).
+`nvk-3d-view-of-2d-image.patch`: a `VK_IMAGE_VIEW_TYPE_3D` view of a `VK_IMAGE_TYPE_2D` image is
+invalid usage that NVIDIA's driver accepts (615.78.08 returns `VK_SUCCESS`); 3DMark Wild Life
+Extreme creates one on its second scene load in one process. nil's `normalize_extent`
+(`descriptor.rs:261`) asserts `image.dim == ImageDim::_3D`, and the panic aborts the process because
+it cannot leave the `extern "C"` `nil_image_view_descriptor`. NVK now hands nil the selected layer as
+a 3D image of depth 1 (same memory layout: one slice per level, `z_log2 = 0`), the mirror of its own
+`image_3d_view_as_2d_array()`, and logs the invalid usage once. Only a single-sampled single layer
+qualifies; any other 3D view of a non-3D image (multisampled, several layers, 1D) fails
+`vkCreateImageView` with a logged reason and `VK_ERROR_UNKNOWN` (as `nvk_image.c` reports invalid image
+parameters) instead of reaching nil's assert, which release builds keep. Upstream Mesa main (2026-10-23)
+still asserts. Reproducer: `tests/nvk-3d-view-of-2d-image.c` (aborts before; after: the 3DMark view is
+created and a 3D view of a 4x multisampled image returns an error; the stock ICDs accept both).
 `nvk-angle-nan-preserve-min-max.patch`: driconf `nvk_force_nan_preserve_min_max` (RADV's
 `radv_force_nan_preserve_min_max` mechanism -> spirv `workarounds.force_nan_preserve_min_max`),
 set for engine `^ANGLE$` in `00-nvk-defaults.conf` and folded into the compiler flags (bit 15).
