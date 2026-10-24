@@ -28,10 +28,11 @@ args = ["--deqp-surface-type=pbuffer", "--deqp-gl-config-name=" + os.environ.get
         "--deqp-watchdog=enable"]
 results = {}
 first_err = {}
-i = 0
 batch = 0
-while i < len(cases):
-    rest = cases[i:]
+# Re-queue every case without a result. dEQP runs a list in its own order, not
+# the list's, so a crash can leave unrun cases before the one that died.
+while any(c not in results for c in cases):
+    rest = [c for c in cases if c not in results]
     lf = os.path.join(outdir, f"batch{batch}.txt")
     with open(lf, "w") as f:
         f.write("\n".join(rest) + "\n")
@@ -61,14 +62,10 @@ while i < len(cases):
         results[cur] = "Crash" if rc != "timeout" else "Timeout"
         msg = [l for l in err.splitlines() if "nvrm:" in l or "abort" in l.lower() or "Assert" in l]
         first_err[cur] = (msg[-1] if msg else f"rc={rc}")[:300]
-    # advance past everything that has a result
-    while i < len(cases) and cases[i] in results:
-        i += 1
-    if cur is None and i < len(cases) and done == 0:
+    if cur is None and done == 0:
         # nothing ran: mark the first one and move on
-        results[cases[i]] = "Crash"
-        first_err[cases[i]] = ("no output: " + err[-300:]).replace("\n", " | ")
-        i += 1
+        results[rest[0]] = "Crash"
+        first_err[rest[0]] = ("no output: " + err[-300:]).replace("\n", " | ")
     batch += 1
 cnt = collections.Counter(results.values())
 json.dump({"counts": cnt, "results": results, "errors": first_err},
