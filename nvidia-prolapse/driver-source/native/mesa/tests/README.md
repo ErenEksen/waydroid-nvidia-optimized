@@ -604,6 +604,29 @@ draw is RED in every round. Variants (`./gl-texpool-rebind ROUNDS ITERS [variant
 PASS, 0 wrong pixels of 4,194,304 per round (none/zero 6 rounds, wrap/ctx2/free 4 rounds); in `wrap` batch 2..8
 took 32.4 ms to submit (the ring-slot wait for batch 1). 0 Xid.
 
+## vk-zcull-depth.c (depth-tested rendering with ZCULL active on the RM backend)
+
+    T=build/zcull/test; mkdir -p $T; S=nvidia-prolapse/driver-source/native/mesa/tests
+    glslangValidator -V $S/vk-zcull-depth.vert --vn vk_zcull_depth_vert -o $T/vk-zcull-depth.vert.h
+    glslangValidator -V $S/vk-zcull-depth.frag --vn vk_zcull_depth_frag -o $T/vk-zcull-depth.frag.h
+    cc -std=c11 -Wall -Wextra -Werror -I$T $S/vk-zcull-depth.c -lvulkan -o $T/vk-zcull-depth
+    VK_DRIVER_FILES=$PWD/build/nvk-host/native-rm-icd.json VK_LOADER_LAYERS_DISABLE=~implicit~ $T/vk-zcull-depth 40
+    VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nvidia_icd.json $T/vk-zcull-depth 10   # stock reference
+
+300x200 colour + D32_SFLOAT, two depth images per run (alternating frames): depth attachment +
+TRANSFER_SRC (NVK allocates a ZCULL save plane, nvk_image.c:1142-1155) and + TRANSFER_DST (no plane,
+ZCULL without save/restore). Per frame: clear 1.0 + LESS, LOAD + LESS (LOAD_ZCULL with a plane; one
+quad hidden everywhere), readback; clear 0.0 + GREATER, LOAD + GREATER, readback. Every colour and
+depth value is compared exactly with a CPU model. PASS = 0 mismatches. ZCULL is in use when the
+"plane" depth image is larger than the "no plane" one, and `NVK_DEBUG=push_dump` shows
+SET_ZCULL_STORAGE_*, CLEAR_ZCULL_REGION, LOAD_ZCULL and STORE_ZCULL.
+2026-10-24, RTX 5090, 615.78.08: NVK with ZCULL info from GR_GET_ZCULL_INFO = PASS 40 frames (plane
+image 375,424 B vs 327,680 B; push dump of 2 frames: 6 SET_ZCULL_STORAGE_A, 4 CLEAR_ZCULL_REGION, 2
+LOAD_ZCULL, 4 STORE_ZCULL); stock 615.78.08 PASS; NVK without ZCULL info PASS (both images 327,680 B).
+RM values on GB202: width/height align 1360/32, pixels per aliquot 10880, aliquots 5120, region
+byte multiplier 352, region/subregion header 384/2304, 16 subregions aligned 1360x64; GRAPHICS_ZCULL
+context buffer 0x1b9600 B, alignment 0x1000.
+
 ## vk-nan-minmax.c (FMax/FMin/FClamp with a NaN operand under ANGLE; GTA SA black car paint)
 
     T=build/gta-carpaint/test; mkdir -p $T

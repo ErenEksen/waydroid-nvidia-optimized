@@ -17,7 +17,7 @@ REPO = ROOT / 'build/open-gpu-kernel-modules'
 OUT = ROOT / 'build/rm-abi-stability/zcull'
 INCLUDES = ['src/common/sdk/nvidia/inc', 'src/common/inc', 'src/nvidia/arch/nvalloc/unix/include', 'kernel-open/common/inc']
 ENV = dict(os.environ, GIT_NO_LAZY_FETCH='1')
-# ZCULL context-switch buffer contracts used by every graphics channel (stock
+# ZCULL contracts: the context-switch buffer used by every graphics channel (stock
 # 580/615: FIFO_GET_ENGINE_CONTEXT_PROPERTIES engine GRAPHICS_ZCULL sizes the
 # buffer; GR_CTXSW_ZCULL_BIND binds it SEPARATE_BUFFER).
 QUERIES = [
@@ -27,6 +27,15 @@ QUERIES = [
     ('ctrl/ctrl2080/ctrl2080gr.h', 'NV2080_CTRL_CMD_GR_CTXSW_ZCULL_BIND',
      'NV2080_CTRL_GR_CTXSW_ZCULL_BIND_PARAMS', {'hClient', 'hChannel', 'vMemPtr', 'zcullMode'},
      ['NV2080_CTRL_CTXSW_ZCULL_MODE_SEPARATE_BUFFER']),
+    # ZCULL region geometry for the 3D driver (stock 615 queries it per
+    # subdevice at device open; the nouveau kernel's GSP path copies the same
+    # ten fields into DRM_NOUVEAU_GET_ZCULL_INFO).
+    ('ctrl/ctrl2080/ctrl2080gr.h', 'NV2080_CTRL_CMD_GR_GET_ZCULL_INFO',
+     'NV2080_CTRL_GR_GET_ZCULL_INFO_PARAMS',
+     {'widthAlignPixels', 'heightAlignPixels', 'pixelSquaresByAliquots', 'aliquotTotal',
+      'zcullRegionByteMultiplier', 'zcullRegionHeaderSize', 'zcullSubregionHeaderSize',
+      'subregionCount', 'subregionWidthAlignPixels', 'subregionHeightAlignPixels'},
+     []),
 ]
 
 

@@ -502,6 +502,30 @@ nvkmd_rm_try_create_pdev(struct _drmDevice* drm,
     * version, the non-coherent atom from the CPU cache line. */
    nv_device_info_init_shared_mem_sizes(&pdev->base.dev_info);
    pdev->base.dev_info.nc_atom_size_B = util_cache_granularity();
+   /* ZCULL: the RM counterpart of DRM_NOUVEAU_GET_ZCULL_INFO, filled field
+    * for field like nouveau_ws_device_zcull_info (nouveau_device.c:271-284).
+    * GR_GET_ZCULL_INFO gives the region geometry, the GRAPHICS_ZCULL engine
+    * context properties the context-switch buffer the RM binds to every
+    * graphics channel (GR_CTXSW_ZCULL_BIND, SEPARATE_BUFFER). NVK then uses
+    * ZCULL wherever has_zcull_info is set (nvk_image.c:1142-1155,
+    * nvk_cmd_draw.c:1494-1590). */
+   if (info->has_zcull_info) {
+      pdev->base.dev_info.zcull_info = (struct nv_zcull_device_info){
+         .width_align_pixels = info->zcull.width_align_pixels,
+         .height_align_pixels = info->zcull.height_align_pixels,
+         .pixel_squares_by_aliquots = info->zcull.pixel_squares_by_aliquots,
+         .aliquot_total = info->zcull.aliquot_total,
+         .zcull_region_byte_multiplier = info->zcull.region_byte_multiplier,
+         .zcull_region_header_size = info->zcull.region_header_size,
+         .zcull_subregion_header_size = info->zcull.subregion_header_size,
+         .subregion_count = info->zcull.subregion_count,
+         .subregion_width_align_pixels = info->zcull.subregion_width_align_pixels,
+         .subregion_height_align_pixels = info->zcull.subregion_height_align_pixels,
+         .ctxsw_size = info->zcull_ctxsw_size,
+         .ctxsw_align = info->zcull_ctxsw_align,
+      };
+      pdev->base.dev_info.has_zcull_info = true;
+   }
    pdev->base.kmd_info = (struct nvkmd_info){
       .has_dma_buf = true,
       .has_alloc_tiled = info->generic_kind == 0x06 || info->generic_kind == 0xfe,
