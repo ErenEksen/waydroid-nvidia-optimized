@@ -1,4 +1,4 @@
-nvk: compute -> compute barriers through QMD dependencies on Blackwell B
+nvk: compute -> compute barriers through QMD dependencies, Ampere B to Blackwell B
 
 NVIDIA's driver (libnvidia-eglcore.so 615.78.08: dispatch hook E 0xd35a90, join QMD
 E 0xd345d0, consumer link E 0xd33fb0, launch kick E 0xd36060) never waits for idle for a
@@ -11,13 +11,17 @@ the QMD it waits on.  Join and link QMDs are loaded inline from the push buffer 
 place until the command buffer ends, so every execution starts from the recorded counters.
 
 Do the same for barriers whose source and destination are only compute shaders (shader reads and
-writes) on Blackwell B compute.  The chain never crosses a command buffer, a secondary, an
-internal dispatch, an indirect dispatch or conditional rendering; it is released before anything
-that waits for idle, and is limited to 0x24 QMDs before the method path is used again, as the
-proprietary driver limits it.  Every other barrier and every other class keep WAIT_FOR_IDLE.
+writes) on the classes the driver does it for: compute class above 0xc6bf, not GA100 (E 0xd32f42,
+E 0xd33302, E 0xd33328), i.e. AMPERE_COMPUTE_B, ADA_COMPUTE_A, HOPPER_COMPUTE_A,
+BLACKWELL_COMPUTE_A and BLACKWELL_COMPUTE_B.  Empty QMDs are loaded inline in full, INLINE_SIZE
+set when the QMD is not 256 bytes, as the driver sets it (E 0xd33e7f).
+
+The chain never crosses a command buffer, a secondary, an internal dispatch, an indirect dispatch
+or conditional rendering; it is released before anything that waits for idle, and is limited to
+0x24 QMDs before the method path is used again, as the proprietary driver limits it.  Every other barrier and every other class keep WAIT_FOR_IDLE.
 
 diff --git a/src/nouveau/vulkan/nvk_cmd_buffer.c b/src/nouveau/vulkan/nvk_cmd_buffer.c
-index 07738ae55e00..0903caeffb4f 100644
+index c2b7f5bdcecb..38e904cbf1af 100644
 --- a/src/nouveau/vulkan/nvk_cmd_buffer.c
 +++ b/src/nouveau/vulkan/nvk_cmd_buffer.c
 @@ -130,6 +130,9 @@ nvk_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer,
@@ -66,7 +70,7 @@ index 07738ae55e00..0903caeffb4f 100644
     nvk_cmd_buffer_flush_push(cmd, false);
  
     for (uint32_t i = 0; i < commandBufferCount; i++) {
-@@ -716,6 +729,11 @@ nvk_cmd_flush_wait_dep(struct nvk_cmd_buffer *cmd,
+@@ -710,6 +723,11 @@ nvk_cmd_flush_wait_dep(struct nvk_cmd_buffer *cmd,
     enum nvk_barrier barriers = 0;
     struct nvk_pixel_dep pixel_dep = { .dst_pixel_reads = true };
  
@@ -78,7 +82,7 @@ index 07738ae55e00..0903caeffb4f 100644
     /* For asymmetric, we don't know what the access flags will be yet.
      * Handle this by setting access to everything.
      */
-@@ -784,6 +802,10 @@ nvk_cmd_flush_wait_dep(struct nvk_cmd_buffer *cmd,
+@@ -778,6 +796,10 @@ nvk_cmd_flush_wait_dep(struct nvk_cmd_buffer *cmd,
              .flush_data = FLUSH_DATA_TRUE,
           });
        }
@@ -89,7 +93,7 @@ index 07738ae55e00..0903caeffb4f 100644
     } else if ((barriers & NVK_BARRIER_WFI) && wait) {
        /* If this comes from a vkCmdSetEvent, we don't need to wait
         *
-@@ -814,11 +836,13 @@ nvk_cmd_flush_wait_dep(struct nvk_cmd_buffer *cmd,
+@@ -807,11 +829,13 @@ nvk_cmd_flush_wait_dep(struct nvk_cmd_buffer *cmd,
           }
           struct nv_push *p = nvk_cmd_buffer_push(cmd, 2);
           P_IMMD(p, NV9097, WAIT_FOR_IDLE, 0);
@@ -103,7 +107,7 @@ index 07738ae55e00..0903caeffb4f 100644
           break;
        }
        default:
-@@ -1037,6 +1061,9 @@ nvk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
+@@ -1030,6 +1054,9 @@ nvk_CmdPipelineBarrier2(VkCommandBuffer commandBuffer,
  {
     VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
  
@@ -114,7 +118,7 @@ index 07738ae55e00..0903caeffb4f 100644
     nvk_cmd_image_layout_transition(cmd, pDependencyInfo);
     nvk_cmd_invalidate_deps(cmd, 1, pDependencyInfo);
 diff --git a/src/nouveau/vulkan/nvk_cmd_buffer.h b/src/nouveau/vulkan/nvk_cmd_buffer.h
-index e844b0ff4df6..ea751804a427 100644
+index e844b0ff4df6..f26795cd1b2c 100644
 --- a/src/nouveau/vulkan/nvk_cmd_buffer.h
 +++ b/src/nouveau/vulkan/nvk_cmd_buffer.h
 @@ -224,6 +224,41 @@ struct nvk_compute_state {
@@ -192,7 +196,7 @@ index e844b0ff4df6..ea751804a427 100644
                               struct nvk_shader *shader,
                               const void *push_data, size_t push_size,
 diff --git a/src/nouveau/vulkan/nvk_cmd_dispatch.c b/src/nouveau/vulkan/nvk_cmd_dispatch.c
-index 4c596b785414..75d6e7a54f8a 100644
+index 4c596b785414..11b00c1ae588 100644
 --- a/src/nouveau/vulkan/nvk_cmd_dispatch.c
 +++ b/src/nouveau/vulkan/nvk_cmd_dispatch.c
 @@ -10,6 +10,8 @@
@@ -204,15 +208,16 @@ index 4c596b785414..75d6e7a54f8a 100644
  #include "cl906f.h"
  #include "cla0b5.h"
  #include "cla1c0.h"
-@@ -17,6 +19,7 @@
+@@ -17,6 +19,8 @@
  #include "clc5c0.h"
  #include "clcbc0.h"
  #include "clcdc0.h"
++#include "clc697.h"
 +#include "clcec0.h"
  #include "nv_push_cl90c0.h"
  #include "nv_push_cl9097.h"
  #include "nv_push_cla0c0.h"
-@@ -27,6 +30,7 @@
+@@ -27,6 +31,7 @@
  #include "nv_push_clc6c0.h"
  #include "nv_push_clc7c0.h"
  #include "nv_push_clc86f.h"
@@ -220,7 +225,7 @@ index 4c596b785414..75d6e7a54f8a 100644
  
  VkResult
  nvk_push_dispatch_state_init(struct nvk_queue *queue, struct nv_push *p)
-@@ -155,6 +159,358 @@ nvk_flush_compute_state(struct nvk_cmd_buffer *cmd,
+@@ -155,6 +160,370 @@ nvk_flush_compute_state(struct nvk_cmd_buffer *cmd,
        nvk_cmd_buffer_flush_printf_buffer(cmd, desc);
  }
  
@@ -243,8 +248,12 @@ index 4c596b785414..75d6e7a54f8a 100644
 + * counters and links are patched in place until the command buffer ends,
 + * so every execution of the command buffer starts from the recorded state.
 + *
-+ * Only the Blackwell B layout has been measured on hardware; every other
-+ * class keeps WAIT_FOR_IDLE for compute barriers.
++ * The driver builds this chain only when the compute class is above 0xc6bf
++ * and the GPU is not a GA100 (3D class AMPERE_A): compute class test at
++ * ELF 0xd32f42 / ELF 0xd33302, GA100 row of its architecture table at
++ * ELF 0xd33328.  That is AMPERE_COMPUTE_B, ADA_COMPUTE_A, HOPPER_COMPUTE_A,
++ * BLACKWELL_COMPUTE_A and BLACKWELL_COMPUTE_B; every other class keeps
++ * WAIT_FOR_IDLE for compute barriers.
 + */
 +#define NVK_CS_JOIN_MAX_CHAIN 0x24
 +
@@ -254,7 +263,8 @@ index 4c596b785414..75d6e7a54f8a 100644
 +   struct nvk_device *dev = nvk_cmd_buffer_device(cmd);
 +   const struct nvk_physical_device *pdev = nvk_device_physical(dev);
 +
-+   return pdev->info.cls_compute == BLACKWELL_COMPUTE_B &&
++   return pdev->info.cls_compute > 0xc6bf &&
++          pdev->info.cls_eng3d != AMPERE_A &&
 +          !cmd->cs_join_cond_render;
 +}
 +
@@ -289,7 +299,7 @@ index 4c596b785414..75d6e7a54f8a 100644
 +      nvk_device_physical(nvk_cmd_buffer_device(cmd));
 +   const uint32_t qmd_size_B = nak_qmd_size_B(&pdev->info);
 +   const uint32_t qmd_dw = qmd_size_B / 4;
-+   assert(qmd_size_B == 384);
++   assert(qmd_size_B == 256 || qmd_size_B == 384);
 +
 +   void *qmd_mem;
 +   VkResult result = nvk_cmd_buffer_alloc_qmd(cmd, qmd_size_B, 0x100,
@@ -301,14 +311,21 @@ index 4c596b785414..75d6e7a54f8a 100644
 +   memcpy(qmd, tmpl, qmd_size_B);
 +   nak_qmd_set_empty_grid(&pdev->info, qmd, qmd_size_B);
 +
-+   /* NAK's V05 QMD is 384 bytes: load all of it, so nothing of the QMD
-+    * comes from the memory behind q->addr.
++   /* Load the whole QMD inline, so nothing of it comes from the memory
++    * behind q->addr.  INLINE_SIZE (bit 30 from HOPPER_COMPUTE_A on) is set
++    * when the QMD is not 256 bytes, as the proprietary driver sets it
++    * (libnvidia-eglcore.so 615.78.08, ELF 0xd33e7f); NAK's V04 and V05 QMDs
++    * are 384 bytes, its V03 QMD 256.
 +    */
 +   uint32_t addr_a;
-+   V_NVCEC0_SET_INLINE_QMD_ADDRESS_A(addr_a, {
-+      .qmd_address_shifted8_upper = q->addr >> 40,
-+      .inline_size = INLINE_SIZE_INLINE_384,
-+   });
++   if (qmd_size_B == 384) {
++      V_NVCEC0_SET_INLINE_QMD_ADDRESS_A(addr_a, {
++         .qmd_address_shifted8_upper = q->addr >> 40,
++         .inline_size = INLINE_SIZE_INLINE_384,
++      });
++   } else {
++      V_NVC6C0_SET_INLINE_QMD_ADDRESS_A(addr_a, q->addr >> 40);
++   }
 +
 +   struct nv_push *p = nvk_cmd_buffer_push(cmd, 4 + qmd_dw);
 +   P_MTHD(p, NVC6C0, SET_INLINE_QMD_ADDRESS_A);
@@ -579,7 +596,7 @@ index 4c596b785414..75d6e7a54f8a 100644
  static VkResult
  nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
                     const struct nvk_shader *shader,
-@@ -162,6 +518,7 @@ nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
+@@ -162,6 +531,7 @@ nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
                     const void *root,
                     size_t root_size,
                     uint32_t global_size[3],
@@ -587,7 +604,7 @@ index 4c596b785414..75d6e7a54f8a 100644
                     uint64_t *qmd_addr_out,
                     uint64_t *root_desc_addr_out)
  {
-@@ -237,6 +594,12 @@ nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
+@@ -237,6 +607,12 @@ nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
        if (unlikely(result != VK_SUCCESS))
           return result;
  
@@ -600,7 +617,7 @@ index 4c596b785414..75d6e7a54f8a 100644
        memcpy(qmd_map, qmd, qmd_size_B);
     }
  
-@@ -259,7 +622,7 @@ nvk_cmd_flush_cs_qmd(struct nvk_cmd_buffer *cmd,
+@@ -259,7 +635,7 @@ nvk_cmd_flush_cs_qmd(struct nvk_cmd_buffer *cmd,
  
     return nvk_cmd_upload_qmd(cmd, state->cs.shader, desc,
                               desc->root, sizeof(desc->root),
@@ -609,7 +626,7 @@ index 4c596b785414..75d6e7a54f8a 100644
                               qmd_addr_out, root_desc_addr_out);
  }
  
-@@ -306,9 +669,14 @@ nvk_CmdDispatchBase(VkCommandBuffer commandBuffer,
+@@ -306,9 +682,14 @@ nvk_CmdDispatchBase(VkCommandBuffer commandBuffer,
     uint32_t global_size[3] = { groupCountX, groupCountY, groupCountZ };
     nvk_flush_compute_state(cmd, base_workgroup, global_size);
  
@@ -626,7 +643,7 @@ index 4c596b785414..75d6e7a54f8a 100644
     if (result != VK_SUCCESS) {
        vk_command_buffer_set_error(&cmd->vk, result);
        return;
-@@ -345,6 +713,9 @@ nvk_CmdDispatchBase(VkCommandBuffer commandBuffer,
+@@ -345,6 +726,9 @@ nvk_CmdDispatchBase(VkCommandBuffer commandBuffer,
        P_IMMD(p, NVC6C0, SEND_SIGNALING_PCAS2_B,
               PCAS_ACTION_INVALIDATE_COPY_SCHEDULE);
     }
@@ -636,7 +653,7 @@ index 4c596b785414..75d6e7a54f8a 100644
  }
  
  void
-@@ -360,10 +731,14 @@ nvk_cmd_dispatch_with_root(struct nvk_cmd_buffer *cmd,
+@@ -360,10 +744,14 @@ nvk_cmd_dispatch_with_root(struct nvk_cmd_buffer *cmd,
  
     uint32_t group_count[3] = { groupCountX, groupCountY, groupCountZ };
  
@@ -652,7 +669,7 @@ index 4c596b785414..75d6e7a54f8a 100644
                                          &qmd_addr, NULL);
     if (result != VK_SUCCESS) {
        vk_command_buffer_set_error(&cmd->vk, result);
-@@ -579,6 +954,10 @@ nvk_CmdDispatchIndirect2KHR(VkCommandBuffer commandBuffer,
+@@ -579,6 +967,10 @@ nvk_CmdDispatchIndirect2KHR(VkCommandBuffer commandBuffer,
  
     uint64_t dispatch_addr = pInfo->addressRange.address;
  

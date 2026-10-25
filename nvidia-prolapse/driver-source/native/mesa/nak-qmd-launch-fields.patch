@@ -9,9 +9,11 @@ QMD_GROUP_ID (0x1f graphics / 0x20 compute, from Turing on) at ELF 0xc5aed0.
 A compute-only channel has no 3D class: the indirect dispatch sizes the MME
 data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
 
+diff --git a/src/nouveau/compiler/nak.h b/src/nouveau/compiler/nak.h
+index 616fa618a20e..f85d76d290e3 100644
 --- a/src/nouveau/compiler/nak.h
 +++ b/src/nouveau/compiler/nak.h
-@@ -334,6 +334,11 @@
+@@ -334,6 +334,11 @@ struct nak_qmd_cbuf_desc_layout {
  struct nak_qmd_cbuf_desc_layout
  nak_get_qmd_cbuf_desc_layout(const struct nv_device_info *dev, uint8_t idx);
  
@@ -20,21 +22,14 @@ data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
 +                              void *qmd, size_t qmd_size,
 +                              bool compute_family);
 +
- /* QMD dependency fields (Blackwell B compute only; other classes abort). */
+ /* QMD dependency fields (AMPERE_COMPUTE_B..BLACKWELL_COMPUTE_B; other
+  * classes abort). */
  void nak_qmd_set_empty_grid(const struct nv_device_info *dev,
-                             void *qmd, size_t qmd_size);
+diff --git a/src/nouveau/compiler/nak/qmd.rs b/src/nouveau/compiler/nak/qmd.rs
+index cabcf46e10f4..2179509509f5 100644
 --- a/src/nouveau/compiler/nak/qmd.rs
 +++ b/src/nouveau/compiler/nak/qmd.rs
-@@ -8,7 +8,7 @@
- use compiler::bindings::*;
- use nak_bindings::*;
- use nvidia_headers::classes::{
--    cla0c0, clc0c0, clc3c0, clc6c0, clcbc0, clcdc0, clcec0,
-+    cla0c0, clc0c0, clc3c0, clc5c0, clc6c0, clc7c0, clcbc0, clcdc0, clcec0,
- };
- 
- use bitview::*;
-@@ -512,6 +512,7 @@
+@@ -522,6 +522,7 @@ use qmd_2_2::Qmd2_2;
  mod qmd_3_0 {
      use crate::qmd::*;
      use nvidia_headers::classes::clc6c0::qmd as clc6c0;
@@ -42,12 +37,11 @@ data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
  
      #[repr(transparent)]
      pub struct Qmd3_0 {
-@@ -539,6 +540,26 @@
-         qmd_impl_set_smem_size_bounded!(clc6c0, QMDV03_00);
-         qmd_impl_set_slm_size!(clc6c0, QMDV03_00, NONE);
-     }
+@@ -566,6 +567,24 @@ mod qmd_3_0 {
+             let mut bv = QMDBitView::new(&mut self.qmd);
+             set_enum!(bv, clc6c0, QMDV03_00, CWD_MEMBAR_TYPE, L1_MEMBAR);
+         }
 +
-+    impl Qmd3_0 {
 +        /// Occupancy limits of the grid in the AMPERE_COMPUTE_B+ QMD V03_00
 +        /// layout (clc7c0qmd.h / clc9c0qmd.h; the AMPERE_COMPUTE_A layout in
 +        /// clc6c0qmd.h has no such fields).  NVIDIA's driver
@@ -65,16 +59,14 @@ data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
 +            set_field!(bv, clc7c0, QMDV03_00, OCCUPANCY_THRESHOLD_REGISTER, 0x40_u32);
 +            set_field!(bv, clc7c0, QMDV03_00, OCCUPANCY_MAX_REGISTER, 0xff_u32);
 +        }
-+    }
+     }
  }
  use qmd_3_0::Qmd3_0;
- 
-@@ -579,6 +600,21 @@
-         qmd_impl_set_smem_size_bounded!(clcbc0, QMDV04_00);
-         qmd_impl_set_slm_size!(clcbc0, QMDV04_00, NONE);
-     }
+@@ -624,6 +643,19 @@ mod qmd_4_0 {
+             let mut bv = QMDBitView::new(&mut self.qmd);
+             set_enum!(bv, clcbc0, QMDV04_00, CWD_MEMBAR_TYPE, L1_MEMBAR);
+         }
 +
-+    impl Qmd4_0 {
 +        /// Occupancy limits of the grid (clcbc0qmd.h QMDV04_00), the values
 +        /// NVIDIA's driver writes on every dispatch (setters at ELF 0xaa1700 /
 +        /// 0xaa17e0 of libnvidia-eglcore.so.615.78.08, their 0xcbc0 arm).
@@ -87,31 +79,27 @@ data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
 +            set_field!(bv, clcbc0, QMDV04_00, OCCUPANCY_THRESHOLD_REGISTER, 0x40_u32);
 +            set_field!(bv, clcbc0, QMDV04_00, OCCUPANCY_MAX_REGISTER, 0xff_u32);
 +        }
-+    }
+     }
  }
  use qmd_4_0::Qmd4_0;
- 
-@@ -810,11 +846,17 @@
-         } else if dev.cls_compute >= clcbc0::HOPPER_COMPUTE_A {
-             let qmd_out = qmd_out as *mut Qmd4_0;
+@@ -925,12 +957,16 @@ pub extern "C" fn nak_fill_qmd(
              assert!(qmd_size == size_of_val(&*qmd_out));
--            qmd_out.write(fill_qmd(dev, info, qmd_info));
-+            let mut qmd: Qmd4_0 = fill_qmd(dev, info, qmd_info);
+             let mut qmd: Qmd4_0 = fill_qmd(dev, info, qmd_info);
+             qmd.set_cwd_membar_l1();
 +            qmd.set_occupancy();
-+            qmd_out.write(qmd);
+             qmd_out.write(qmd);
          } else if dev.cls_compute >= clc6c0::AMPERE_COMPUTE_A {
              let qmd_out = qmd_out as *mut Qmd3_0;
              assert!(qmd_size == size_of_val(&*qmd_out));
--            qmd_out.write(fill_qmd(dev, info, qmd_info));
-+            let mut qmd: Qmd3_0 = fill_qmd(dev, info, qmd_info);
+             let mut qmd: Qmd3_0 = fill_qmd(dev, info, qmd_info);
+             qmd.set_cwd_membar_l1();
 +            if dev.cls_compute >= clc7c0::AMPERE_COMPUTE_B {
 +                qmd.set_occupancy();
 +            }
-+            qmd_out.write(qmd);
+             qmd_out.write(qmd);
          } else if dev.cls_compute >= clc3c0::VOLTA_COMPUTE_A {
              let qmd_out = qmd_out as *mut Qmd2_2;
-             assert!(qmd_size == size_of_val(&*qmd_out));
-@@ -876,6 +918,52 @@
+@@ -998,6 +1034,52 @@ pub extern "C" fn nak_get_qmd_cbuf_desc_layout(
      }
  }
  
@@ -161,9 +149,11 @@ data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
 +    }
 +}
 +
- /// The QMD words of `qmd` for a class with QMD dependency support (only
- /// Blackwell B for now: the only class whose dependency layout has been
- /// measured on hardware).
+ /// The dependency layout of the device's QMDs and the QMD's words.  The
+ /// proprietary driver orders compute work through QMD dependencies when the
+ /// compute class is above 0xc6bf, outside GA100 (libnvidia-eglcore.so
+diff --git a/src/nouveau/vulkan/nvk_cmd_dispatch.c b/src/nouveau/vulkan/nvk_cmd_dispatch.c
+index b32826a217c3..ef0054bcd50a 100644
 --- a/src/nouveau/vulkan/nvk_cmd_dispatch.c
 +++ b/src/nouveau/vulkan/nvk_cmd_dispatch.c
 @@ -8,6 +8,7 @@
@@ -174,7 +164,7 @@ data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
  #include "nvk_shader.h"
  
  #include "vk_synchronization.h"
-@@ -728,6 +729,14 @@
+@@ -750,6 +751,14 @@ nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
        assert(qmd_size_B <= sizeof(qmd));
        nak_fill_qmd(&pdev->info, &shader->info, &qmd_info, qmd, qmd_size_B);
  
@@ -189,7 +179,7 @@ data FIFO through the compute class there (clc7c0.h..clcbc0.h 0x0574).
        void *qmd_map;
        result = nvk_cmd_buffer_alloc_qmd(cmd, qmd_size_B, 0x100,
                                          &qmd_addr, &qmd_map);
-@@ -1114,8 +1123,24 @@
+@@ -1136,8 +1145,24 @@ nvk_CmdDispatchIndirect2KHR(VkCommandBuffer commandBuffer,
     struct nv_push *p;
     if (nvk_cmd_buffer_compute_cls(cmd) >= TURING_COMPUTE_A) {
        p = nvk_cmd_buffer_push(cmd, 14);

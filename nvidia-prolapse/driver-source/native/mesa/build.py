@@ -181,13 +181,14 @@ NVK_PATCHES = (
     # described as a depth-1 3D image instead of tripping nil's assert.
     "nvk-3d-view-of-2d-image.patch",
     # Colour-attachment output -> fragment reads drain with
-    # PIXEL_SHADER_BARRIER instead of WAIT_FOR_IDLE, and Blackwell B QMDs
-    # carry CWD_MEMBAR_TYPE = L1_MEMBAR, as NVIDIA's driver does.
+    # PIXEL_SHADER_BARRIER instead of WAIT_FOR_IDLE, and QMDs from Turing
+    # on carry CWD_MEMBAR_TYPE = L1_MEMBAR, as NVIDIA's driver does.
     "nvk-pixel-shader-barrier.patch",
     "nak-qmd-cwd-membar.patch",
-    # Blackwell B: compute -> compute barriers order through QMD
-    # dependencies (an empty join QMD per barrier, host dependency
-    # decrements) instead of WAIT_FOR_IDLE, as NVIDIA's driver does.
+    # Ampere B to Blackwell B (not GA100): compute -> compute barriers
+    # order through QMD dependencies (an empty join QMD per barrier, host
+    # dependency decrements) instead of WAIT_FOR_IDLE, as NVIDIA's driver
+    # does.
     "nak-qmd-dependency.patch",
     "nvk-cs-join-qmd.patch",
     # A compute-only queue family whose queues run on their own

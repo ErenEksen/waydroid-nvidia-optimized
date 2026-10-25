@@ -647,9 +647,9 @@ every element must equal the epoch count after each execution. `reuse` records o
 ONE_TIME_SUBMIT and submits 20 times; `double` submits the SIMULTANEOUS_USE command buffer twice per
 vkQueueSubmit; `clear` adds a vkCmdClearColorImage (3D work) inside every epoch; `split` puts epoch 0
 in a first command buffer and starts the second with a one-workgroup dispatch and the barrier, so
-the barrier has to order the first command buffer's work too. On Blackwell B these barriers become
-join / link QMDs loaded inline (SET_INLINE_QMD_ADDRESS_A with INLINE_SIZE_INLINE_384, then
-LOAD_INLINE_QMD_DATA) and SEND_SIGNALING_PCAS2_B DECREMENT_DEPENDENCE, as NVIDIA's driver orders
+the barrier has to order the first command buffer's work too. From AMPERE_COMPUTE_B to Blackwell B
+(not GA100) these barriers become join / link QMDs loaded inline (SET_INLINE_QMD_ADDRESS_A, with
+INLINE_SIZE_INLINE_384 for the 384-byte V04 / V05 QMDs, then LOAD_INLINE_QMD_DATA) and SEND_SIGNALING_PCAS2_B DECREMENT_DEPENDENCE, as NVIDIA's driver orders
 compute work (libnvidia-eglcore.so 615.78.08 E 0xd35a90 / E 0xd345d0 / E 0xd33fb0 / E 0xd36060);
 the first barrier of a command buffer and every barrier after 0x24 chained dispatches + QMDs keep
 the method path.
@@ -660,6 +660,14 @@ pending last barrier at vkEndCommandBuffer) where NVK without the join QMDs emit
 vk-barrier-order on the same build: 40 rounds at spin 0 / 300 / 2000 / 20000 PASS, unordered FAIL; its push
 dump goes from 90 to 78 WAIT_FOR_IDLE and 37 to 25 flush-form invalidates (the compute -> compute barrier of
 each round). 0 Xid.
+10-25 (RTX 5090, under load, the class gate widened to c7c0..cec0): reuse / double / clear / split at spin 0,
+2000, 20000 PASS, unordered FAIL, 40 inline QMDs; vk-barrier-order 4 spins PASS, unordered FAIL. 0 Xid.
+10-25, driver 580.178.04: RTX 3060 (GA106, AMPERE_COMPUTE_B) and RTX 4060 (AD107, ADA_COMPUTE_A): every
+mode and spin PASS, 40 inline QMDs (256-byte V03, no INLINE_384), 76 dependency decrements, 1 WAIT_FOR_IDLE
+per execution; the unordered control passes on both GPUs with NVK (it fails with NVIDIA's driver there),
+so on these GPUs it does not show that the barriers do the ordering. RTX 2060 (TU106): join path off as
+intended (0 inline QMDs), every mode PASS. vk-barrier-order: 4 spins PASS on all three, unordered FAIL.
+0 Xid.
 
 ## nak-qmd-membar.c (CWD_MEMBAR_TYPE in the QMDs of the built NVK)
 
@@ -669,7 +677,21 @@ each round). 0 Xid.
        -I$M/include -I$M/src -I$B/src/compiler -I$B/src $S/nak-qmd-membar.c -ldl -o build/nak-qmd-membar
     build/nak-qmd-membar $B/src/nouveau/vulkan/libvulkan_nouveau.so
 
-PASS = CWD_MEMBAR_TYPE 3 (dword 19 = 0x00030000) for cec0 and 0 for cdc0. 10-24: PASS.
+PASS = CWD_MEMBAR_TYPE 3 (L1_MEMBAR) from Turing to Blackwell B (word 11 for c5c0..c9c0, word 35 for cbc0,
+word 19 for cdc0 / cec0) and 0 on Volta (c3c0), as NVIDIA's driver builds its QMDs (libnvidia-eglcore.so
+615.78.08 QMD template ELF 0xaa12a0, tails ELF 0xaa1338 / 0xaa14c7 / 0xaa13d3). 10-25: PASS.
+
+## nak-qmd-dependency.c (QMD dependency field setters of the built NVK, every layout they serve)
+
+    M=build/mesa-rm-source; B=build/nvk-host; S=nvidia-prolapse/driver-source/native/mesa/tests
+    cc -std=gnu11 -DHAVE_FUNC_ATTRIBUTE_PACKED -DHAVE_ENDIAN_H -DUTIL_ARCH_LITTLE_ENDIAN=1 -DUTIL_ARCH_BIG_ENDIAN=0 \
+       -I$M/src/nouveau/compiler -I$M/src/nouveau/headers -I$M/src/compiler -I$M/src/compiler/nir -I$B/src/compiler/nir \
+       -I$M/include -I$M/src -I$B/src/compiler -I$B/src $S/nak-qmd-dependency.c -ldl -o build/nak-qmd-dependency
+    build/nak-qmd-dependency $B/src/nouveau/vulkan/libvulkan_nouveau.so
+
+Counter, DEPENDENT_QMD0/1 and invalidates set on a zeroed QMD of c7c0, c9c0 (V03_00), cbc0 (V04_00), cdc0 and
+cec0 (V05_00); every word must equal the bits NVIDIA's driver writes for that layout (list in the file header;
+the V03 second dependent pointer goes to word 9). PASS = all five classes "ok". 10-25: PASS.
 
 ## vk-zcull-depth.c (depth-tested rendering with ZCULL active on the RM backend)
 

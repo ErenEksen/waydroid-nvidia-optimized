@@ -1,6 +1,8 @@
+diff --git a/src/nouveau/compiler/nak.h b/src/nouveau/compiler/nak.h
+index f85d76d290e3..d429570f3190 100644
 --- a/src/nouveau/compiler/nak.h
 +++ b/src/nouveau/compiler/nak.h
-@@ -356,6 +356,11 @@
+@@ -357,6 +357,11 @@ void nak_qmd_set_invalidates(const struct nv_device_info *dev,
                               bool texture_data, bool shader_data,
                               bool shader_constant);
  
@@ -12,11 +14,13 @@
  #ifdef __cplusplus
  }
  #endif
+diff --git a/src/nouveau/compiler/nak/qmd.rs b/src/nouveau/compiler/nak/qmd.rs
+index 2179509509f5..56606bca06ea 100644
 --- a/src/nouveau/compiler/nak/qmd.rs
 +++ b/src/nouveau/compiler/nak/qmd.rs
-@@ -1057,3 +1057,40 @@
-         shader_constant,
-     );
+@@ -1213,3 +1213,40 @@ pub extern "C" fn nak_qmd_set_invalidates(
+         bv.set_field(l.inval_shader_constant.clone(), 1_u32);
+     }
  }
 +
 +/// RELEASE0 of a Volta/Turing (QMD V02_02) dispatch: a one-word semaphore
@@ -55,9 +59,11 @@
 +    set_enum!(bv, q, QMDV02_02, RELEASE0_STRUCTURE_SIZE, ONE_WORD);
 +    set_field!(bv, q, QMDV02_02, RELEASE0_PAYLOAD, payload);
 +}
+diff --git a/src/nouveau/vulkan/nvk_cmd_buffer.c b/src/nouveau/vulkan/nvk_cmd_buffer.c
+index bbb08a784bcc..80a76c6ec77e 100644
 --- a/src/nouveau/vulkan/nvk_cmd_buffer.c
 +++ b/src/nouveau/vulkan/nvk_cmd_buffer.c
-@@ -67,6 +67,7 @@
+@@ -67,6 +67,7 @@ nvk_destroy_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer)
     nvk_cmd_pool_free_qmd_list(pool, &cmd->owned_qmd);
     util_dynarray_fini(&cmd->pushes);
     util_dynarray_fini(&cmd->copy_memory_indirect_temps);
@@ -65,7 +71,7 @@
     vk_command_buffer_finish(&cmd->vk);
     vk_free(&pool->vk.alloc, cmd);
  }
-@@ -102,6 +103,7 @@
+@@ -102,6 +103,7 @@ nvk_create_cmd_buffer(struct vk_command_pool *vk_pool,
     list_inithead(&cmd->owned_qmd);
     cmd->pushes = UTIL_DYNARRAY_INIT;
     cmd->copy_memory_indirect_temps = UTIL_DYNARRAY_INIT;
@@ -73,7 +79,7 @@
  
     cmd->prev_subc = ffs(nvk_cmd_buffer_subchannel_mask(cmd)) - 1;
  
-@@ -134,6 +136,11 @@
+@@ -134,6 +136,11 @@ nvk_reset_cmd_buffer(struct vk_command_buffer *vk_cmd_buffer,
     memset(&cmd->cs_join, 0, sizeof(cmd->cs_join));
     cmd->cs_join_cond_render = false;
     cmd->cs_join_covered = false;
@@ -85,7 +91,7 @@
  
     util_dynarray_clear(&cmd->pushes);
     util_dynarray_clear(&cmd->copy_memory_indirect_temps);
-@@ -329,8 +336,19 @@
+@@ -329,8 +336,19 @@ nvk_cmd_buffer_alloc_qmd(struct nvk_cmd_buffer *cmd,
     /* On Maxwell B and later, we have INVALIDATE_SKED_CACHES so we can just
      * allocate from wherever we want (the upload stream in this case).
      */
@@ -107,7 +113,7 @@
  
     /* The GPU compute scheduler (SKED) has a cache.  Maxwell B added the
      * INVALIDATE_SKED_CACHES instruction to manage the SKED cache.  We call
-@@ -382,6 +400,10 @@
+@@ -382,6 +400,10 @@ nvk_BeginCommandBuffer(VkCommandBuffer commandBuffer,
                                COMMAND_BUFFER_INHERITANCE_CONDITIONAL_RENDERING_INFO_EXT);
        cmd->cs_join_cond_render = cond != NULL &&
                                   cond->conditionalRenderingEnable;
@@ -118,7 +124,7 @@
     }
  
     /* Start with a nop so we have at least something to submit.  The
-@@ -419,6 +441,7 @@
+@@ -419,6 +441,7 @@ nvk_EndCommandBuffer(VkCommandBuffer commandBuffer)
     VK_FROM_HANDLE(nvk_cmd_buffer, cmd, commandBuffer);
  
     nvk_cmd_cs_join_close(cmd);
@@ -126,9 +132,11 @@
     nvk_cmd_buffer_flush_push(cmd, false);
  
     /* We only need to flush the memory objects we own because, if there are
+diff --git a/src/nouveau/vulkan/nvk_cmd_buffer.h b/src/nouveau/vulkan/nvk_cmd_buffer.h
+index a89d29e9636d..2f939d6429d0 100644
 --- a/src/nouveau/vulkan/nvk_cmd_buffer.h
 +++ b/src/nouveau/vulkan/nvk_cmd_buffer.h
-@@ -283,6 +283,22 @@
+@@ -283,6 +283,22 @@ struct nvk_cmd_buffer {
      */
     bool cs_join_covered;
  
@@ -151,7 +159,7 @@
     struct nvk_cmd_state {
        uint64_t descriptor_buffers[NVK_MAX_SETS];
        struct nvk_graphics_state gfx;
-@@ -367,6 +383,9 @@
+@@ -367,6 +383,9 @@ nvk_cmd_buffer_push_indirect(struct nvk_cmd_buffer *cmd,
  void nvk_cmd_buffer_begin_graphics(struct nvk_cmd_buffer *cmd,
                                     const VkCommandBufferBeginInfo *pBeginInfo);
  bool nvk_compute_sked_cache_shared(const struct nvk_physical_device *pdev);
@@ -161,7 +169,7 @@
  void nvk_cmd_invalidate_sked_caches(struct nvk_cmd_buffer *cmd);
  
  void nvk_cmd_buffer_begin_compute(struct nvk_cmd_buffer *cmd,
-@@ -490,9 +509,27 @@
+@@ -490,9 +509,27 @@ nvk_cmd_buffer_get_cbuf_descriptor_addr(struct nvk_cmd_buffer *cmd,
                                          const struct nvk_descriptor_state *desc,
                                          const struct nvk_cbuf *cbuf);
  
@@ -189,9 +197,11 @@
                                uint64_t *qmd_addr_out,
                                uint64_t *root_desc_addr_out);
  
+diff --git a/src/nouveau/vulkan/nvk_cmd_dispatch.c b/src/nouveau/vulkan/nvk_cmd_dispatch.c
+index fef3312392b9..c01e59d5c9ae 100644
 --- a/src/nouveau/vulkan/nvk_cmd_dispatch.c
 +++ b/src/nouveau/vulkan/nvk_cmd_dispatch.c
-@@ -385,6 +385,126 @@
+@@ -395,6 +395,126 @@ nvk_cmd_invalidate_sked_caches(struct nvk_cmd_buffer *cmd)
     }
  }
  
@@ -318,7 +328,7 @@
  void
  nvk_cmd_invalidate_compute_state(struct nvk_cmd_buffer *cmd)
  {
-@@ -786,6 +906,7 @@
+@@ -808,6 +928,7 @@ nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
                     size_t root_size,
                     uint32_t global_size[3],
                     bool join,
@@ -326,7 +336,7 @@
                     uint64_t *qmd_addr_out,
                     uint64_t *root_desc_addr_out)
  {
-@@ -863,6 +984,25 @@
+@@ -885,6 +1006,25 @@ nvk_cmd_upload_qmd(struct nvk_cmd_buffer *cmd,
                                 !(nvk_cmd_buffer_queue_flags(cmd) &
                                   VK_QUEUE_GRAPHICS_BIT));
  
@@ -352,7 +362,7 @@
        void *qmd_map;
        result = nvk_cmd_buffer_alloc_qmd(cmd, qmd_size_B, 0x100,
                                          &qmd_addr, &qmd_map);
-@@ -889,6 +1029,7 @@
+@@ -911,6 +1051,7 @@ VkResult
  nvk_cmd_flush_cs_qmd(struct nvk_cmd_buffer *cmd,
                       const struct nvk_cmd_state *state,
                       uint32_t global_size[3],
@@ -360,7 +370,7 @@
                       uint64_t *qmd_addr_out,
                       uint64_t *root_desc_addr_out)
  {
-@@ -897,7 +1038,7 @@
+@@ -919,7 +1060,7 @@ nvk_cmd_flush_cs_qmd(struct nvk_cmd_buffer *cmd,
  
     return nvk_cmd_upload_qmd(cmd, state->cs.shader, desc,
                               desc->root, sizeof(desc->root),
@@ -369,7 +379,7 @@
                               qmd_addr_out, root_desc_addr_out);
  }
  
-@@ -951,7 +1092,9 @@
+@@ -973,7 +1114,9 @@ nvk_CmdDispatchBase(VkCommandBuffer commandBuffer,
     const struct nvk_descriptor_state *desc = &cmd->state.cs.descriptors;
     VkResult result = nvk_cmd_upload_qmd(cmd, cmd->state.cs.shader, desc,
                                          desc->root, sizeof(desc->root),
@@ -380,7 +390,7 @@
     if (result != VK_SUCCESS) {
        vk_command_buffer_set_error(&cmd->vk, result);
        return;
-@@ -1014,6 +1157,7 @@
+@@ -1036,6 +1179,7 @@ nvk_cmd_dispatch_with_root(struct nvk_cmd_buffer *cmd,
     VkResult result = nvk_cmd_upload_qmd(cmd, shader, NULL,
                                          root, root_size,
                                          group_count, false,
@@ -388,7 +398,7 @@
                                          &qmd_addr, NULL);
     if (result != VK_SUCCESS) {
        vk_command_buffer_set_error(&cmd->vk, result);
-@@ -1240,6 +1384,7 @@
+@@ -1262,6 +1406,7 @@ nvk_CmdDispatchIndirect2KHR(VkCommandBuffer commandBuffer,
  
     uint64_t qmd_addr = 0, root_desc_addr = 0;
     VkResult result = nvk_cmd_flush_cs_qmd(cmd, &cmd->state, global_size,
@@ -396,9 +406,11 @@
                                            &qmd_addr, &root_desc_addr);
     if (result != VK_SUCCESS) {
        vk_command_buffer_set_error(&cmd->vk, result);
+diff --git a/src/nouveau/vulkan/nvk_cmd_indirect.c b/src/nouveau/vulkan/nvk_cmd_indirect.c
+index 0a337b295a41..7b7fb8742085 100644
 --- a/src/nouveau/vulkan/nvk_cmd_indirect.c
 +++ b/src/nouveau/vulkan/nvk_cmd_indirect.c
-@@ -1075,6 +1075,7 @@
+@@ -1075,6 +1075,7 @@ nvk_cmd_process_cmds(struct nvk_cmd_buffer *cmd,
     if (layout->stages & VK_SHADER_STAGE_COMPUTE_BIT) {
        uint32_t global_size[3] = { 0, 0, 0 };
        VkResult result = nvk_cmd_flush_cs_qmd(cmd, state, global_size,

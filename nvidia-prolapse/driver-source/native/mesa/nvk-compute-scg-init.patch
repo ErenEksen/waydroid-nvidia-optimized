@@ -1,3 +1,5 @@
+diff --git a/src/nouveau/vulkan/nvk_cmd_dispatch.c b/src/nouveau/vulkan/nvk_cmd_dispatch.c
+index ef0054bcd50a..fef3312392b9 100644
 --- a/src/nouveau/vulkan/nvk_cmd_dispatch.c
 +++ b/src/nouveau/vulkan/nvk_cmd_dispatch.c
 @@ -17,7 +17,14 @@
@@ -14,8 +16,8 @@
 +#include "clce97.h"
  #include "clcbc0.h"
  #include "clcdc0.h"
- #include "clcec0.h"
-@@ -73,6 +80,88 @@
+ #include "clc697.h"
+@@ -77,6 +84,88 @@ nvk_compute_sked_cache_shared(const struct nvk_physical_device *pdev)
            pdev->nvkmd->kmd_info.sm_isa_version != 0;
  }
  
@@ -104,7 +106,7 @@
  VkResult
  nvk_push_dispatch_state_init(struct nvk_queue *queue, struct nv_push *p)
  {
-@@ -92,11 +181,10 @@
+@@ -96,11 +185,10 @@ nvk_push_dispatch_state_init(struct nvk_queue *queue, struct nv_push *p)
      * E 0x56f1c0; on GB202 the stream of every compute channel it creates,
      * graphics queue and compute queue alike) is followed where its methods
      * are public and Volta+ (clc3c0.h onwards): SPA/QMD version here, the
@@ -120,7 +122,7 @@
      */
     const uint32_t sm_isa = dev->nvkmd->pdev->kmd_info.sm_isa_version;
     const bool stock_init = nvk_compute_sked_cache_shared(pdev);
-@@ -151,6 +239,44 @@
+@@ -159,6 +247,44 @@ nvk_push_dispatch_state_init(struct nvk_queue *queue, struct nv_push *p)
        P_NVA0C0_SET_SHADER_SHARED_MEMORY_WINDOW(p, 0xfe << 24);
     }
  
@@ -165,9 +167,11 @@
     if (stock_init) {
        /* E 0x56f868..0x56f8bb, unconditional in stock: an FE atomic
         * sequence holding a host WFI of every SCG type, a SKED cache
+diff --git a/src/nouveau/vulkan/nvkmd/nvkmd.h b/src/nouveau/vulkan/nvkmd/nvkmd.h
+index 284bbdb07388..27e1da6af91d 100644
 --- a/src/nouveau/vulkan/nvkmd/nvkmd.h
 +++ b/src/nouveau/vulkan/nvkmd/nvkmd.h
-@@ -133,6 +133,11 @@
+@@ -133,6 +133,11 @@ struct nvkmd_info {
     /* The KMD's SM ISA code (RM NV2080_CTRL_GR_INFO_INDEX_SM_VERSION, e.g.
      * 0xa04 on GB20x); 0 when the KMD does not report one. */
     uint32_t sm_isa_version;
