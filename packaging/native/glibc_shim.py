@@ -191,7 +191,9 @@ def gate(bundle, root, closures, images=Path('/var/lib/waydroid/images'), log_ro
             sub = rg.ABIS[target][0]
             dirs = [lib / sub]
             provided = {p.name for p in (lib / sub).iterdir()}
-            roots, todo, seen = set(rg.RUNTIME_ROOTS), [*(self.progs / 'bin' / target).iterdir(),
+            # only the programs this gate runs: the release's GL and media programs need our GL driver and the
+            # Codec2 core, which glibc-shim mode does not stage
+            roots, todo, seen = set(rg.RUNTIME_ROOTS), [*(self.progs / 'bin' / target / p for p in rg.VULKAN_PROGRAMS),
                                                         lib / sub / native.ICD_SONAME, lib / sub / 'hw/vulkan.nvidia.so'], set()
             while todo:
                 obj = todo.pop()

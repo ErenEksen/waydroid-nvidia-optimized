@@ -330,6 +330,7 @@ def test_vulkan_cases_check_the_modes_driver(tmp_path, mode, icd_name):
         gate.vulkan_cases(g, 'android', mode, lib, icd_name)
     by_name = dict(runs)
     assert sorted(by_name) == ['anb', 'astc', 'compute', 'etc2', 'graphics', 'interop']
+    assert sorted(Path(argv[0]).name for argv in by_name.values()) == sorted(gate.VULKAN_PROGRAMS)
     for name in ('compute', 'graphics', 'interop'):
         assert by_name[name][-2:] == ['--expect-driver', mode], name
         assert str(lib / icd_name) in by_name[name], name

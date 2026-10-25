@@ -341,6 +341,10 @@ class Gate:
         return sorted(str(p.relative_to(self.payload)) for p in seen if self.payload in p.parents)
 
 
+# the programs vulkan_cases runs (gate/bin/<target>/)
+VULKAN_PROGRAMS = ('vk-compute', 'vk-graphics', 'vk-interop', 'anb-roundtrip', 'astc-roundtrip', 'etc2-roundtrip')
+
+
 def vulkan_cases(gate, target, expect='nvidia-prolapse', lib=None, icd_name='libvulkan_nouveau.so'):
     """The Vulkan cases of one ABI. Every program checks which driver its process mapped
     (tools/native-driver-identity.h): `expect` names the mode whose driver must be the one loaded, `lib` the
