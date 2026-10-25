@@ -227,6 +227,19 @@ NVK_PATCH_LIST = [
     # graphics work of another queue in the same channel group
     # time-slice instead of running together.
     HERE / "nak-qmd-occupancy.patch",
+    # NAK loop codegen. Blackwell ALU instructions take no constant-buffer operands
+    # (NAK opt_copy_prop.rs), so a bindless cbuf value used in divergent
+    # control flow is read from the uniform register it was loaded into
+    # instead of being re-loaded into a GPR in every block;
+    HERE / "nak-blackwell-ldcx-uniform-reads.patch",
+    # convergent loop-invariant ALU results and cbuf loads leave loops
+    # entered in uniform control flow (uniform registers, no GPR cost),
+    # as NVIDIA's compiler keeps them in uniform registers loaded once;
+    HERE / "nak-licm-convergent.patch",
+    # a divergent loop without a continue gets no reconvergence barrier
+    # per iteration, only the one around the loop that its breaks sync
+    # on, which is the shape NVIDIA's compiler emits for such loops.
+    HERE / "nak-loop-continue-sync.patch",
 ]
 
 def prepared_stamp(source, inputs):
