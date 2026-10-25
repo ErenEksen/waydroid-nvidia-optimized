@@ -1767,8 +1767,12 @@ class VendorImageTest(unittest.TestCase):
 
     def test_nvrm_needs_its_gate(self):
         self.assertTrue(self.nodes(nvidia_native_gl="on"))
-        self.write_record(native_gl=False)
-        self.refused("no passing nvrm gate", nvidia_native_gl="on")
+        why = "the nvrm GL smoke test failed on this GPU (case android/gl-flat)"
+        self.write_record(native_gl=False, native_gl_reason=why)
+        self.refused("no passing nvrm gate", why, nvidia_native_gl="on")
+        self.assertTrue(self.nodes(nvidia_native_gl="off"))     # the default (ANGLE) install still runs
+        self.write_record(native_gl=False)                       # disabled without a reason: invalid record
+        self.refused("needs a non-empty native_gl_reason", nn.SETUP)
 
     def test_other_modes_refuse_our_image(self):
         for w in ({"nvidia_driver_mode": "venus"}, {"nvidia_driver_mode": "glibc-shim"},

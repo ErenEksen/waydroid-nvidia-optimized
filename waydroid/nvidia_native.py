@@ -1601,6 +1601,9 @@ def load_vendor_image_record(state=None):
             raise ValueError("gate record does not show a passing gate on kernel module " + record["kernel_module"])
         if not isinstance(record["native_gl"], bool) or not isinstance(record["media"]["xml_sha256"], str):
             raise ValueError("native_gl/media.xml_sha256 missing")
+        reason = record.get("native_gl_reason")
+        if not record["native_gl"] and (not isinstance(reason, str) or not reason.strip()):
+            raise ValueError("native_gl = false needs a non-empty native_gl_reason (why the nvrm gate failed)")
         if not isinstance(record["media"].get("hardware_decode"), bool):
             raise ValueError("media.hardware_decode missing")
         no_nvdec = record["media"].get("no_nvdec")
@@ -1657,8 +1660,9 @@ def check_vendor_image(dm, waydroid, state=None, packaged_record=None):
                       "list describes it. Remedy: {} (re-gates the image on the loaded module and regenerates the "
                       "codec list)".format(where, record["version"], record["kernel_module"], running, SETUP))
     if dm.native_gl and not record["native_gl"]:
-        raise _cfg_error("{} = on: the install record of {} has no passing nvrm gate. Set {} = off (ANGLE), or re-run "
-                         "{}".format(GL_KEY, record["version"], GL_KEY, SETUP))
+        raise _cfg_error("{} = on: the install record of {} has no passing nvrm gate ({}). Set {} = off (ANGLE), or "
+                         "re-run {}".format(GL_KEY, record["version"],
+                                            record.get("native_gl_reason") or "no reason recorded", GL_KEY, SETUP))
     xml = os.path.join(state, VENDOR_IMAGE_XML)
     try:
         with open(xml, "rb") as f:

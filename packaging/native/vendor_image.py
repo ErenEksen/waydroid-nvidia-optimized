@@ -258,6 +258,7 @@ def install(args):
                     for t, n in native.VENDOR_IMAGE_NO_NVDEC.items() if not old['media']['hardware_decode']):
             say(f'already gated on kernel module {kernel} ({old["gate"]["log_dir"]}); not gating again')
             gate, media, native_gl_ok, xml = old['gate'], old['media'], old['native_gl'], state / native.VENDOR_IMAGE_XML
+            native_gl_reason = old.get('native_gl_reason')
             no_nvdec = {} if media['hardware_decode'] else {t: state / n for t, n in native.VENDOR_IMAGE_NO_NVDEC.items()}
         else:
             gate_mod.LOG_ROOT.mkdir(parents=True, exist_ok=True)
@@ -270,9 +271,11 @@ def install(args):
             gate = {'exit': 0, 'kernel_module': vk['kernel_module'], 'log_dir': vk['log_dir'],
                     'finished': gl_rec['gate']['finished'], 'runner': vk['runner'],
                     'cases': len(vk['cases']) + len(gl_rec['gate']['cases'])}
+            # nvrm is opt-in: a failing nvrm gate disables it (with the reason) and the install goes on with ANGLE
+            native_gl_ok = gl_rec['enabled']
+            native_gl_reason = None if native_gl_ok else gl_rec['reason']
             media = {'xml_sha256': media_rec['xml_sha256'], 'codecs': media_rec['codecs'], 'gate': media_rec['gate'],
                      'hardware_decode': media_rec['hardware_decode']}
-            native_gl_ok = gl_rec['enabled']
             xml = Path(media_rec['xml'])
             no_nvdec = {} if media['hardware_decode'] else no_nvdec_files(new, xml.parent)
             if no_nvdec:
@@ -284,7 +287,9 @@ def install(args):
         raise
     if gl == 'on' and not native_gl_ok:
         new.unlink(missing_ok=True)
-        raise RuntimeError('nvidia_native_gl = on, but nvrm did not pass the gate; use --native-gl off')
+        raise RuntimeError(f'nvidia_native_gl = on, but native GL (nvrm) is not available on this GPU: '
+                           f'{native_gl_reason or "nvrm did not pass the gate"}. Use --native-gl off (GLES through '
+                           'ANGLE, the default)')
 
     # ---- switch (container stopped): everything below is undone on failure
     backup = WORK / ('before-vendor-image-' + time.strftime('%Y%m%d-%H%M%S'))
@@ -337,6 +342,7 @@ def install(args):
                               'fingerprint': props['ro.vendor.build.fingerprint']},
                'channel': {'vendor_ota': channel_url, 'vendor_datetime': str(entry['datetime'])},
                'kernel_module': kernel, 'gate': gate, 'native_gl': native_gl_ok,
+               'native_gl_reason': native_gl_reason,
                'media': {**media, 'xml': str(state / native.VENDOR_IMAGE_XML)},
                'official_backup': official_info and {**official_info, 'path': str(official / 'vendor.img')},
                'installed': now()}
@@ -386,6 +392,9 @@ def install(args):
           f'configuration in {backup}).', flush=True)
     if not media['hardware_decode']:
         print(media['reason'], flush=True)
+    if not native_gl_ok:
+        print(f'native GL (nvrm, opt-in): not available on this GPU: {native_gl_reason}. GLES is ANGLE on the Vulkan '
+              'driver; --native-gl on is refused until a later setup run passes the nvrm gate.', flush=True)
 
 
 def restore_official(args):
@@ -435,6 +444,8 @@ def status(args):
     if record:
         print('hardware video decode: ' + ', '.join(record['media']['codecs']) if record['media']['hardware_decode']
               else record['media']['reason'])
+        print('native GL (nvrm, opt-in): ' + ('passed the gate' if record['native_gl'] else
+                                              f'not available: {record.get("native_gl_reason") or "no passing gate"}'))
     print(f'vendor_ota = {w.get("vendor_ota")}, vendor_datetime = {w.get("vendor_datetime")}')
     try:
         dm = native.driver_mode(w)

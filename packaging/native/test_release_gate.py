@@ -242,3 +242,73 @@ def test_media_gate_failures_still_fail(tmp_path, monkeypatch):
         fake_media_gate(tmp_path / 'b', monkeypatch, gate.XMLGEN_NO_NVDEC, check_exit=1)
     with pytest.raises(RuntimeError, match='media gate FAILED at validate-xml'):
         fake_media_gate(tmp_path / 'c', monkeypatch, 0)               # exit 0 needs codecs in the listing
+
+
+# ---------------------------------------------------------------- nvrm (opt-in GL) failing its smoke test
+
+def fake_run(tmp_path, monkeypatch, gl_fails):
+    """run() with the cases scripted: Vulkan passes, the nvrm GL cases pass or the first one fails."""
+    import types
+    files = {'payload/vendor_extra/lib64/libnv_bionic_native.so': b'rust64',
+             'payload/vendor_extra/lib/libnv_bionic_native.so': b'rust32',
+             'payload/vendor/lib64/egl/libEGL_nvrm.so': b'egl', 'payload/vendor_extra/lib64/libgallium_dri_nvrm.so': b'g',
+             'payload/vendor_extra/lib64/hw/vulkan.nvidia.so': b'hal'}
+    b = tmp_path / 'bundle'
+    for rel, data in files.items():
+        (b / rel).parent.mkdir(parents=True, exist_ok=True)
+        (b / rel).write_bytes(data)
+    record = {'format': 2, 'commit': '0' * 40, 'files': {rel: hashlib.sha256(d).hexdigest() for rel, d in files.items()},
+              'nvrm_rust_sha256': {'x86_64': hashlib.sha256(b'rust64').hexdigest(),
+                                   'x86': hashlib.sha256(b'rust32').hexdigest()}}
+    (b / gate.RECORD).write_text(json.dumps(record))
+    images = tmp_path / 'images'
+    images.mkdir()
+    for name in ('system.img', 'vendor.img'):
+        (images / name).write_bytes(b'img')
+
+    class FakeGate:
+        def __init__(self, bundle, work, system_img):
+            self.payload, self.work, self.cases, self.runtime = Path(bundle) / 'payload', work, [], {}
+
+        def prepare(self, target):
+            return {}
+
+        def exercised(self, targets):
+            return ['vendor_extra/lib64/hw/vulkan.nvidia.so']
+
+    def vulkan(g, target):
+        g.cases.append({'case': f'{target}/vk', 'exit': 0, 'seconds': 0, 'log': 'vk.log'})
+
+    def gl(g, target):
+        g.cases.append({'case': f'{target}/gl-flat', 'exit': 1 if gl_fails else 0, 'seconds': 0,
+                        'log': f'/logs/{target}-gl-flat.log'})
+        if gl_fails:
+            raise RuntimeError(f'gate case {target}/gl-flat FAILED (exit 1); log /logs/{target}-gl-flat.log\ntail')
+
+    monkeypatch.setattr(gate, 'Gate', FakeGate)
+    monkeypatch.setattr(gate, 'vulkan_cases', vulkan)
+    monkeypatch.setattr(gate, 'gl_cases', gl)
+    monkeypatch.setattr(gate, 'media_case_image', lambda g, n, img: {'hardware_decode': True})
+    native = types.SimpleNamespace(driver_version=lambda: '580.105.08', NVRM_EGL='nvrm',
+                                   NVRM_EGL_LIBS=('libEGL_nvrm.so',), NVRM_GALLIUM='libgallium_dri_nvrm.so')
+    return gate.run(None, native, b, images=images, log_root=tmp_path / 'logs', vendor_image=images / 'vendor.img')
+
+
+def test_nvrm_passing_is_enabled_and_staged(tmp_path, monkeypatch):
+    _, vk, _, native_gl, sources = fake_run(tmp_path, monkeypatch, gl_fails=False)
+    assert native_gl['enabled'] is True and native_gl['gate']['exit'] == 0
+    assert set(native_gl['files']) == {'vendor/lib64/egl/libEGL_nvrm.so', 'vendor_extra/lib64/libgallium_dri_nvrm.so'}
+    assert 'vendor/lib64/egl/libEGL_nvrm.so' in sources
+
+
+def test_nvrm_failure_disables_native_gl_and_keeps_the_install(tmp_path, monkeypatch, capsys):
+    _, vk, _, native_gl, sources = fake_run(tmp_path, monkeypatch, gl_fails=True)
+    assert native_gl['enabled'] is False
+    assert native_gl['reason'] == ('the nvrm GL smoke test failed on this GPU and kernel module 580.105.08 '
+                                   '(case android/gl-flat, exit 1; log /logs/android-gl-flat.log)')
+    assert native_gl['gate']['exit'] == 1 and [c['case'] for c in native_gl['gate']['cases']] == ['android/gl-flat']
+    assert [c['case'] for c in vk['cases']] == ['android/vk', 'android32/vk'] and vk['exit'] == 0
+    assert not any('nvrm' in rel for rel in sources)        # not staged: ANGLE only
+    assert 'vendor_extra/lib64/hw/vulkan.nvidia.so' in sources
+    out = capsys.readouterr().out
+    assert 'Release gate PASS: 2 cases' in out and 'Native GL (nvrm, opt-in) is NOT available' in out

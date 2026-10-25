@@ -901,13 +901,15 @@ def stage_release(bundle, dest):
                     'kernel_module': gate['kernel_module'], 'gate': gate, 'media': media, 'native_gl': native_gl}
         write_atomic(dest / native.SOURCE_RM_MANIFEST, json.dumps(manifest, indent=2) + '\n')
         native._source_rm_nodes(str(dest))
-        native.check_native_gl(str(dest), manifest)
+        if native_gl['enabled']:
+            native.check_native_gl(str(dest), manifest)
     except BaseException:
         shutil.rmtree(dest, ignore_errors=True)
         raise
     print(f'Staged {len(gated)} gated artifacts (kernel module {gate["kernel_module"]}): {dest}')
     print(f'Media: Codec2 NVDEC decoder staged ({", ".join(media["codecs"])})')
-    print('Native GL: nvrm staged (opt-in: nvidia_native_gl = on)')
+    print('Native GL: ' + ('nvrm staged (opt-in: nvidia_native_gl = on)' if native_gl['enabled']
+                           else f'NOT staged: {native_gl["reason"]}'))
 
 
 def adopt(root, dry_run=False, rust_profile='dev'):
