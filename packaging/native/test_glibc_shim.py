@@ -76,7 +76,8 @@ def host(tmp_path):
                mock.patch.object(nn, 'ROOT_LINKS', {'glibc-shim': str(tmp_path / 'nvidia-glibc-shim'),
                                                     'nvidia-prolapse': str(tmp_path / 'nvidia-prolapse')}),
                mock.patch.object(gs, 'imports_not_covered', lambda arch, census, paths: ''),
-               mock.patch.object(gs, 'drm_names', lambda paths: {n: ['libnvidia-glsi.so.' + V] for n in DRM})]
+               mock.patch.object(gs, 'drm_names', lambda paths: {n: ['libnvidia-glsi.so.' + V] for n in DRM}),
+               mock.patch.object(gs, 'gate', lambda *a, **k: [])]
     for p in patches:
         p.start()
     yield tmp_path
@@ -181,3 +182,13 @@ def test_stage_refuses_a_nonempty_stale_file(host):
 def test_stage_needs_root(host):
     with mock.patch.object(os, 'geteuid', lambda: 1000):
         refused(lambda: gs.stage(make_bundle(host), host / 'staging', False, None), 'needs root')
+
+
+def test_stage_refuses_when_the_gate_fails(host):
+    def failing(*a, **k):
+        raise RuntimeError('gate case android/compute FAILED (exit 1); log /x')
+    bundle, root = make_bundle(host), host / 'staging'
+    with mock.patch.object(os, 'geteuid', lambda: 0), mock.patch.object(gs, 'glibc_version', lambda: '2.42'), \
+            mock.patch.object(gs, 'gate', failing):
+        refused(lambda: gs.stage(bundle, root, False, None), 'gate failed', 'android/compute', 'not switched')
+    assert not os.path.lexists(host / 'nvidia-glibc-shim')        # the root link was not pointed at it

@@ -28,8 +28,11 @@ check (also the first half of stage) refuses, naming the reason and the remedy, 
   - --native-gl on and the driver lacks what NVIDIA's GLES through the EGL front needs (535/550).
 stage then writes ROOT (default /var/lib/waydroid/nvidia-glibc-shim-staging): the files above (new inodes), the
 shims' host-glibc-version sidecar, the libEGL_nvidia.so.0 soname link and an empty placeholder per host library
-(the container binds the host file over it), runs the LXC generator on it and points the glibc-shim root link
-(/var/lib/waydroid/nvidia-glibc-shim) at it.
+(the container binds the host file over it), runs the LXC generator on it, then the gate: the release's Vulkan gate
+programs (compute, graphics, dma-buf/sync-fd interop, the HAL's ANB/ASTC/ETC2 round trips; both ABIs) on this GPU with
+the bionic runtime of the user's system.img, each process required to map NVIDIA's driver through the shims
+(--expect-driver glibc-shim); logs in /var/lib/waydroid-nvidia/gate-glibc-shim-<time>. Only when every case passes
+is the glibc-shim root link (/var/lib/waydroid/nvidia-glibc-shim) pointed at ROOT.
 """
 import argparse
 import hashlib
@@ -151,6 +154,86 @@ def check(bundle, native_gl):
     return v, closures, files
 
 
+def gate(bundle, root, closures, images=Path('/var/lib/waydroid/images'), log_root=Path('/var/lib/waydroid-nvidia')):
+    """Run the release's Vulkan gate programs on this GPU against the staged tree and the host's driver, both ABIs,
+    with the bionic runtime of the user's system.img (packaging/native/release_gate.py), expecting NVIDIA's driver
+    through the shims in every process (--expect-driver glibc-shim). Raises RuntimeError naming the failing case."""
+    rg = load(HERE / 'release_gate.py', 'release_gate')
+    system_img = Path(images) / 'system.img'
+    if not system_img.is_file():
+        raise Refused(f'{system_img} missing: run `waydroid init` first')
+    work = Path(log_root) / f'gate-glibc-shim-{rg.time.strftime("%Y%m%d-%H%M%S")}'
+    work.mkdir(parents=True)
+    # what the guest sees in /vendor_extra/<lib>: the staged files, with the host's driver libraries over the
+    # placeholders (the container binds them there)
+    lib = work / 'vendor_extra'
+    for bits, (_, sub) in ARCHES.items():
+        hosts = dict(closures[bits])
+        for path in sorted((root / 'vendor_extra' / sub).rglob('*')):
+            rel = path.relative_to(root / 'vendor_extra' / sub)
+            dest = lib / sub / rel
+            if path.is_dir():
+                dest.mkdir(parents=True, exist_ok=True)
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_symlink():
+                dest.symlink_to(os.readlink(path))
+            else:
+                dest.symlink_to(hosts.get(path.name, path))
+    print(f'glibc-shim gate on driver {native.driver_version()}; logs in {work}', flush=True)
+
+    class ShimGate(rg.Gate):
+        def __init__(self):
+            super().__init__(bundle, work, system_img)
+            self.payload = work
+
+        def prepare(self, target):
+            sub = rg.ABIS[target][0]
+            dirs = [lib / sub]
+            provided = {p.name for p in (lib / sub).iterdir()}
+            roots, todo, seen = set(rg.RUNTIME_ROOTS), [*(self.progs / 'bin' / target).iterdir(),
+                                                        lib / sub / native.ICD_SONAME, lib / sub / 'hw/vulkan.nvidia.so'], set()
+            while todo:
+                obj = todo.pop()
+                if obj in seen:
+                    continue
+                seen.add(obj)
+                for name in rg.needed(obj, leaf_ok=True):
+                    local = next((d / name for d in dirs if (d / name).exists()), None)
+                    if local is not None:
+                        todo.append(local)
+                    else:
+                        roots.add(name)
+            out = work / 'runtime' / sub
+            origin = rg.extract_runtime(system_img, out, sub, sorted(roots), provided)
+            self.runtime[target] = out
+            return origin
+
+        def libpath(self, target):
+            sub = rg.ABIS[target][0]
+            return [lib / sub, root / 'vendor' / sub / 'egl', self.runtime[target]]
+
+    g = ShimGate()
+    for target in rg.ABIS:
+        g.prepare(target)
+    for target in rg.ABIS:
+        sub = rg.ABIS[target][0]
+        icd, hal = lib / sub / native.ICD_SONAME, lib / sub / 'hw/vulkan.nvidia.so'
+        b, d = g.progs / 'bin' / target, g.progs / 'data'
+        g.run(target, 'compute', [b / 'vk-compute', '--icd', '--driver', icd, '--shader', d / 'generate.spv',
+                                  '--transform', d / 'transform.spv', '--negative', '--expect-driver', 'glibc-shim'])
+        g.run(target, 'graphics', [b / 'vk-graphics', icd, d / 'vertex.spv', d / 'fragment.spv',
+                                   '--expect-driver', 'glibc-shim'])
+        g.run(target, 'interop', [b / 'vk-interop', '--driver', icd, '--expect-driver', 'glibc-shim'])
+        g.run(target, 'anb', [b / 'anb-roundtrip', hal, '--bounded'])
+        g.run(target, 'astc', [b / 'astc-roundtrip', hal])
+        g.run(target, 'etc2', [b / 'etc2-roundtrip', hal])
+    (work / 'gate.json').write_text(json.dumps({'mode': 'glibc-shim', 'driver': native.driver_version(),
+                                                'cases': g.cases}, indent=2) + '\n')
+    print(f'glibc-shim gate: {len(g.cases)} cases passed', flush=True)
+    return g.cases
+
+
 def glibc_version():
     out = subprocess.run(['getconf', 'GNU_LIBC_VERSION'], capture_output=True, text=True).stdout.split()
     if len(out) != 2 or not re.fullmatch(r'\d+\.\d+', out[1]):
@@ -173,7 +256,7 @@ def mounted(root):
     return f' {root}/vendor_extra ' in text or '/vendor_extra/lib64/libnvidia-' in text
 
 
-def stage(bundle, root, native_gl, tag):
+def stage(bundle, root, native_gl, tag, run_gate=True):
     v, closures, files = check(bundle, native_gl)
     if os.geteuid() != 0:
         raise Refused('stage needs root (it writes under /var/lib/waydroid)')
@@ -215,6 +298,11 @@ def stage(bundle, root, native_gl, tag):
         d.chmod(0o755)
     (root / 'staged-build-info').write_text(f'package {tag or "unknown"} glibc-shim driver {v} glibc {glibc}\n')
     entries = native.lxc_nodes(str(root), native_gl=native_gl)
+    if run_gate:
+        try:
+            gate(bundle, root, closures)
+        except RuntimeError as error:
+            raise Refused(f'the glibc-shim gate failed on this GPU and driver; the mode was not switched:\n{error}')
     previous = native.repoint_link(native.ROOT_LINKS['glibc-shim'], str(root))
     print(f'glibc-shim: staged {root} for driver {v} (glibc {glibc}; generator: {len(entries)} mount entries); '
           f'{native.ROOT_LINKS["glibc-shim"]} -> {root} (was {previous or "absent"})')

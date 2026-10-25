@@ -5,6 +5,7 @@
  * Usage: probe /absolute/ICD.so vertex.spv fragment.spv
  */
 #define VK_NO_PROTOTYPES
+#include "native-driver-identity.h"
 #include <vulkan/vulkan.h>
 #include "native-vulkan-runtime.h"
 #include <dlfcn.h>
@@ -62,16 +63,18 @@ static VkShaderModule load_shader(const char *path) {
     VkShaderModuleCreateInfo info={.sType=VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,.codeSize=(size_t)size,.pCode=code};
     VkShaderModule shader; CHECK(pCreateShaderModule(device,&info,NULL,&shader)); free(code); return shader;
 }
-static void check_maps(void) {
-    FILE *file=fopen("/proc/self/maps","r"); if (!file) fail("open process maps");
-    char line[4096];
-    while (fgets(line,sizeof(line),file)) if (strstr(line,"libnvidia-") || strstr(line,"libEGL_nvidia") || strstr(line,"libnvglibc")) fail("proprietary userspace/shim mapped");
-    fclose(file);
+static void check_maps(enum nv_expect_driver expect) {
+    char why[4200];
+    if (nv_expect_driver_check(expect,why,sizeof(why))) fail(why);
 }
 
 int main(int argc,char **argv) {
+    /* ICD.so vert.spv frag.spv [--stock-control | --expect-driver nvidia-prolapse|glibc-shim] */
     int stock_control=argc==5 && !strcmp(argv[4],"--stock-control");
-    if (argc!=4 && !stock_control) { fprintf(stderr,"usage: %s ICD.so offscreen.vert.spv offscreen.frag.spv [--stock-control]\n",argv[0]); return 2; }
+    enum nv_expect_driver expect=NV_EXPECT_PROLAPSE;
+    int expect_given=argc==6 && !strcmp(argv[4],"--expect-driver");
+    if (expect_given && nv_expect_driver_parse(argv[5],&expect)) { fprintf(stderr,"--expect-driver is nvidia-prolapse or glibc-shim\n"); return 2; }
+    if (argc!=4 && !stock_control && !expect_given) { fprintf(stderr,"usage: %s ICD.so offscreen.vert.spv offscreen.frag.spv [--stock-control | --expect-driver nvidia-prolapse|glibc-shim]\n",argv[0]); return 2; }
     nv_probe_android_runtime_init();
     /* NVP_OFFSCREEN_MODE (fault bisection; unset = full, the gate itself):
        full    clear + fullscreen draw + copy, checker pattern checked
@@ -223,7 +226,7 @@ int main(int argc,char **argv) {
         }
         printf("phase %u: %u pixels + 128 guard bytes correct\n",phase,PIXELS);
     }
-    CHECK(pDeviceWaitIdle(device)); if (!stock_control) check_maps();
+    CHECK(pDeviceWaitIdle(device)); if (!stock_control) check_maps(expect);
     pDestroyFence(device,fence,NULL); pDestroyCommandPool(device,pool,NULL); pDestroyPipeline(device,pipeline,NULL);
     pDestroyPipelineLayout(device,layout,NULL); pDestroyShaderModule(device,fragment,NULL); pDestroyShaderModule(device,vertex,NULL);
     pDestroyFramebuffer(device,framebuffer,NULL); pDestroyRenderPass(device,pass,NULL); pDestroyImageView(device,view,NULL);
@@ -231,7 +234,10 @@ int main(int argc,char **argv) {
     pDestroyImage(device,image,NULL); pFreeMemory(device,image_memory,NULL); pDestroyDevice(device,NULL); pDestroyInstance(instance,NULL);
     nv_probe_android_logger_close();
     dlclose(library);
-    unsigned after=fd_count(); printf("PASS: %u rendered pixels; fd %u -> %u; %s\n",PIXELS*3,before,after,stock_control?"explicit stock control":"no NVIDIA userspace/shim");
-    if (after!=before) fail("file descriptor leak");
+    unsigned after=fd_count();
+    const char *identity=stock_control?"explicit stock control":expect==NV_EXPECT_GLIBC_SHIM?"NVIDIA's driver through the glibc-compat shims":"no NVIDIA userspace/shim";
+    if (stock_control || nv_expect_driver_fds_checked(expect)) { if (after!=before) fail("file descriptor leak"); }
+    else if (after!=before) printf("fd %u -> %u: held by the driver, which stays loaded (glibc-shim)\n",before,after);
+    printf("PASS: %u rendered pixels; fd %u -> %u; %s\n",PIXELS*3,before,after,identity);
     return 0;
 }

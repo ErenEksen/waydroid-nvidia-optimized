@@ -5,6 +5,7 @@
 #define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
 #include "native-vulkan-runtime.h"
+#include "native-driver-identity.h"
 #include <dlfcn.h>
 #include <dirent.h>
 #include <inttypes.h>
@@ -167,15 +168,16 @@ static void barrier(VkCommandBuffer command, struct Buffer *buffer, uint32_t cou
     };
     pCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 1, &memory, 0, NULL);
 }
-static void verify_runtime(int allow_stock_driver) {
+static void verify_runtime(int allow_stock_driver, enum nv_expect_driver expect) {
+    char why[4200];
+    if (!allow_stock_driver && nv_expect_driver_check(expect, why, sizeof(why))) {
+        fprintf(stderr, "%s", why);
+        exit(1);
+    }
     FILE *file = fopen("/proc/self/maps", "r");
     if (!file) die("cannot inspect runtime library mappings");
     char line[4096];
     while (fgets(line, sizeof(line), file)) {
-        if (!allow_stock_driver && (strstr(line, "libnvidia-") || strstr(line, "libEGL_nvidia") || strstr(line, "libnvglibc"))) {
-            fprintf(stderr, "unexpected proprietary userspace/shim: %s", line);
-            exit(1);
-        }
         if (strstr(line, "libc.so") || strstr(line, "libnv_bionic_native") || strstr(line, "libvulkan.so"))
             printf("runtime-map: %s", line);
     }
@@ -185,15 +187,19 @@ static void verify_runtime(int allow_stock_driver) {
 int main(int argc, char **argv) {
     const char *driver = NULL, *generator_path = NULL, *transform_path = NULL;
     int loader = 0, allow_stock_driver = 0, negative = 0, icd = 0;
+    enum nv_expect_driver expect = NV_EXPECT_PROLAPSE;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--loader")) loader = 1;
         else if (!strcmp(argv[i], "--icd")) icd = 1;
         else if (!strcmp(argv[i], "--negative")) negative = 1;
         else if (!strcmp(argv[i], "--allow-stock-driver")) allow_stock_driver = 1;
+        else if (i + 1 < argc && !strcmp(argv[i], "--expect-driver")) {
+            if (nv_expect_driver_parse(argv[++i], &expect)) die("--expect-driver is nvidia-prolapse or glibc-shim");
+        }
         else if (i + 1 < argc && !strcmp(argv[i], "--driver")) driver = argv[++i];
         else if (i + 1 < argc && !strcmp(argv[i], "--shader")) generator_path = argv[++i];
         else if (i + 1 < argc && !strcmp(argv[i], "--transform")) transform_path = argv[++i];
-        else die("usage: PROBE --driver /absolute/library.so --shader generate.spv --transform transform.spv [--loader|--icd] [--allow-stock-driver] [--negative]");
+        else die("usage: PROBE --driver /absolute/library.so --shader generate.spv --transform transform.spv [--loader|--icd] [--expect-driver nvidia-prolapse|glibc-shim] [--allow-stock-driver] [--negative]");
     }
     if (!driver || driver[0] != '/' || !generator_path || !transform_path)
         die("provide an absolute --driver path plus --shader and --transform SPIR-V paths");
@@ -396,7 +402,7 @@ int main(int argc, char **argv) {
         pWaitForFences(device, 1, &fence, VK_TRUE, 0) != VK_TIMEOUT) die("final fence reset failed");
     VK_CHECK(pQueueWaitIdle(queue));
     VK_CHECK(pDeviceWaitIdle(device));
-    verify_runtime(allow_stock_driver);
+    verify_runtime(allow_stock_driver, expect);
     pDestroyFence(device, fence, NULL);
     pDestroyCommandPool(device, command_pool, NULL);
     pDestroyDescriptorPool(device, descriptor_pool, NULL);
@@ -413,7 +419,9 @@ int main(int argc, char **argv) {
     const int descriptors_after = open_fd_count();
     printf("file descriptors before/after: %d/%d\n", descriptors_before, descriptors_after);
     if (descriptors_after != descriptors_before) nv_probe_dump_fds();
-    if (descriptors_after != descriptors_before) die("file descriptor count changed after full Vulkan resource cleanup");
+    if (!nv_expect_driver_fds_checked(expect) && !allow_stock_driver)
+        printf("file descriptors held by the driver, which stays loaded (glibc-shim): listed above\n");
+    else if (descriptors_after != descriptors_before) die("file descriptor count changed after full Vulkan resource cleanup");
     printf("PASS: Vulkan compute subset, two shaders, six sizes, %u output words checked across three buffers; not Vulkan conformance\n", total * 3);
     return 0;
 }

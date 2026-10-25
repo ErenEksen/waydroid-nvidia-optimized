@@ -346,10 +346,12 @@ def vulkan_cases(gate, target):
     icd = gate.payload / 'vendor_extra' / sub / 'libvulkan_nouveau.so'
     hal = gate.payload / 'vendor_extra' / sub / 'hw/vulkan.nvidia.so'
     b, d = gate.progs / 'bin' / target, gate.progs / 'data'
+    # the programs check which driver their process mapped: ours, no NVIDIA userspace (tools/native-driver-identity.h)
     gate.run(target, 'compute', [b / 'vk-compute', '--icd', '--driver', icd, '--shader', d / 'generate.spv',
-                                 '--transform', d / 'transform.spv', '--negative'])
-    gate.run(target, 'graphics', [b / 'vk-graphics', icd, d / 'vertex.spv', d / 'fragment.spv'])
-    gate.run(target, 'interop', [b / 'vk-interop', '--driver', icd])
+                                 '--transform', d / 'transform.spv', '--negative', '--expect-driver', 'nvidia-prolapse'])
+    gate.run(target, 'graphics', [b / 'vk-graphics', icd, d / 'vertex.spv', d / 'fragment.spv',
+                                  '--expect-driver', 'nvidia-prolapse'])
+    gate.run(target, 'interop', [b / 'vk-interop', '--driver', icd, '--expect-driver', 'nvidia-prolapse'])
     gate.run(target, 'anb', [b / 'anb-roundtrip', hal, '--bounded'])
     gate.run(target, 'astc', [b / 'astc-roundtrip', hal])
     gate.run(target, 'etc2', [b / 'etc2-roundtrip', hal])

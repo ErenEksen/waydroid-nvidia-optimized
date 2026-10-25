@@ -5,6 +5,7 @@
  * ownership and sync-fd semaphore/fence transfer. No private driver ABI. */
 #define _GNU_SOURCE
 #define VK_NO_PROTOTYPES
+#include "native-driver-identity.h"
 #include <dirent.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -244,31 +245,28 @@ static VkSemaphore semaphore(struct Device *d, int external) {
   CHECK(d->CreateSemaphore(d->handle, &info, NULL, &s));
   return s;
 }
-static void maps_check(int allow_stock) {
-  FILE *f = fopen("/proc/self/maps", "r");
-  require(f != NULL, "runtime maps");
-  char line[4096];
-  while (fgets(line, sizeof(line), f))
-    if (!allow_stock &&
-        (strstr(line, "libnvidia-") || strstr(line, "libEGL_nvidia") ||
-         strstr(line, "libnvglibc"))) {
-      fprintf(stderr, "FAIL: unexpected proprietary runtime mapping: %s", line);
-      exit(1);
-    }
-  require(!ferror(f), "read maps");
-  fclose(f);
+static void maps_check(int allow_stock, enum nv_expect_driver expect) {
+  char why[4200];
+  if (!allow_stock && nv_expect_driver_check(expect, why, sizeof(why))) {
+    fprintf(stderr, "FAIL: %s", why);
+    exit(1);
+  }
 }
 int main(int argc, char **argv) {
   const char *driver = NULL;
   int allow_stock = 0;
+  enum nv_expect_driver expect = NV_EXPECT_PROLAPSE;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--driver") && i + 1 < argc)
       driver = argv[++i];
     else if (!strcmp(argv[i], "--allow-stock-driver"))
       allow_stock = 1;
+    else if (!strcmp(argv[i], "--expect-driver") && i + 1 < argc)
+      require(!nv_expect_driver_parse(argv[++i], &expect),
+              "--expect-driver is nvidia-prolapse or glibc-shim");
     else
-      require(0,
-              "usage: PROBE --driver /absolute/ICD.so [--allow-stock-driver]");
+      require(0, "usage: PROBE --driver /absolute/ICD.so [--expect-driver "
+                 "nvidia-prolapse|glibc-shim] [--allow-stock-driver]");
   }
   require(driver && driver[0] == '/', "absolute driver path");
   setvbuf(stdout, NULL, _IONBF, 0);
@@ -514,7 +512,7 @@ int main(int argc, char **argv) {
   }
   CHECK(producer.DeviceWaitIdle(producer.handle));
   CHECK(consumer.DeviceWaitIdle(consumer.handle));
-  maps_check(allow_stock);
+  maps_check(allow_stock, expect);
   producer.DestroyFence(producer.handle, exported_fence, NULL);
   consumer.DestroyFence(consumer.handle, imported_fence, NULL);
   consumer.DestroyFence(consumer.handle, done, NULL);
@@ -534,7 +532,10 @@ int main(int argc, char **argv) {
   int after = fd_count();
   printf("file descriptors %d -> %d\n", before, after);
   if (before != after) nv_probe_dump_fds();
-  require(before == after, "fd leak");
+  if (allow_stock || nv_expect_driver_fds_checked(expect))
+    require(before == after, "fd leak");
+  else if (before != after)
+    printf("file descriptors held by the driver, which stays loaded (glibc-shim): listed above\n");
   printf("PASS: %u cross-device GPU-copy words, DMA-BUF ownership and SYNC_FD "
          "semaphore/fence round trips; no image presentation tested\n",
          total);

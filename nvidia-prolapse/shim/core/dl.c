@@ -67,6 +67,13 @@ NVG_EXPORT void *nvg_dlopen(const char *name, int flags) {
 #if !defined(__LP64__)
     flags = map_dlopen_flags(flags);
 #endif
+    /* Every library the driver opens stays loaded for the life of the process (bionic RTLD_NODELETE). libEGL_nvidia
+     * dlopens itself and dlcloses that handle from the exit-time destructor it registers with __cxa_atexit (615.78.08:
+     * ELF 0x316d0 registers 0x9f950, which reaches its dlclose wrapper 0xb8140); when no other reference is left, bionic
+     * unmaps the library under that running destructor and the process dies at exit with SIGSEGV (measured in the
+     * guest; a glibc process exits cleanly). While the process runs, the driver never drops its own handles, so this
+     * changes nothing before exit. */
+    flags |= RTLD_NODELETE;
     void *h = dlopen(name, flags);
     if (h == NULL) {
         /* dlerror() is not called here: it would consume the message the
