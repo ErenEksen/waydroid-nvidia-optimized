@@ -10,7 +10,7 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 ## Why switch from Venus
 
 - **Speed:** in 3DMark Wild Life Extreme on an RTX 5090, the default mode runs at 475.4 FPS and NVIDIA's own driver
-  (`glibc-shim`) at 493.5 FPS. Venus scored 59.8k against our 72.5k on the same card in an earlier build, because
+  (`glibc-shim`) at 507.7 FPS. Venus scored 59.8k against our 72.5k on the same card in an earlier build, because
   its socket can't feed a GPU that fast. On an RTX 5070 Ti, a user measured Venus ahead of us
 - **No shader stutter:** Minecraft's first item switch ~0.2 s (Venus: 1.8 s)
 - **Hardware video decode:** H.264, HEVC, VP9, AV1 (RTX 20 and newer)
