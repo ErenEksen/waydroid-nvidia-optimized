@@ -138,18 +138,127 @@ endian = 'little'
 _GL_SUFFIX = os.environ.get("NVRM_GL_DIR_SUFFIX", "")
 GL_SOURCE = ROOT / f"build/mesa-gl-source{_GL_SUFFIX}"
 GL_RUST = ROOT / f"build/nvrm-rust{_GL_SUFFIX}"
-NVK_PATCHES = ("build-compat.patch", "rm-integration.patch", "pascal-a-clear.patch",
-               "nvk-upstream-ecfea8d9-ycbcr-modifier.patch",
-               "nvk-upstream-bfb90f05-memory-plane-aspects.patch",
-               "nvk-explicit-plane-layouts.patch", "nvk-angle-nan-preserve-min-max.patch",
-               "mesa-disk-cache-create-with-path.patch", "mesa-disk-cache-keep-file-backend.patch",
-               "mesa-disk-cache-evict-invalid-item.patch", "nvk-android-app-disk-cache.patch",
-               "nvk-shader-upload-publish.patch", "nvk-shader-prefetch-in-range.patch",
-               "nvk-prevolta-modifier-memory-types.patch", "nvk-3d-view-of-2d-image.patch",
-               "nvk-pixel-shader-barrier.patch", "nak-qmd-cwd-membar.patch",
-               "nak-qmd-dependency.patch", "nvk-cs-join-qmd.patch",
-               "nvk-compute-queue-family.patch", "nvk-stock-compute-init.patch",
-               "nak-qmd-occupancy.patch")
+# The NVK patch stack, in order; the GL (nvrm) tree applies the same stack
+# (prepare_gl_source) so its NAK, nil and NVK sources match the NVK build.
+NVK_PATCHES = (
+    "build-compat.patch",
+    "rm-integration.patch",
+    # Generic NVK hardware behaviour (any backend): PASCAL_A clear bracket.
+    "pascal-a-clear.patch",
+    # NV12/P010 dma-buf import: 26.2 has upstream !40473 (multi-planar LINEAR
+    # modifiers, plane offsets, multi-plane tiled shadows); these two
+    # upstream main fixes are not in 26.2.x: ecfea8d9 (modifier list on a
+    # YCbCr image picks LINEAR without nil) and bfb90f05 (MEMORY_PLANE_i ->
+    # plane i), cherry-picked unchanged.
+    "nvk-upstream-ecfea8d9-ycbcr-modifier.patch",
+    "nvk-upstream-bfb90f05-memory-plane-aspects.patch",
+    # Client plane layouts that cannot be bound fail vkCreateImage loudly
+    # (upstream asserts).
+    "nvk-explicit-plane-layouts.patch",
+    # GLES through ANGLE keeps NaN-preserving FMin/FMax/FClamp (Mesa 26
+    # folds max(NaN, 0) to NaN; GTA SA car paint black), driconf by engine.
+    "nvk-angle-nan-preserve-min-max.patch",
+    # Shader disk cache in an explicit per-application directory
+    # (create_with_path): nvrm's program cache and, on Android, NVK's
+    # pipeline cache in the application's code_cache; never redirected
+    # into the EGL blob cache (keep-file-backend); self-healing after a
+    # damaged item (evict-invalid).
+    "mesa-disk-cache-create-with-path.patch",
+    "mesa-disk-cache-keep-file-backend.patch",
+    "mesa-disk-cache-evict-invalid-item.patch",
+    "nvk-android-app-disk-cache.patch",
+    # Shader programs published as the proprietary driver does: copy-engine
+    # uploads into an unmapped heap, an upload count, and an instruction-
+    # cache invalidate after the upload wait in the first submission after
+    # the count moved; programs in whole 256 B prefetch blocks (Ampere B+).
+    "nvk-shader-upload-publish.patch",
+    "nvk-shader-prefetch-in-range.patch",
+    # Fermi..Volta: block-linear DRM-modifier images get no host-visible
+    # VRAM (BAR1) memory type, as the proprietary driver offers none; BAR1
+    # does not return the modifier's byte layout there.
+    "nvk-prevolta-modifier-memory-types.patch",
+    # A 3D view of a 2D image (invalid usage NVIDIA's driver accepts) is
+    # described as a depth-1 3D image instead of tripping nil's assert.
+    "nvk-3d-view-of-2d-image.patch",
+    # Blackwell B: colour-attachment output -> fragment reads drain with
+    # PIXEL_SHADER_BARRIER instead of WAIT_FOR_IDLE, and QMDs carry
+    # CWD_MEMBAR_TYPE = L1_MEMBAR, as NVIDIA's driver does.
+    "nvk-pixel-shader-barrier.patch",
+    "nak-qmd-cwd-membar.patch",
+    # Blackwell B: compute -> compute barriers order through QMD
+    # dependencies (an empty join QMD per barrier, host dependency
+    # decrements) instead of WAIT_FOR_IDLE, as NVIDIA's driver does.
+    "nak-qmd-dependency.patch",
+    "nvk-cs-join-qmd.patch",
+    # A compute-only queue family whose queues run on their own
+    # subcontext in graphics queue 0's channel group (AMPERE_COMPUTE_B+,
+    # backends with shared contexts), as the proprietary driver exposes
+    # and places its compute queues; its transfers and clears run as
+    # compute work there.
+    "nvk-compute-queue-family.patch",
+    # Every compute context starts with the proprietary driver's compute
+    # initialiser words where they are public (SPA/QMD version, SKED
+    # cache sequence with IGNORE_VEID, CWD slot count on GB20x); SKED
+    # cache invalidates then happen only in that WFI-ALL form.
+    "nvk-stock-compute-init.patch",
+    # QMD V05 (Blackwell): every dispatch carries the proprietary
+    # driver's occupancy limits; without them a full-GPU grid and the
+    # graphics work of another queue in the same channel group
+    # time-slice instead of running together.
+    "nak-qmd-occupancy.patch",
+    # The same occupancy limits in the AMPERE_COMPUTE_B..Hopper QMD
+    # layouts, CTA_LAUNCH_QUEUE / QMD_GROUP_ID by the recording queue
+    # family, and the compute-only family's indirect dispatch sizing the
+    # MME data FIFO through the compute class.
+    "nak-qmd-launch-fields.patch",
+    # Turing..Ada compute contexts start with the proprietary driver's
+    # SCG setup (SET_SCG_CONTROL from the GR shader pipe counts, the SM
+    # SCG control sequence) and every Turing+ one with its SCG compute
+    # scheduling parameters: without them a compute-only queue's work
+    # time-slices with graphics work instead of running beside it.
+    "nvk-compute-scg-init.patch",
+    # Conditional rendering on the compute-only queue: its channel loads
+    # the conditional-rendering macro, sizes the macro data FIFO through
+    # the compute class, and the condition sets the compute class's own
+    # render enable.
+    "nvk-compute-queue-cond-render.patch",
+    # NAK loop codegen. Blackwell ALU instructions take no constant-buffer operands
+    # (NAK opt_copy_prop.rs), so a bindless cbuf value used in divergent
+    # control flow is read from the uniform register it was loaded into
+    # instead of being re-loaded into a GPR in every block;
+    "nak-blackwell-ldcx-uniform-reads.patch",
+    # convergent loop-invariant ALU results and cbuf loads leave loops
+    # entered in uniform control flow (uniform registers, no GPR cost),
+    # as NVIDIA's compiler keeps them in uniform registers loaded once;
+    "nak-licm-convergent.patch",
+    # a divergent loop without a continue gets no reconvergence barrier
+    # per iteration, only the one around the loop that its breaks sync
+    # on, which is the shape NVIDIA's compiler emits for such loops.
+    "nak-loop-continue-sync.patch",
+    # Blackwell: texture fetches (TEX/TLD/TLD4) all signal one counting
+    # scoreboard and their results are awaited with DEPBAR.LE, as
+    # NVIDIA's compiler does, so more than five fetches can be in flight.
+    "nak-blackwell-counted-tex-scoreboard.patch",
+    # Blackwell: a uniform bindless handle reaches TEX/TLD/TLD4 as an
+    # even uniform register pair (texture index, sampler index) built
+    # once, instead of a GPR copy in every fetch's source vector, as
+    # NVIDIA's compiler encodes it.
+    "nak-blackwell-uniform-tex-handle.patch",
+    # Volta/Turing: the SKED QMD cache is shared by the channel group's
+    # subcontexts, so it is not invalidated per command buffer; instead
+    # each command buffer counts its dispatches (QMD RELEASE0 reduction
+    # ADD to a launch counter), waits for them at its end and drops
+    # every QMD it allocated from the cache with a PCAS INVALIDATE, as
+    # the proprietary driver does below AMPERE_A.
+    "nvk-turing-sked-qmd-invalidate.patch",
+    # Volta..Ampere A compute-only queues: their compute class has no
+    # MME, so indirect dispatch, conditional rendering and compute
+    # invocation statistics there do without NVK's macros (the indirect
+    # buffer fetched as push-buffer data into the QMD, as the proprietary
+    # driver does on its Turing and Volta compute queues), and the
+    # compute-only family is offered from Volta on.
+    "nvk-compute-queue-no-mme.patch",
+)
 
 GL_TRIPLES = {"android": "x86_64-linux-android", "android32": "i686-linux-android"}
 # Android: distinct library names so the image's own Mesa (libEGL_mesa.so,
@@ -161,125 +270,7 @@ GL_ANDROID_ARTIFACTS = (f"src/egl/libEGL{GL_ANDROID_SUFFIX}.so",
                         f"src/mesa/glapi/es2api/libGLESv2{GL_ANDROID_SUFFIX}.so",
                         f"src/gallium/targets/dri/libgallium_dri{GL_ANDROID_SUFFIX}.so")
 
-NVK_PATCH_LIST = [
-    HERE / "build-compat.patch",
-    HERE / "rm-integration.patch",
-    # Generic NVK hardware behaviour (any backend): PASCAL_A clear bracket.
-    HERE / "pascal-a-clear.patch",
-    # NV12/P010 dma-buf import: 26.2 has upstream !40473 (multi-planar LINEAR
-    # modifiers, plane offsets, multi-plane tiled shadows); these two
-    # upstream main fixes are not in 26.2.x: ecfea8d9 (modifier list on a
-    # YCbCr image picks LINEAR without nil) and bfb90f05 (MEMORY_PLANE_i ->
-    # plane i), cherry-picked unchanged.
-    HERE / "nvk-upstream-ecfea8d9-ycbcr-modifier.patch",
-    HERE / "nvk-upstream-bfb90f05-memory-plane-aspects.patch",
-    # Client plane layouts that cannot be bound fail vkCreateImage loudly
-    # (upstream asserts).
-    HERE / "nvk-explicit-plane-layouts.patch",
-    # GLES through ANGLE keeps NaN-preserving FMin/FMax/FClamp (Mesa 26
-    # folds max(NaN, 0) to NaN; GTA SA car paint black), driconf by engine.
-    HERE / "nvk-angle-nan-preserve-min-max.patch",
-    # Shader disk cache in an explicit per-application directory
-    # (create_with_path): nvrm's program cache and, on Android, NVK's
-    # pipeline cache in the application's code_cache; never redirected
-    # into the EGL blob cache (keep-file-backend); self-healing after a
-    # damaged item (evict-invalid).
-    HERE / "mesa-disk-cache-create-with-path.patch",
-    HERE / "mesa-disk-cache-keep-file-backend.patch",
-    HERE / "mesa-disk-cache-evict-invalid-item.patch",
-    HERE / "nvk-android-app-disk-cache.patch",
-    # Shader programs published as the proprietary driver does: copy-engine
-    # uploads into an unmapped heap, an upload count, and an instruction-
-    # cache invalidate after the upload wait in the first submission after
-    # the count moved; programs in whole 256 B prefetch blocks (Ampere B+).
-    HERE / "nvk-shader-upload-publish.patch",
-    HERE / "nvk-shader-prefetch-in-range.patch",
-    # Fermi..Volta: block-linear DRM-modifier images get no host-visible
-    # VRAM (BAR1) memory type, as the proprietary driver offers none; BAR1
-    # does not return the modifier's byte layout there.
-    HERE / "nvk-prevolta-modifier-memory-types.patch",
-    # A 3D view of a 2D image (invalid usage NVIDIA's driver accepts) is
-    # described as a depth-1 3D image instead of tripping nil's assert.
-    HERE / "nvk-3d-view-of-2d-image.patch",
-    # Blackwell B: colour-attachment output -> fragment reads drain with
-    # PIXEL_SHADER_BARRIER instead of WAIT_FOR_IDLE, and QMDs carry
-    # CWD_MEMBAR_TYPE = L1_MEMBAR, as NVIDIA's driver does.
-    HERE / "nvk-pixel-shader-barrier.patch",
-    HERE / "nak-qmd-cwd-membar.patch",
-    # Blackwell B: compute -> compute barriers order through QMD
-    # dependencies (an empty join QMD per barrier, host dependency
-    # decrements) instead of WAIT_FOR_IDLE, as NVIDIA's driver does.
-    HERE / "nak-qmd-dependency.patch",
-    HERE / "nvk-cs-join-qmd.patch",
-    # A compute-only queue family whose queues run on their own
-    # subcontext in graphics queue 0's channel group (AMPERE_COMPUTE_B+,
-    # backends with shared contexts), as the proprietary driver exposes
-    # and places its compute queues; its transfers and clears run as
-    # compute work there.
-    HERE / "nvk-compute-queue-family.patch",
-    # Every compute context starts with the proprietary driver's compute
-    # initialiser words where they are public (SPA/QMD version, SKED
-    # cache sequence with IGNORE_VEID, CWD slot count on GB20x); SKED
-    # cache invalidates then happen only in that WFI-ALL form.
-    HERE / "nvk-stock-compute-init.patch",
-    # QMD V05 (Blackwell): every dispatch carries the proprietary
-    # driver's occupancy limits; without them a full-GPU grid and the
-    # graphics work of another queue in the same channel group
-    # time-slice instead of running together.
-    HERE / "nak-qmd-occupancy.patch",
-    # The same occupancy limits in the AMPERE_COMPUTE_B..Hopper QMD
-    # layouts, CTA_LAUNCH_QUEUE / QMD_GROUP_ID by the recording queue
-    # family, and the compute-only family's indirect dispatch sizing the
-    # MME data FIFO through the compute class.
-    HERE / "nak-qmd-launch-fields.patch",
-    # Turing..Ada compute contexts start with the proprietary driver's
-    # SCG setup (SET_SCG_CONTROL from the GR shader pipe counts, the SM
-    # SCG control sequence) and every Turing+ one with its SCG compute
-    # scheduling parameters: without them a compute-only queue's work
-    # time-slices with graphics work instead of running beside it.
-    HERE / "nvk-compute-scg-init.patch",
-    # Conditional rendering on the compute-only queue: its channel loads
-    # the conditional-rendering macro, sizes the macro data FIFO through
-    # the compute class, and the condition sets the compute class's own
-    # render enable.
-    HERE / "nvk-compute-queue-cond-render.patch",
-    # NAK loop codegen. Blackwell ALU instructions take no constant-buffer operands
-    # (NAK opt_copy_prop.rs), so a bindless cbuf value used in divergent
-    # control flow is read from the uniform register it was loaded into
-    # instead of being re-loaded into a GPR in every block;
-    HERE / "nak-blackwell-ldcx-uniform-reads.patch",
-    # convergent loop-invariant ALU results and cbuf loads leave loops
-    # entered in uniform control flow (uniform registers, no GPR cost),
-    # as NVIDIA's compiler keeps them in uniform registers loaded once;
-    HERE / "nak-licm-convergent.patch",
-    # a divergent loop without a continue gets no reconvergence barrier
-    # per iteration, only the one around the loop that its breaks sync
-    # on, which is the shape NVIDIA's compiler emits for such loops.
-    HERE / "nak-loop-continue-sync.patch",
-    # Blackwell: texture fetches (TEX/TLD/TLD4) all signal one counting
-    # scoreboard and their results are awaited with DEPBAR.LE, as
-    # NVIDIA's compiler does, so more than five fetches can be in flight.
-    HERE / "nak-blackwell-counted-tex-scoreboard.patch",
-    # Blackwell: a uniform bindless handle reaches TEX/TLD/TLD4 as an
-    # even uniform register pair (texture index, sampler index) built
-    # once, instead of a GPR copy in every fetch's source vector, as
-    # NVIDIA's compiler encodes it.
-    HERE / "nak-blackwell-uniform-tex-handle.patch",
-    # Volta/Turing: the SKED QMD cache is shared by the channel group's
-    # subcontexts, so it is not invalidated per command buffer; instead
-    # each command buffer counts its dispatches (QMD RELEASE0 reduction
-    # ADD to a launch counter), waits for them at its end and drops
-    # every QMD it allocated from the cache with a PCAS INVALIDATE, as
-    # the proprietary driver does below AMPERE_A.
-    HERE / "nvk-turing-sked-qmd-invalidate.patch",
-    # Volta..Ampere A compute-only queues: their compute class has no
-    # MME, so indirect dispatch, conditional rendering and compute
-    # invocation statistics there do without NVK's macros (the indirect
-    # buffer fetched as push-buffer data into the QMD, as the proprietary
-    # driver does on its Turing and Volta compute queues), and the
-    # compute-only family is offered from Volta on.
-    HERE / "nvk-compute-queue-no-mme.patch",
-]
+NVK_PATCH_LIST = [HERE / name for name in NVK_PATCHES]
 
 def prepared_stamp(source, inputs):
     """Content hash of what a source preparation applies (patches, copied files): written into the worktree
