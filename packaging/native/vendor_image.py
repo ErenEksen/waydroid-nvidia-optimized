@@ -397,7 +397,8 @@ def install(args):
         print(media['reason'], flush=True)
     if not native_gl_ok:
         print(f'native GL (nvrm, opt-in): not available on this GPU: {native_gl_reason}. GLES is ANGLE on the Vulkan '
-              'driver; --native-gl on is refused until a later setup run passes the nvrm gate.', flush=True)
+              'driver; --native-gl on is refused (the gate runs nvrm again after a package or driver update).',
+              flush=True)
 
 
 def restore_official(args):
