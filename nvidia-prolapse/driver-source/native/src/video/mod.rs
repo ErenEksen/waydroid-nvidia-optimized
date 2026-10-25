@@ -143,7 +143,8 @@ pub(crate) fn bitstream<T>(m: impl Into<String>) -> VResult<T> {
 /// NVDEC classes, newest first: (class, chip family, stock capability bit, tested on hardware by this
 /// library). The bit is the generation bit stock libnvcuvid 615.71.09 sets in its decoder capability word
 /// for that class (ELF 0x30970); every per-generation branch below tests that word with the masks of [`NvdecGen`]. Classes
-/// with bit 0 (Volta and older) decode nothing in stock and are refused here too. CFB0 (GB202, local + rental),
+/// with bit 0 (Volta and older) decode nothing in stock 615 and are refused here too (the 580 branch of stock still
+/// decodes on them). CFB0 (GB202, local + rental),
 /// C9B0 (AD107), C7B0 (GA106) and C4B0 (TU116) ran this library's decoder bit-exact against stock and FFmpeg
 /// (rental run 20261015-nvdec-xgen3); the rest are refused unless `NV_VIDEO_UNTESTED_CLASSES=1`
 /// ([`untested_classes_allowed`]).
