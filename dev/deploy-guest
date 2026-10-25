@@ -8,7 +8,8 @@ NVP=$(cd "$(dirname "$(readlink -f "$0")")/../nvidia-prolapse" && pwd)   # the n
 # Waydroid user data of the invoking user (sudo keeps SUDO_USER); override with WAYDROID_DATA=.
 DATA=${WAYDROID_DATA:-$(getent passwd "${SUDO_USER:-$(id -un)}" | cut -d: -f6)/.local/share/waydroid/data}
 D=$DATA/local/tmp/nvp
-V=$(awk '/NVRM version/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) print $i}' /proc/driver/nvidia/version)
+# two- or three-part versions (595.80, 615.78.08), the first one on the line
+V=$(awk '/NVRM version/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) {print $i; exit}}' /proc/driver/nvidia/version)
 [ -n "$V" ] || { echo "deploy-guest: cannot read the driver version from /proc/driver/nvidia/version" >&2; exit 1; }
 mkdir -p "$D/lib" "$D/shim" "$D/bin"
 for f in libEGL_nvidia.so.$V libnvidia-glsi.so.$V libnvidia-eglcore.so.$V libnvidia-gpucomp.so.$V libnvidia-glvkspirv.so.$V; do
