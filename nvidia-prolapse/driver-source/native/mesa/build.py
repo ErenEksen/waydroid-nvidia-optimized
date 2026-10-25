@@ -240,6 +240,15 @@ NVK_PATCH_LIST = [
     # per iteration, only the one around the loop that its breaks sync
     # on, which is the shape NVIDIA's compiler emits for such loops.
     HERE / "nak-loop-continue-sync.patch",
+    # Blackwell: texture fetches (TEX/TLD/TLD4) all signal one counting
+    # scoreboard and their results are awaited with DEPBAR.LE, as
+    # NVIDIA's compiler does, so more than five fetches can be in flight.
+    HERE / "nak-blackwell-counted-tex-scoreboard.patch",
+    # Blackwell: a uniform bindless handle reaches TEX/TLD/TLD4 as an
+    # even uniform register pair (texture index, sampler index) built
+    # once, instead of a GPR copy in every fetch's source vector, as
+    # NVIDIA's compiler encodes it.
+    HERE / "nak-blackwell-uniform-tex-handle.patch",
 ]
 
 def prepared_stamp(source, inputs):
