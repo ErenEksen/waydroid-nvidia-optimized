@@ -232,7 +232,7 @@ t_glibc_shim() { local why="release build: the builder has no NVIDIA driver; the
                  make -C nvidia-prolapse/shim REFERENCE_ONLY="$why"
                  make -C nvidia-prolapse/shim ARCH=x86 REFERENCE_ONLY="$why"
                  make -C nvidia-prolapse/hal android android32
-                 make -C nvidia-prolapse/gralloc android android32 check check-minigbm
+                 make -C nvidia-prolapse/gralloc android android32 check check-minigbm SYSTEM_IMG="$SYSIMG" VENDOR_IMG="$VENIMG"
                  make -C nvidia-prolapse/egl sources
                  make -C nvidia-prolapse/egl android android32 check; }
 t_media()      { nvidia-prolapse/media/vndk/build.sh; make -C nvidia-prolapse/media test; }
