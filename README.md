@@ -9,7 +9,9 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 
 ## Why switch from Venus
 
-- **Up to 4× faster:** no proxy, the driver runs right inside Android
+- **Speed:** in 3DMark Wild Life Extreme on an RTX 5090, the default mode runs at 475.4 FPS and NVIDIA's own driver
+  (`glibc-shim`) at 493.5 FPS. Venus scored 59.8k against our 72.5k on the same card in an earlier build, because
+  its socket can't feed a GPU that fast. On an RTX 5070 Ti, a user measured Venus ahead of us
 - **No shader stutter:** Minecraft's first item switch ~0.2 s (Venus: 1.8 s)
 - **Hardware video decode:** H.264, HEVC, VP9, AV1 (RTX 20 and newer)
 - **Closed kernel module works too.** GTX 10 works as well; GTX 900 and Titan V are in testing
@@ -29,7 +31,7 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 | GTX 900 (Maxwell 2) | ⚠️ some GL tests fail | ⚪ | ❌ |
 | GTX 750 / 750 Ti, GTX 950M / 960M (Maxwell 1) | ⚪ | ⚪ | ❌ |
 | Older GPUs (Kepler and before: their last driver is 470) | ❌ | ❌ | ❌ |
-| Driver 615, open kernel module | ✅ (615.71.10 is refused) | ✅ | ✅ |
+| Driver 615, open kernel module | ✅ | ✅ | ✅ |
 | Driver 580–610, open module | 🧪 | ⚪ | ✅ |
 | Driver 570, open module | 🧪 | ✅ | ⚪ |
 | Driver 580, closed module | ✅ | ✅ | ❌ |
@@ -53,7 +55,8 @@ works in the default mode on RTX 20 and newer. On older GPUs the setup says so a
 play video instead.
 
 You also need `nvidia-drm.modeset=1`, a Wayland desktop running on the NVIDIA GPU (tested on KDE Plasma 6), and
-the usual Waydroid kernel support (binder).
+the usual Waydroid kernel support (binder). The default mode needs an entry for your exact driver release in its
+version table, which ships with each of our releases; if yours has none yet, the setup says so.
 
 ## Install
 
