@@ -22,7 +22,7 @@ RUN echo "Server = https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/\$repo/o
         python python-mako python-packaging python-yaml python-pyelftools python-setuptools \
         meson ninja cmake pkgconf bison flex gperf ccache \
         clang llvm llvm-libs lld glslang spirv-tools spirv-headers vulkan-headers vulkan-icd-loader \
-        libdrm lib32-libdrm expat zlib libelf libxml2 openssl jsoncpp \
+        libdrm lib32-libdrm lib32-glibc lib32-gcc-libs expat zlib libelf libxml2 openssl jsoncpp \
         mesa libglvnd \
         rustup \
     && pacman -Scc --noconfirm
