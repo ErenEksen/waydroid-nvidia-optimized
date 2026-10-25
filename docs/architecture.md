@@ -33,10 +33,16 @@ app ──▶ ANGLE or NVIDIA GLES ──▶ Android Vulkan HAL ──▶ host's
 NVIDIA's userspace driver is built for glibc, Android uses bionic. Our shim libraries carry the glibc names and
 translate the calls the NVIDIA libraries make. The host's own driver files are bind-mounted into the container
 unmodified, found where the system's dynamic loader finds them (any distribution layout) at the exact version of the
-loaded kernel module. One shim build covers driver 535 to 615: it exports every glibc function those branches import
+loaded kernel module. One shim build covers driver 535 to 615 (glibc-shim runs on 550 to 615): it exports every glibc function those branches import
 (the import lists in `nvidia-prolapse/shim/imports/`), and the setup checks the installed driver's own imports
 against it before switching. Drivers 470 and older are refused: their Vulkan driver cannot share buffers with
-Android's compositor (no `VK_EXT_external_memory_dma_buf` / `VK_EXT_image_drm_format_modifier`).
+Android's compositor (no `VK_EXT_external_memory_dma_buf` / `VK_EXT_image_drm_format_modifier`). Driver 535 is
+refused too: its Vulkan driver cannot import or export a fence as a sync_file, which Android's buffer queue hands
+every buffer over with. Two driver defects with imported sync_files make the Vulkan HAL's `vkAcquireImageANDROID`
+wait for the buffer's fence on the CPU and import "already signalled" instead: on 550 to 560 when the app asks
+for a fence (waiting on a fence whose sync_file has not signalled yet crashes the driver), on 580 when it asks
+for a semaphore (the driver keeps an already signalled sync_file open forever). `make -C nvidia-prolapse/hal
+syncfd-check` measures both on the installed driver.
 
 Code: `nvidia-prolapse/shim/`, `hal/`, `egl/`, `gralloc/`, `libdrm/`.
 
