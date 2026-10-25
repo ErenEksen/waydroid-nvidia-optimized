@@ -5,8 +5,10 @@
  *   nvc2-xmlgen --check FILE    exit 0 iff FILE is exactly what this GPU produces now,
  *                               else name the difference and exit 1
  *
- * A GPU without an NVDEC class this decoder drives (before Turing) exits 3 (kExitNoNvdec) instead
- * of 0: the xml then lists no codecs and says why (no_decoder_xml), and --check compares against it.
+ * A GPU on which this decoder drives no codec exits 3 (kExitNoNvdec) instead of 0: no NVDEC class
+ * this decoder knows (nvdec_class 0), or a known class on which no codec is supported (Volta, classes
+ * not verified yet). The xml then lists no codecs and says which case (no_decoder_xml), and --check
+ * compares against it. A query error or unusable caps stay exit 1.
  *
  * Runs on the host (GNU build of the backend) when the guest tree is staged, and inside
  * the guest by the service at start (--check), so a GPU/driver change can never leave a
@@ -17,6 +19,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include "nvc2_caps.h"
 
@@ -45,26 +48,24 @@ int nvc2_xmlgen_main(int argc, char **argv)
         nv_video_device_close(dev);
         return 1;
     }
-    std::string xml;
-    int ok = 0;
-    if (info.nvdec_class == 0) {
-        nv_video_device_close(dev);
-        fprintf(stderr, "nvc2-xmlgen: %s\n", nvc2::no_decoder_reason(info.name).c_str());
-        xml = nvc2::no_decoder_xml(info.name);
-        ok = nvc2::kExitNoNvdec;
-    } else {
+    std::vector<nvc2::CodecEntry> entries;
+    if (info.nvdec_class != 0) {
         std::string err;
-        auto entries = nvc2::supported_codecs(dev, &err);
-        nv_video_device_close(dev);
+        entries = nvc2::supported_codecs(dev, &err);
         if (!err.empty()) {
+            nv_video_device_close(dev);
             fprintf(stderr, "nvc2-xmlgen: %s\n", err.c_str());
             return 1;
         }
-        if (entries.empty()) {
-            fprintf(stderr, "nvc2-xmlgen: GPU %s (NVDEC class 0x%x) supports none of VP9/AV1/HEVC/H.264\n", info.name,
-                    info.nvdec_class);
-            return 1;
-        }
+    }
+    nv_video_device_close(dev);
+    std::string xml;
+    int ok = 0;
+    if (entries.empty()) { /* no NVDEC class, or none of VP9/AV1/HEVC/H.264 on this one */
+        fprintf(stderr, "nvc2-xmlgen: %s\n", nvc2::no_decoder_reason(info.name, info.nvdec_class).c_str());
+        xml = nvc2::no_decoder_xml(info.name, info.nvdec_class);
+        ok = nvc2::kExitNoNvdec;
+    } else {
         xml = nvc2::media_codecs_xml(entries);
     }
     if (check) {

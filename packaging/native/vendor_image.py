@@ -23,7 +23,8 @@ module) as a Waydroid OTA zip plus its OTA channel JSON (packaging/vendor-ota.py
      vendor-image, runs `waydroid upgrade -o`, `dev/driver-mode verify-active`, and the container unit's
      ExecStartPre drop-in. Any failure puts the previous image, waydroid.cfg, record and drop-in back.
 
-A GPU without an NVDEC class the Codec2 decoder drives (before Turing) installs without hardware decode: the gate's
+A GPU on which the Codec2 decoder drives no codec (no NVDEC class it knows, before Volta; or a class with no codec
+supported on it, such as Volta and classes not verified yet) installs without hardware decode: the gate's
 nvc2-xmlgen exits 3, the codec list has no codecs, and the image's service .rc (made oneshot) and a VINTF fragment
 without the Codec2 HAL are written next to it for the generator to bind (nvidia_native.VENDOR_IMAGE_NO_NVDEC), so
 Android uses its software decoders. The setup says so in one line.

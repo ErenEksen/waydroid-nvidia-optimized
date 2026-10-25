@@ -69,15 +69,24 @@ std::string media_codecs_xml(const std::vector<CodecEntry> &entries)
     return x;
 }
 
-std::string no_decoder_reason(const char *gpu_name)
+std::string no_decoder_reason(const char *gpu_name, uint32_t nvdec_class)
 {
-    return std::string("hardware video decode: not available on ") + gpu_name +
-           " (no NVDEC class this decoder supports; supported from Turing): Android software decoders are used";
+    std::string why;
+    if (nvdec_class == 0) {
+        why = "no NVDEC class this decoder supports; supported from Turing";
+    } else {
+        char buf[96];
+        snprintf(buf, sizeof buf, "NVDEC class 0x%x: decode not supported on this GPU class by this decoder",
+                 nvdec_class);
+        why = buf;
+    }
+    return std::string("hardware video decode: not available on ") + gpu_name + " (" + why +
+           "): Android software decoders are used";
 }
 
-std::string no_decoder_xml(const char *gpu_name)
+std::string no_decoder_xml(const char *gpu_name, uint32_t nvdec_class)
 {
-    std::string reason = no_decoder_reason(gpu_name);
+    std::string reason = no_decoder_reason(gpu_name, nvdec_class);
     size_t i;
     while ((i = reason.find("--")) != std::string::npos) /* not allowed inside an XML comment */
         reason.erase(i, 1);

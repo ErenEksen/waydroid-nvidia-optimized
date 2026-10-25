@@ -29,13 +29,15 @@ std::vector<CodecEntry> supported_codecs(NvVideoDevice *dev, std::string *error)
 /* media_codecs_c2.xml for exactly these entries (Codec2InfoBuilder format). */
 std::string media_codecs_xml(const std::vector<CodecEntry> &entries);
 
-/* A GPU without an NVDEC class this decoder drives (nv_video_device_open reports nvdec_class 0: anything before
- * Turing) is a capability gap, not a failure. nvc2-xmlgen then writes/checks no_decoder_xml() and exits with
- * kExitNoNvdec; the setup installs without hardware decode and the service only logs no_decoder_reason(). */
+/* A GPU on which this decoder drives no codec is a capability gap, not a failure. Two cases, told apart in the
+ * reason: nv_video_device_open reports nvdec_class 0 (no NVDEC class this decoder knows: Maxwell, Pascal), or it
+ * reports a class on which supported_codecs() finds no codec (Volta; classes this decoder has not been verified
+ * on yet). nvc2-xmlgen then writes/checks no_decoder_xml() and exits with kExitNoNvdec; the setup installs without
+ * hardware decode and the service only logs no_decoder_reason(). */
 constexpr int kExitNoNvdec = 3;
-std::string no_decoder_reason(const char *gpu_name);
+std::string no_decoder_reason(const char *gpu_name, uint32_t nvdec_class);
 /* media_codecs_c2.xml for such a GPU: no codecs, the reason in its header. */
-std::string no_decoder_xml(const char *gpu_name);
+std::string no_decoder_xml(const char *gpu_name, uint32_t nvdec_class);
 
 } // namespace nvc2
 #endif

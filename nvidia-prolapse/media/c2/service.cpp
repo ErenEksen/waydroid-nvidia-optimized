@@ -7,9 +7,10 @@
  *  - the NVIDIA device opens and the backend ABI matches,
  *  - the media_codecs_c2.xml the framework will read lists exactly the live caps
  *    (a stale file would advertise codecs/sizes this GPU does not decode).
- * A GPU without an NVDEC class this decoder drives (before Turing) is not a failure: the setup
- * then binds a listing without codecs (nvc2-xmlgen exit 3), runs this service once (oneshot) and
- * declares no Codec2 HAL; the service checks that listing, logs the reason once and exits 0.
+ * A GPU on which this decoder drives no codec (no NVDEC class it knows, or a class on which none
+ * of its codecs is supported) is not a failure: the setup then binds a listing without codecs
+ * (nvc2-xmlgen exit 3), runs this service once (oneshot) and declares no Codec2 HAL; the service
+ * checks that listing, logs the reason once and exits 0.
  */
 #define LOG_TAG "nvc2-service"
 #include <C2Component.h>
@@ -48,15 +49,17 @@ int main()
         fclose(f);
     }
     std::string err, no_nvdec_gpu;
-    std::shared_ptr<nvc2::Store> impl = nvc2::Store::Create(&err, &no_nvdec_gpu);
+    uint32_t no_nvdec_class = 0;
+    std::shared_ptr<nvc2::Store> impl = nvc2::Store::Create(&err, &no_nvdec_gpu, &no_nvdec_class);
     if (!impl && !no_nvdec_gpu.empty()) {
-        const std::string want = nvc2::no_decoder_xml(no_nvdec_gpu.c_str());
+        const std::string want = nvc2::no_decoder_xml(no_nvdec_gpu.c_str(), no_nvdec_class);
+        const std::string reason = nvc2::no_decoder_reason(no_nvdec_gpu.c_str(), no_nvdec_class);
         if (!readable || have != want) {
             ALOGE("%s does not match this GPU (%s); re-run sudo waydroid-nvidia-setup on the host (expected:\n%s)",
-                  kCodecsXml, nvc2::no_decoder_reason(no_nvdec_gpu.c_str()).c_str(), want.c_str());
+                  kCodecsXml, reason.c_str(), want.c_str());
             return 1;
         }
-        ALOGI("%s", nvc2::no_decoder_reason(no_nvdec_gpu.c_str()).c_str());
+        ALOGI("%s", reason.c_str());
         return 0;
     }
     if (!impl) {

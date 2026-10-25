@@ -843,7 +843,7 @@ void Component::loop()
 
 /* ------------------------------------------------------------------ store */
 
-std::shared_ptr<Store> Store::Create(std::string *error, std::string *no_nvdec_gpu)
+std::shared_ptr<Store> Store::Create(std::string *error, std::string *no_nvdec_gpu, uint32_t *no_nvdec_class)
 {
     std::shared_ptr<Store> s(new Store());
     NvVideoDeviceInfo info{};
@@ -857,15 +857,14 @@ std::shared_ptr<Store> Store::Create(std::string *error, std::string *no_nvdec_g
                  std::to_string(NV_VIDEO_ABI_VERSION);
         return nullptr;
     }
-    if (info.nvdec_class == 0) {
-        *no_nvdec_gpu = info.name;
-        return nullptr;
+    if (info.nvdec_class != 0) {
+        s->mEntries = supported_codecs(s->mDevice, error);
+        if (!error->empty())
+            return nullptr;
     }
-    s->mEntries = supported_codecs(s->mDevice, error);
-    if (!error->empty())
-        return nullptr;
-    if (s->mEntries.empty()) {
-        *error = std::string("GPU ") + info.name + " supports none of VP9/AV1/HEVC/H.264 decode";
+    if (s->mEntries.empty()) { /* no NVDEC class, or none of VP9/AV1/HEVC/H.264 on this one */
+        *no_nvdec_gpu = info.name;
+        *no_nvdec_class = info.nvdec_class;
         return nullptr;
     }
     s->mReflector = std::make_shared<C2ReflectorHelper>();

@@ -34,9 +34,11 @@ bool decode_routed_here();
 class Store : public C2ComponentStore {
 public:
     /* Opens the device and queries caps. A failure is fatal for the service (no store,
-     * no silent empty list): *error names it. A GPU without an NVDEC class this decoder
-     * drives is no failure: no store, *error empty, *no_nvdec_gpu = its name. */
-    static std::shared_ptr<Store> Create(std::string *error, std::string *no_nvdec_gpu);
+     * no silent empty list): *error names it. A GPU on which this decoder drives no codec
+     * (no NVDEC class it knows, or none of its codecs supported on the class) is no failure:
+     * no store, *error empty, *no_nvdec_gpu = its name, *no_nvdec_class = its NVDEC class
+     * (0 = none), the arguments of no_decoder_xml()/no_decoder_reason(). */
+    static std::shared_ptr<Store> Create(std::string *error, std::string *no_nvdec_gpu, uint32_t *no_nvdec_class);
     ~Store() override;
 
     C2String getName() const override { return "nvprolapse"; }

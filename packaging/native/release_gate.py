@@ -43,8 +43,9 @@ ABIS = {'android': ('lib64', 64, 'x86_64'), 'android32': ('lib', 32, 'x86')}
 RUNTIME_ROOTS = ('libcutils.so', 'libhardware.so', 'liblog.so', 'libsync.so', 'libnativewindow.so')
 BIONIC = ('libc.so', 'libm.so', 'libdl.so', 'libdl_android.so')
 CASE_TIMEOUT = 600
-# nvc2-xmlgen's exit status for a GPU without an NVDEC class the Codec2 decoder drives (before Turing): a
-# capability gap, not a failure (nvidia-prolapse/media/core/nvc2_caps.h kExitNoNvdec)
+# nvc2-xmlgen's exit status for a GPU on which the Codec2 decoder drives no codec (no NVDEC class it knows, or a
+# class with no codec supported on it): a capability gap, not a failure (nvidia-prolapse/media/core/nvc2_caps.h
+# kExitNoNvdec)
 XMLGEN_NO_NVDEC = 3
 REMEDY_BUNDLE = 'reinstall the package (Arch: pacman -S waydroid-nvidia-bin; other distros: packaging/install.sh)'
 
@@ -444,7 +445,7 @@ def media_case_image(gate, native, vendor_img):
     --check against the live caps), the service's ELF closure against vendor_img + the system image's VNDK apex
     and LL-NDK, the nv_video symbols it imports, device access for uid mediacodec. Returns the media record;
     its 'xml' is the generated file (the setup installs it and the LXC generator binds it over the image's
-    placeholder /odm/etc/media_codecs_c2.xml). A GPU without an NVDEC class the decoder drives (nvc2-xmlgen exit
+    placeholder /odm/etc/media_codecs_c2.xml). A GPU on which the decoder drives no codec (nvc2-xmlgen exit
     XMLGEN_NO_NVDEC) passes with 'hardware_decode' False: its listing has no codecs, 'reason' says why, and every
     other check still runs (the service still starts once on such a GPU)."""
     env, command = gate.command('android', [gate.progs / 'bin/android/nvc2-xmlgen'])
