@@ -25,7 +25,8 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 | Titan V (Volta) | 🧪 | ⚪ | ❌ |
 | GTX 10 (Pascal) | ⚠️ native GL: some texture formats crash the GPU | ⚪ | ❌ |
 | GTX 900 (Maxwell 2) | ⚠️ some GL tests fail | ⚪ | ❌ |
-| Older GPUs | ❌ | ⚪ | ❌ |
+| GTX 750 / 750 Ti, GTX 950M / 960M (Maxwell 1) | ⚪ | ⚪ | ❌ |
+| Older GPUs (Kepler and before: their last driver is 470) | ❌ | ❌ | ❌ |
 | Driver 615, open kernel module | ✅ | ✅ | ✅ |
 | Driver 580–610, open module | 🧪 | ❌ | ✅ |
 | Driver 550–610, closed module | 🧪 (550.107 is refused) | ⚪ | ❌ |
