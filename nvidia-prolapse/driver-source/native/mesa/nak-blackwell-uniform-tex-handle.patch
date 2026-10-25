@@ -448,3 +448,39 @@
              e.set_ureg_src(48, &Src::ZERO); // offset
          }
  
+--- a/src/nouveau/compiler/nak/sm50.rs
++++ b/src/nouveau/compiler/nak/sm50.rs
+@@ -2156,9 +2156,14 @@
+     let srcs = op.srcs_as_mut_slice();
+     assert!(matches!(&srcs[0].src_ref, SrcRef::SSA(_)));
+     if srcs.len() > 1 {
+-        debug_assert!(srcs.len() == 2);
+         assert!(matches!(&srcs[1].src_ref, SrcRef::SSA(_) | SrcRef::Zero));
+     }
++    // The third source is the uniform-register handle of the Blackwell
++    // encodings; it is never set before SM 10.0.
++    if srcs.len() > 2 {
++        debug_assert!(srcs.len() == 3);
++        assert!(matches!(&srcs[2].src_ref, SrcRef::Zero));
++    }
+ }
+ 
+ impl SM50Op for OpTex {
+--- a/src/nouveau/compiler/nak/sm32.rs
++++ b/src/nouveau/compiler/nak/sm32.rs
+@@ -1929,9 +1929,14 @@
+     let srcs = op.srcs_as_mut_slice();
+     assert!(matches!(&srcs[0].src_ref, SrcRef::SSA(_)));
+     if srcs.len() > 1 {
+-        debug_assert!(srcs.len() == 2);
+         assert!(matches!(&srcs[1].src_ref, SrcRef::SSA(_) | SrcRef::Zero));
+     }
++    // The third source is the uniform-register handle of the Blackwell
++    // encodings; it is never set before SM 10.0.
++    if srcs.len() > 2 {
++        debug_assert!(srcs.len() == 3);
++        assert!(matches!(&srcs[2].src_ref, SrcRef::Zero));
++    }
+ }
+ 
+ impl SM32Op for OpTex {
