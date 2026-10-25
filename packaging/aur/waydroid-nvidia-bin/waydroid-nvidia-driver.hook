@@ -11,6 +11,16 @@ Target = nvidia-open-lts
 Target = nvidia
 Target = nvidia-dkms
 Target = nvidia-lts
+# AUR driver branches (names checked against the AUR RPC on 2026-10-25): the 580 legacy branch for
+# Maxwell/Pascal/Volta, and the beta branch. Explicit names, not a glob: nvidia* would also match
+# nvidia-settings, nvidia-prime and the like, which do not change the kernel module.
+Target = nvidia-580xx-utils
+Target = nvidia-580xx-dkms
+Target = nvidia-utils-beta
+Target = nvidia-beta
+Target = nvidia-beta-dkms
+Target = nvidia-open-beta
+Target = nvidia-open-beta-dkms
 
 [Action]
 Description = Checking the waydroid-nvidia driver mode...
