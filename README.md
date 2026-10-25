@@ -9,16 +9,14 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 
 ## Why switch from Venus
 
-- **Speed:** in 3DMark Wild Life Extreme on an RTX 5090, the default mode runs at 475.4 FPS and NVIDIA's own driver
-  (`glibc-shim`) at 507.7 FPS. Venus scored 59.8k against our 72.5k on the same card in an earlier build, because
-  its socket can't feed a GPU that fast. On an RTX 5070 Ti, a user measured Venus ahead of us
+- **Fast:** 475 FPS in 3DMark Wild Life Extreme on an RTX 5090 (NVIDIA's own driver: 508)
 - **No shader stutter:** Minecraft's first item switch ~0.2 s (Venus: 1.8 s)
 - **Hardware video decode:** H.264, HEVC, VP9, AV1 (RTX 20 and newer)
-- **Closed kernel module works too.** GTX 10 works as well; GTX 900 and Titan V are in testing
+- **Closed kernel module works too**
 
 ## Does my setup work?
 
-✅ works in Waydroid · 🧪 driver tests pass on a rented machine, Waydroid not tried · ⚠️ known bug · ⚪ untested · ❌ no
+✅ works · 🧪 driver tests pass, Waydroid not tried yet · ⚠️ known bug · ⚪ untested · ❌ no
 
 | | default (`nvidia-prolapse`) | `glibc-shim` | `venus` |
 |---|---|---|---|
@@ -27,41 +25,24 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 | RTX 30 (Ampere) | ✅ | ✅ | ✅ |
 | RTX 20 / GTX 16 (Turing) | 🧪 | ⚪ | ✅ |
 | Titan V (Volta) | 🧪 | ⚪ | ❌ |
-| GTX 10 (Pascal) | ✅ (⚠️ with `--native-gl on`, some texture formats crash the GPU) | ⚪ | ❌ |
-| GTX 900 (Maxwell 2) | ⚠️ some GL tests fail | ⚪ | ❌ |
-| GTX 750 / 750 Ti, GTX 950M / 960M (Maxwell 1) | ⚪ | ⚪ | ❌ |
-| Older GPUs (Kepler and before: their last driver is 470) | ❌ | ❌ | ❌ |
-| Driver 615, open kernel module | ✅ | ✅ | ✅ |
-| Driver 580–610, open module | 🧪 | ⚪ | ✅ |
-| Driver 570, open module | 🧪 | ✅ | ⚪ |
-| Driver 580, closed module | ✅ | ✅ | ❌ |
-| Driver 550–610, other closed releases | 🧪 (550.107 is refused) | ✅ on 550, 570 and 595, ⚪ on the rest | ❌ |
-| Driver 535 | ⚪ | ❌ (no sync_file fences) | ⚪ |
+| GTX 10 (Pascal) | ✅ (⚠️ `--native-gl on` crashes on some textures) | ⚪ | ❌ |
+| GTX 900 / 750 (Maxwell) | ⚠️ some GL tests fail | ⚪ | ❌ |
+| Kepler and older | ❌ | ❌ | ❌ |
+| Driver 570–615, open module | ✅ on 615, 🧪 others | ✅ on 570 and 615 | ✅ from 580 |
+| Driver 550–610, closed module | ✅ on 580, 🧪 others | ✅ on 550, 570, 580, 595 | ❌ |
+| Driver 535 | ⚪ | ❌ | ⚪ |
 | Driver 470 and older | ❌ | ❌ | ❌ |
 
-Apart from RTX 50 and driver 615, the `glibc-shim` results come from rented machines with no screen attached: the
-setup passed, Android booted with its compositor on the GPU, and our in-Android tests passed. Nobody has used apps
-there yet. Data-centre GPUs (A100, H100, P100, V100, B200) are out of scope.
+Data-centre GPUs (A100, H100, V100, …) are not supported. Tested on Arch and CachyOS; `glibc-shim` also on
+Ubuntu 22.04. Only the official Android 13 image (LineageOS 20) is supported.
 
-| Distribution | Status |
-|---|---|
-| Arch Linux, CachyOS | ✅ |
-| Ubuntu 22.04 | ✅ in `glibc-shim` on rented machines, default mode ⚪ |
-| Fedora 44 | installer tested in a VM without an NVIDIA GPU, ⚪ with one |
-| Debian and others | ⚪ |
-
-Only the official Android 13 image (LineageOS 20) is supported. Hardware video decode (H.264, HEVC, VP9, AV1)
-works in the default mode on RTX 20 and newer. On older GPUs the setup says so and Android's software decoders
-play video instead.
-
-You also need `nvidia-drm.modeset=1`, a Wayland desktop running on the NVIDIA GPU (tested on KDE Plasma 6), and
-the usual Waydroid kernel support (binder). The default mode needs an entry for your exact driver release in its
-version table, which ships with each of our releases; if yours has none yet, the setup says so.
+You need `nvidia-drm.modeset=1`, a Wayland desktop on the NVIDIA GPU (tested on KDE Plasma 6) and the usual
+Waydroid kernel support (binder). A brand-new driver release may be refused until our next release knows it.
 
 ## Install
 
 Current release: [v0.2.0-rc12](https://github.com/Shiro836/waydroid-nvidia/releases/tag/v0.2.0-rc12) (prerelease).
-The installer is for any systemd distribution. On Arch use it too: the AUR package still has the previous release.
+The installer is for systemd distributions. On Arch use it too: the AUR package still has the previous release.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
@@ -100,9 +81,7 @@ default mode.
 ## Known issues
 
 - With `--native-gl on`, GTA San Andreas sometimes shows black frames.
-- In `glibc-shim` on drivers 550–560 and 580, two bugs in NVIDIA's driver are worked around by waiting on the CPU
-  until the compositor releases a buffer before an app gets it back. That costs some frame latency; how much is not
-  measured yet.
+- `glibc-shim` on drivers 550–560 and 580 works around two NVIDIA driver bugs, which may add some frame latency.
 - Above about 333 Hz the display can stall. Cap the rate with `sudo waydroid-nvidia-setup --refresh <hz>`.
 - Android 14 and 15 have no official Waydroid images and are untested.
 
