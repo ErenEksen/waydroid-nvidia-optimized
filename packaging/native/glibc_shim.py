@@ -217,17 +217,7 @@ def gate(bundle, root, closures, images=Path('/var/lib/waydroid/images'), log_ro
     for target in rg.ABIS:
         g.prepare(target)
     for target in rg.ABIS:
-        sub = rg.ABIS[target][0]
-        icd, hal = lib / sub / native.ICD_SONAME, lib / sub / 'hw/vulkan.nvidia.so'
-        b, d = g.progs / 'bin' / target, g.progs / 'data'
-        g.run(target, 'compute', [b / 'vk-compute', '--icd', '--driver', icd, '--shader', d / 'generate.spv',
-                                  '--transform', d / 'transform.spv', '--negative', '--expect-driver', 'glibc-shim'])
-        g.run(target, 'graphics', [b / 'vk-graphics', icd, d / 'vertex.spv', d / 'fragment.spv',
-                                   '--expect-driver', 'glibc-shim'])
-        g.run(target, 'interop', [b / 'vk-interop', '--driver', icd, '--expect-driver', 'glibc-shim'])
-        g.run(target, 'anb', [b / 'anb-roundtrip', hal, '--bounded'])
-        g.run(target, 'astc', [b / 'astc-roundtrip', hal])
-        g.run(target, 'etc2', [b / 'etc2-roundtrip', hal])
+        rg.vulkan_cases(g, target, 'glibc-shim', lib / rg.ABIS[target][0], native.ICD_SONAME)
     (work / 'gate.json').write_text(json.dumps({'mode': 'glibc-shim', 'driver': native.driver_version(),
                                                 'cases': g.cases}, indent=2) + '\n')
     print(f'glibc-shim gate: {len(g.cases)} cases passed', flush=True)

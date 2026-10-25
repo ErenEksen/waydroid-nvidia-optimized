@@ -341,17 +341,19 @@ class Gate:
         return sorted(str(p.relative_to(self.payload)) for p in seen if self.payload in p.parents)
 
 
-def vulkan_cases(gate, target):
-    sub = ABIS[target][0]
-    icd = gate.payload / 'vendor_extra' / sub / 'libvulkan_nouveau.so'
-    hal = gate.payload / 'vendor_extra' / sub / 'hw/vulkan.nvidia.so'
+def vulkan_cases(gate, target, expect='nvidia-prolapse', lib=None, icd_name='libvulkan_nouveau.so'):
+    """The Vulkan cases of one ABI. Every program checks which driver its process mapped
+    (tools/native-driver-identity.h): `expect` names the mode whose driver must be the one loaded, `lib` the
+    directory the guest sees as /vendor_extra/<lib> and `icd_name` that mode's ICD in it (nvidia-prolapse: ours,
+    with no NVIDIA userspace mapped; glibc-shim: NVIDIA's libEGL_nvidia through the shims, none of ours)."""
+    lib = lib or gate.payload / 'vendor_extra' / ABIS[target][0]
+    icd, hal = lib / icd_name, lib / 'hw/vulkan.nvidia.so'
     b, d = gate.progs / 'bin' / target, gate.progs / 'data'
-    # the programs check which driver their process mapped: ours, no NVIDIA userspace (tools/native-driver-identity.h)
     gate.run(target, 'compute', [b / 'vk-compute', '--icd', '--driver', icd, '--shader', d / 'generate.spv',
-                                 '--transform', d / 'transform.spv', '--negative', '--expect-driver', 'nvidia-prolapse'])
+                                 '--transform', d / 'transform.spv', '--negative', '--expect-driver', expect])
     gate.run(target, 'graphics', [b / 'vk-graphics', icd, d / 'vertex.spv', d / 'fragment.spv',
-                                  '--expect-driver', 'nvidia-prolapse'])
-    gate.run(target, 'interop', [b / 'vk-interop', '--driver', icd, '--expect-driver', 'nvidia-prolapse'])
+                                  '--expect-driver', expect])
+    gate.run(target, 'interop', [b / 'vk-interop', '--driver', icd, '--expect-driver', expect])
     gate.run(target, 'anb', [b / 'anb-roundtrip', hal, '--bounded'])
     gate.run(target, 'astc', [b / 'astc-roundtrip', hal])
     gate.run(target, 'etc2', [b / 'etc2-roundtrip', hal])
@@ -545,7 +547,7 @@ def run(sn, native, bundle=BUNDLE, images=Path('/var/lib/waydroid/images'), log_
     (work / 'runtime-origin.json').write_text(json.dumps(origins, indent=2) + '\n')
     started, t0 = now(), time.monotonic()
     for target in ABIS:
-        vulkan_cases(gate, target)
+        vulkan_cases(gate, target, 'nvidia-prolapse')
     vk_cases = list(gate.cases)
     gl_started = now()
     # nvrm is opt-in (nvidia_native_gl = on); the default GLES is ANGLE on the Vulkan path gated above. A failing

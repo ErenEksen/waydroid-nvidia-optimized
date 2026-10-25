@@ -276,7 +276,8 @@ def fake_run(tmp_path, monkeypatch, gl_fails):
         def exercised(self, targets):
             return ['vendor_extra/lib64/hw/vulkan.nvidia.so']
 
-    def vulkan(g, target):
+    def vulkan(g, target, expect):
+        assert expect == 'nvidia-prolapse'      # the packaged gate checks the default mode's driver
         g.cases.append({'case': f'{target}/vk', 'exit': 0, 'seconds': 0, 'log': 'vk.log'})
 
     def gl(g, target):
@@ -312,3 +313,25 @@ def test_nvrm_failure_disables_native_gl_and_keeps_the_install(tmp_path, monkeyp
     assert 'vendor_extra/lib64/hw/vulkan.nvidia.so' in sources
     out = capsys.readouterr().out
     assert 'Release gate PASS: 2 cases' in out and 'Native GL (nvrm, opt-in) is NOT available' in out
+
+
+@pytest.mark.parametrize('mode,icd_name', [('nvidia-prolapse', 'libvulkan_nouveau.so'),
+                                           ('glibc-shim', 'libEGL_nvidia.so.0')])
+def test_vulkan_cases_check_the_modes_driver(tmp_path, mode, icd_name):
+    """Every Vulkan program of a mode's gate is told which driver it must find mapped, and runs that mode's ICD."""
+    runs = []
+    g = type('G', (), {'payload': tmp_path / 'payload', 'progs': tmp_path / 'gate',
+                       'run': lambda self, target, name, argv, **k: runs.append((name, [str(a) for a in argv]))})()
+    lib = tmp_path / 'staged' / 'lib64'
+    if mode == 'nvidia-prolapse':
+        gate.vulkan_cases(g, 'android', mode)
+        lib = tmp_path / 'payload' / 'vendor_extra' / 'lib64'
+    else:
+        gate.vulkan_cases(g, 'android', mode, lib, icd_name)
+    by_name = dict(runs)
+    assert sorted(by_name) == ['anb', 'astc', 'compute', 'etc2', 'graphics', 'interop']
+    for name in ('compute', 'graphics', 'interop'):
+        assert by_name[name][-2:] == ['--expect-driver', mode], name
+        assert str(lib / icd_name) in by_name[name], name
+    for name in ('anb', 'astc', 'etc2'):
+        assert str(lib / 'hw/vulkan.nvidia.so') in by_name[name], name
