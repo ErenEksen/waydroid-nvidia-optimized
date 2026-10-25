@@ -12,26 +12,41 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 - **Up to 4× faster:** no proxy, the driver runs right inside Android
 - **No shader stutter:** Minecraft's first item switch ~0.2 s (Venus: 1.8 s)
 - **Hardware video decode:** H.264, HEVC, VP9, AV1 (RTX 20 and newer)
-- **Closed kernel module works too**, and older GPUs (GTX 10/900, Titan V) are in testing
+- **Closed kernel module works too.** GTX 10 works as well; GTX 900 and Titan V are in testing
 
 ## Does my setup work?
 
-✅ works in Waydroid · 🧪 driver tests pass, Waydroid not tried yet · ⚠️ known bug · ⚪ untested · ❌ no
+✅ works in Waydroid · 🧪 driver tests pass on a rented machine, Waydroid not tried · ⚠️ known bug · ⚪ untested · ❌ no
 
 | | default (`nvidia-prolapse`) | `glibc-shim` | `venus` |
 |---|---|---|---|
 | RTX 50 (Blackwell) | ✅ | ✅ | ✅ |
-| RTX 40, RTX 30, RTX 20 / GTX 16 | 🧪 | ⚪ | ✅ |
+| RTX 40 (Ada) | 🧪 | ✅ | ✅ |
+| RTX 30 (Ampere) | ✅ | ✅ | ✅ |
+| RTX 20 / GTX 16 (Turing) | 🧪 | ⚪ | ✅ |
 | Titan V (Volta) | 🧪 | ⚪ | ❌ |
-| GTX 10 (Pascal) | ⚠️ native GL: some texture formats crash the GPU | ⚪ | ❌ |
+| GTX 10 (Pascal) | ✅ (⚠️ with `--native-gl on`, some texture formats crash the GPU) | ⚪ | ❌ |
 | GTX 900 (Maxwell 2) | ⚠️ some GL tests fail | ⚪ | ❌ |
 | GTX 750 / 750 Ti, GTX 950M / 960M (Maxwell 1) | ⚪ | ⚪ | ❌ |
 | Older GPUs (Kepler and before: their last driver is 470) | ❌ | ❌ | ❌ |
-| Driver 615, open kernel module | ✅ | ✅ | ✅ |
+| Driver 615, open kernel module | ✅ (615.71.10 is refused) | ✅ | ✅ |
 | Driver 580–610, open module | 🧪 | ⚪ | ✅ |
-| Driver 550–610, closed module | 🧪 (550.107 is refused) | ⚪ | ❌ |
+| Driver 570, open module | 🧪 | ✅ | ⚪ |
+| Driver 580, closed module | ✅ | ✅ | ❌ |
+| Driver 550–610, other closed releases | 🧪 (550.107 is refused) | ✅ on 550, 570 and 595, ⚪ on the rest | ❌ |
 | Driver 535 | ⚪ | ❌ (no sync_file fences) | ⚪ |
 | Driver 470 and older | ❌ | ❌ | ❌ |
+
+Apart from RTX 50 and driver 615, the `glibc-shim` results come from rented machines with no screen attached: the
+setup passed, Android booted with its compositor on the GPU, and our in-Android tests passed. Nobody has used apps
+there yet. Data-centre GPUs (A100, H100, P100, V100, B200) are out of scope.
+
+| Distribution | Status |
+|---|---|
+| Arch Linux, CachyOS | ✅ |
+| Ubuntu 22.04 | ✅ in `glibc-shim` on rented machines, default mode ⚪ |
+| Fedora 44 | installer tested in a VM without an NVIDIA GPU, ⚪ with one |
+| Debian and others | ⚪ |
 
 Only the official Android 13 image (LineageOS 20) is supported. Hardware video decode (H.264, HEVC, VP9, AV1)
 works in the default mode on RTX 20 and newer. On older GPUs the setup says so and Android's software decoders
@@ -42,8 +57,8 @@ the usual Waydroid kernel support (binder).
 
 ## Install
 
-Current release: [v0.2.0-rc1](https://github.com/Shiro836/waydroid-nvidia/releases/tag/v0.2.0-rc1) (prerelease).
-This works on any systemd distro. On Arch use it too: the AUR package still has the previous release.
+Current release: [v0.2.0-rc12](https://github.com/Shiro836/waydroid-nvidia/releases/tag/v0.2.0-rc12) (prerelease).
+The installer is for any systemd distribution. On Arch use it too: the AUR package still has the previous release.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
@@ -82,6 +97,9 @@ default mode.
 ## Known issues
 
 - With `--native-gl on`, GTA San Andreas sometimes shows black frames.
+- In `glibc-shim` on drivers 550–560 and 580, two bugs in NVIDIA's driver are worked around by waiting on the CPU
+  until the compositor releases a buffer before an app gets it back. That costs some frame latency; how much is not
+  measured yet.
 - Above about 333 Hz the display can stall. Cap the rate with `sudo waydroid-nvidia-setup --refresh <hz>`.
 - Android 14 and 15 have no official Waydroid images and are untested.
 
