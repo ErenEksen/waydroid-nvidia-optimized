@@ -190,8 +190,13 @@ DLOPEN_ROOTS = ("libnvidia-eglcore.so.{v}", "libnvidia-glvkspirv.so.{v}")
 LD_CACHE_FLAGS = {64: 0x0303, 32: 0x0003}
 # Oldest driver branch glibc-shim runs on. 470 and 390 (the last branches for Kepler and Fermi) have no
 # VK_EXT_external_memory_dma_buf / VK_EXT_image_drm_format_modifier in their Vulkan driver, so Android's
-# compositor and apps cannot share a buffer with it (and 390 has no libnvidia-glvkspirv at all).
-GLIBC_SHIM_MIN_BRANCH = 535
+# compositor and apps cannot share a buffer with it (and 390 has no libnvidia-glvkspirv at all). 535 has both,
+# but its Vulkan driver can neither import nor export a fence as a sync_file (VkExternalFenceProperties for
+# VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT: no features, measured on 535.309.01; its nvidia-drm has no
+# semaphore-surface fence ioctls, open-gpu-kernel-modules 535.309.01 kernel-open/nvidia-drm/nvidia-drm-ioctl.h,
+# which 550 adds), and Android's buffer queue hands every buffer over with a sync_file.
+GLIBC_SHIM_MIN_BRANCH = 550
+GLIBC_SHIM_DMABUF_BRANCH = 535
 # What NVIDIA's GLES through our EGL front (nvidia_native_gl = on) asks of libEGL_nvidia at load (the
 # front's platform library refuses to load without them): the platform-surface interface (570 and newer)
 # and EGL_ANDROID_native_fence_sync (550 and newer). The default GLES (ANGLE on the Vulkan driver) needs neither.
@@ -742,11 +747,18 @@ def driver_branch(v):
 
 def check_glibc_shim_branch(v):
     """Raise OSError unless glibc-shim can run on driver `v` (GLIBC_SHIM_MIN_BRANCH)."""
-    if driver_branch(v) < GLIBC_SHIM_MIN_BRANCH:
+    b = driver_branch(v)
+    if b < GLIBC_SHIM_DMABUF_BRANCH:
         raise OSError("NVIDIA driver mode glibc-shim: driver {} is older than {}: its Vulkan driver has no "
                       "VK_EXT_external_memory_dma_buf and no VK_EXT_image_drm_format_modifier, so Android's "
                       "compositor and apps cannot share buffers with it. glibc-shim needs driver {} or newer; "
                       "older GPUs (Kepler and before) have no newer driver".format(
+                          v, GLIBC_SHIM_DMABUF_BRANCH, GLIBC_SHIM_MIN_BRANCH))
+    if b < GLIBC_SHIM_MIN_BRANCH:
+        raise OSError("NVIDIA driver mode glibc-shim: driver {} is older than {}: its Vulkan driver cannot import "
+                      "or export a fence as a sync_file (VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT), and Android "
+                      "passes every buffer between the compositor and apps with one. glibc-shim needs driver {} or "
+                      "newer: install a newer NVIDIA driver, or use the default mode (waydroid-nvidia-setup)".format(
                           v, GLIBC_SHIM_MIN_BRANCH, GLIBC_SHIM_MIN_BRANCH))
 
 

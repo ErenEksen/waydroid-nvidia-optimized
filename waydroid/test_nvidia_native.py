@@ -269,9 +269,8 @@ class DriverDiscoveryTest(unittest.TestCase):
                     self.assertEqual({os.path.dirname(p) for _, p in got}, {os.path.join(self.top, d)})
 
     def test_closure_per_branch(self):
-        # 535: eglcore has no gpucomp (none in the branch); 550 and newer: gpucomp is eglcore's DT_NEEDED
-        for v, needed, n in (("535.309.01", NEEDED_535, 4), ("550.163.01", NEEDED, 5), ("580.178.04", NEEDED, 5),
-                             ("615.78.08", NEEDED, 5)):
+        # 550 and newer: gpucomp is eglcore's DT_NEEDED (535, refused, has none)
+        for v, needed, n in (("550.163.01", NEEDED, 5), ("580.178.04", NEEDED, 5), ("615.78.08", NEEDED, 5)):
             with self.subTest(v=v):
                 shutil.rmtree(self.top)
                 os.makedirs(self.top)
@@ -343,6 +342,16 @@ class DriverDiscoveryTest(unittest.TestCase):
                 make_fake_driver(self.top, v=v)
                 self.assertRefused(v, 64, v, "VK_EXT_external_memory_dma_buf", "VK_EXT_image_drm_format_modifier",
                                    str(nn.GLIBC_SHIM_MIN_BRANCH))
+
+    def test_535_refused_with_the_reason(self):
+        # 535.309.01: VkExternalFenceProperties(SYNC_FD) has no features (measured); Android needs sync_file fences
+        v = "535.309.01"
+        make_fake_driver(self.top, v=v, needed=NEEDED_535)
+        for bits in (64, 32):
+            with self.subTest(bits=bits):
+                msg = self.assertRefused(v, bits, v, "sync_file", "VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT", "550")
+                self.assertNotIn("dma_buf", msg)
+        self.assertEqual(nn.GLIBC_SHIM_MIN_BRANCH, 550)
 
     def test_host_closure_cli(self):
         make_fake_driver(self.top)
