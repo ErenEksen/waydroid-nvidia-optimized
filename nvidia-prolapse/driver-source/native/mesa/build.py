@@ -212,7 +212,7 @@ NVK_PATCH_LIST = [
     HERE / "nak-qmd-dependency.patch",
     HERE / "nvk-cs-join-qmd.patch",
     # A compute-only queue family whose queues run on their own
-    # subcontext in graphics queue 0's channel group (BLACKWELL_COMPUTE_B,
+    # subcontext in graphics queue 0's channel group (AMPERE_COMPUTE_B+,
     # backends with shared contexts), as the proprietary driver exposes
     # and places its compute queues; its transfers and clears run as
     # compute work there.
@@ -227,6 +227,22 @@ NVK_PATCH_LIST = [
     # graphics work of another queue in the same channel group
     # time-slice instead of running together.
     HERE / "nak-qmd-occupancy.patch",
+    # The same occupancy limits in the AMPERE_COMPUTE_B..Hopper QMD
+    # layouts, CTA_LAUNCH_QUEUE / QMD_GROUP_ID by the recording queue
+    # family, and the compute-only family's indirect dispatch sizing the
+    # MME data FIFO through the compute class.
+    HERE / "nak-qmd-launch-fields.patch",
+    # Turing..Ada compute contexts start with the proprietary driver's
+    # SCG setup (SET_SCG_CONTROL from the GR shader pipe counts, the SM
+    # SCG control sequence) and every Turing+ one with its SCG compute
+    # scheduling parameters: without them a compute-only queue's work
+    # time-slices with graphics work instead of running beside it.
+    HERE / "nvk-compute-scg-init.patch",
+    # Conditional rendering on the compute-only queue: its channel loads
+    # the conditional-rendering macro, sizes the macro data FIFO through
+    # the compute class, and the condition sets the compute class's own
+    # render enable.
+    HERE / "nvk-compute-queue-cond-render.patch",
     # NAK loop codegen. Blackwell ALU instructions take no constant-buffer operands
     # (NAK opt_copy_prop.rs), so a bindless cbuf value used in divergent
     # control flow is read from the uniform register it was loaded into
@@ -249,6 +265,20 @@ NVK_PATCH_LIST = [
     # once, instead of a GPR copy in every fetch's source vector, as
     # NVIDIA's compiler encodes it.
     HERE / "nak-blackwell-uniform-tex-handle.patch",
+    # Volta/Turing: the SKED QMD cache is shared by the channel group's
+    # subcontexts, so it is not invalidated per command buffer; instead
+    # each command buffer counts its dispatches (QMD RELEASE0 reduction
+    # ADD to a launch counter), waits for them at its end and drops
+    # every QMD it allocated from the cache with a PCAS INVALIDATE, as
+    # the proprietary driver does below AMPERE_A.
+    HERE / "nvk-turing-sked-qmd-invalidate.patch",
+    # Volta..Ampere A compute-only queues: their compute class has no
+    # MME, so indirect dispatch, conditional rendering and compute
+    # invocation statistics there do without NVK's macros (the indirect
+    # buffer fetched as push-buffer data into the QMD, as the proprietary
+    # driver does on its Turing and Volta compute queues), and the
+    # compute-only family is offered from Volta on.
+    HERE / "nvk-compute-queue-no-mme.patch",
 ]
 
 def prepared_stamp(source, inputs):

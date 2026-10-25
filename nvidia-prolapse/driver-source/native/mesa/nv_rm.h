@@ -43,6 +43,16 @@ struct NvRmInfo {
    /* RM's SM ISA code (NV2080_CTRL_GR_INFO_INDEX_SM_VERSION, e.g. 0xa04 on
     * GB20x); `sm` is the shader model decimal derived from it. */
    uint32_t sm_isa;
+   /* NV2080_CTRL_GR_INFO_INDEX_SHADER_PIPE_COUNT and _SHADER_PIPE_SUB_COUNT
+    * (the TPC count): inputs of the compute contexts' SET_SCG_CONTROL. */
+   uint32_t shader_pipe_count, shader_pipe_sub_count;
+   /* Contexts that can join another context's channel group
+    * (nv_rm_context_create_shared): from Volta on RM's subcontext count
+    * (GR info MAX_SUBCONTEXT_COUNT) less VEID 0; before Volta, where joining
+    * channels share the group's single GR context, the group's 32 channels
+    * less one (gm107 dev_ram.h NV_RAMRL_ENTRY_TSG_LENGTH_MAX). */
+   uint32_t max_shared_ctx;
+   uint32_t reserved;
 };
 struct NvRmAllocation {
    uint64_t id, size;

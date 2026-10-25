@@ -1492,15 +1492,15 @@
           p_format = util_format_stencil_only(nil_image.format.p_format);
 --- a/src/nouveau/vulkan/nvk_physical_device.c
 +++ b/src/nouveau/vulkan/nvk_physical_device.c
-@@ -57,6 +57,7 @@
+@@ -54,6 +54,7 @@
+ #include "clc5c0.h"
+ #include "clc797.h"
+ #include "clc6c0.h"
++#include "clc7c0.h"
  #include "clc997.h"
  #include "clcdc0.h"
  #include "clce97.h"
-+#include "clcec0.h"
- 
- static uint32_t
- nvk_get_vk_version(const struct nv_device_info *info)
-@@ -1766,6 +1767,39 @@
+@@ -1766,6 +1767,30 @@
           .queue_count = 2,
        };
     }
@@ -1516,20 +1516,11 @@
 +    * MME macros for indirect dispatch and compute-invocation queries, and the
 +    * compute class calls them only from AMPERE_COMPUTE_B on
 +    * (nvk_cmd_dispatch.c, CALL_MME_MACRO on NVC7C0); before that they run on
-+    * the 3D class, so earlier GPUs cannot have the family. Transfer commands
++    * the 3D class, so earlier GPUs do not get the family. Transfer commands
 +    * on it run as compute meta (nvk_cmd_meta.c).
-+    *
-+    * It is exposed only with BLACKWELL_COMPUTE_B (GB20x), the class it has
-+    * been verified on. With AMPERE_COMPUTE_B and ADA_COMPUTE_A it does not
-+    * work yet: its dispatches do not run concurrently with the graphics
-+    * queue's work, and CmdDispatchIndirect on it pushes to a subchannel the
-+    * context has no object bound on (nv_push subc_mask assert).
-+    * HOPPER_COMPUTE_A and BLACKWELL_COMPUTE_A were never run with it. No
-+    * queue is redirected: those GPUs keep the graphics and transfer
-+    * families only.
 +    */
 +   if (nvkmd->kmd_info.max_shared_ctx > 0 &&
-+       pdev->info.cls_compute >= BLACKWELL_COMPUTE_B) {
++       pdev->info.cls_compute >= AMPERE_COMPUTE_B) {
 +      pdev->queue_families[pdev->queue_family_count++] = (struct nvk_queue_family) {
 +         .queue_flags = VK_QUEUE_COMPUTE_BIT |
 +                        VK_QUEUE_TRANSFER_BIT |

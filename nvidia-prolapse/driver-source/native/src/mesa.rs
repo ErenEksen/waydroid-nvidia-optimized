@@ -76,6 +76,18 @@ pub struct Info {
     /// RM's SM ISA code (NV2080_CTRL_GR_INFO_INDEX_SM_VERSION), from which
     /// `sm` is derived.
     sm_isa: u32,
+    /// NV2080_CTRL_GR_INFO_INDEX_SHADER_PIPE_COUNT and
+    /// NV2080_CTRL_GR_INFO_INDEX_SHADER_PIPE_SUB_COUNT (the TPC count, as
+    /// OGKM nv_gpu_ops.c reads it), the inputs of the compute contexts'
+    /// SET_SCG_CONTROL limits.
+    shader_pipe_count: u32,
+    shader_pipe_sub_count: u32,
+    /// Contexts that can join another context's channel group
+    /// (`Queue::new_in_group`): the group's subcontext count less the
+    /// creator's VEID 0 from Volta on, its channel count less one before
+    /// (query_info).
+    max_shared_ctx: u32,
+    _reserved: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1601,14 +1613,36 @@ fn query_info(d: &Device) -> Result<Info> {
     d.client.control(d.subdevice, 0x20801701, &mut arch)?;
     let mut name = [0u32; 17];
     d.client.control(d.subdevice, 0x20800110, &mut name)?;
-    let mut gr = [[0xcu32, 0], [0xd, 0], [0x20, 0]];
+    let mut gr = [[0xcu32, 0], [0xd, 0], [0x20, 0], [0x7, 0], [0x9, 0]];
     let mut query = abi::GrInfo {
-        count: 3,
+        count: gr.len() as u32,
         entries: gr.as_mut_ptr() as u64,
         ..Default::default()
     };
     d.client.control(d.subdevice, 0x20801201, &mut query)?;
     let caps = capabilities::select(&d.classes()?, gr[0][1])?;
+    // Contexts that can join a channel group. From Volta on each takes a
+    // subcontext of its own: RM's per-chip count is GR info
+    // NV2080_CTRL_GR_INFO_INDEX_MAX_SUBCONTEXT_COUNT (ctrl0080gr.h 0x2c; RM's
+    // own FIFO bound reads the same entry, OGKM kernel_fifo.c:2791 /
+    // kernel_fifo_gv100.c:181-207), within the 128 channels a group holds
+    // (gv100 dev_ram.h NV_RAMRL_ENTRY_TSG_LENGTH_MAX). Before Volta there are
+    // no subcontexts: joining channels share the group's GR context and the
+    // group holds 32 channels (gm107 dev_ram.h NV_RAMRL_ENTRY_TSG_LENGTH_MAX,
+    // Maxwell and Pascal). The group's first context keeps one of them.
+    let joinable = if caps.usermode.is_some() {
+        let mut sub = [[0x2cu32, 0]];
+        let mut query = abi::GrInfo {
+            count: sub.len() as u32,
+            entries: sub.as_mut_ptr() as u64,
+            ..Default::default()
+        };
+        d.client.control(d.subdevice, 0x20801201, &mut query)?;
+        sub[0][1].min(0x80)
+    } else {
+        0x20
+    };
+    let max_shared_ctx = joinable.saturating_sub(1);
     // Route info is {u32 flags,pad,u64 data}; final mask follows at offset16.
     let mut gpc = [0u64; 3];
     d.client.control(d.subdevice, 0x2080122a, &mut gpc)?;
@@ -1664,6 +1698,10 @@ fn query_info(d: &Device) -> Result<Info> {
         zcull_ctxsw_align,
         has_zcull_info,
         sm_isa: gr[0][1],
+        shader_pipe_count: gr[3][1],
+        shader_pipe_sub_count: gr[4][1],
+        max_shared_ctx,
+        _reserved: 0,
     })
 }
 
@@ -2846,11 +2884,14 @@ mod tests {
     #[test]
     fn bridge_info_matches_independent_c_oracle() {
         // mesa/abi-check.c: host and Android compile from the public bridge header.
-        assert_eq!(size_of::<Info>(), 208);
+        assert_eq!(size_of::<Info>(), 224);
+        assert_eq!(offset_of!(Info, max_shared_ctx), 216);
         assert_eq!(offset_of!(Info, zcull), 152);
         assert_eq!(offset_of!(Info, zcull_ctxsw_size), 192);
         assert_eq!(offset_of!(Info, has_zcull_info), 200);
         assert_eq!(offset_of!(Info, sm_isa), 204);
+        assert_eq!(offset_of!(Info, shader_pipe_count), 208);
+        assert_eq!(offset_of!(Info, shader_pipe_sub_count), 212);
         assert_eq!(offset_of!(Info, generic_kind), 68);
         assert_eq!(offset_of!(Info, vram_size), 72);
         assert_eq!(offset_of!(Info, bar_size), 80);

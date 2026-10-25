@@ -26,16 +26,17 @@
  
 --- a/src/nouveau/vulkan/nvk_cmd_dispatch.c
 +++ b/src/nouveau/vulkan/nvk_cmd_dispatch.c
-@@ -32,6 +32,46 @@
+@@ -32,6 +32,49 @@
  #include "nv_push_clc86f.h"
  #include "nv_push_clcec0.h"
  
 +/* SET_SPA_VERSION and SET_QMD_VERSION words of the proprietary driver's
 + * compute-context initialiser (libnvidia-eglcore.so.615.78.08 E 0x56f1c0),
 + * selected by the SM ISA code: one SET_SPA_VERSION per code, plus
-+ * SET_QMD_VERSION from 0x900 on.  Codes the initialiser does not list take
-+ * its default arm (E 0x56fa60, SPA 0x500), which is not reproduced: what the
-+ * selector holds for codes outside this table is not established.
++ * SET_QMD_VERSION from 0x900 on.  Its selector equals RM's SM version
++ * code on the chips captured (SPA 0x705 on TU106, 0xa04 on GB202), and
++ * every code it does not list takes the default arm (E 0x56fa60):
++ * SET_SPA_VERSION 0x500 and no SET_QMD_VERSION.
 + */
 +static bool
 +nvk_stock_spa_qmd_version(uint32_t sm_isa, uint32_t *spa, uint32_t *qmd)
@@ -56,6 +57,8 @@
 +         return true;
 +      }
 +   }
++   *spa = 0x500;
++   *qmd = 0;
 +   return false;
 +}
 +
@@ -73,7 +76,7 @@
  VkResult
  nvk_push_dispatch_state_init(struct nvk_queue *queue, struct nv_push *p)
  {
-@@ -47,6 +87,27 @@
+@@ -47,6 +90,31 @@
     if (pdev->info.cls_compute == MAXWELL_COMPUTE_A)
        P_IMMD(p, NVB0C0, SET_SELECT_MAXWELL_TEXTURE_HEADERS, V_TRUE);
  
@@ -90,7 +93,11 @@
 +   const uint32_t sm_isa = dev->nvkmd->pdev->kmd_info.sm_isa_version;
 +   const bool stock_init = nvk_compute_sked_cache_shared(pdev);
 +   uint32_t spa, qmd;
-+   if (stock_init && nvk_stock_spa_qmd_version(sm_isa, &spa, &qmd)) {
++   if (stock_init) {
++      if (!nvk_stock_spa_qmd_version(sm_isa, &spa, &qmd))
++         mesa_logw("NVK: SM ISA code 0x%x is not in the proprietary driver's "
++                   "compute-init table; using its default arm (SPA 0x500)",
++                   sm_isa);
 +      __push_immd(p, SUBC_NV90C0, NVC3C0_SET_SPA_VERSION, spa);
 +      if (qmd != 0) {
 +         P_MTHD(p, NVC3C0, SET_QMD_VERSION);
@@ -101,7 +108,7 @@
     if (pdev->info.cls_compute < VOLTA_COMPUTE_A) {
        uint64_t shader_base_addr =
           nvk_heap_contiguous_base_address(&dev->shader_heap);
-@@ -89,6 +150,35 @@
+@@ -89,6 +157,37 @@
        P_NVA0C0_SET_SHADER_SHARED_MEMORY_WINDOW(p, 0xfe << 24);
     }
  
@@ -127,17 +134,19 @@
 +      P_IMMD(p, NVC3C0, FE_ATOMIC_SEQUENCE_END, 0);
 +
 +      /* E 0x56f91f: SET_CWD_SLOT_COUNT 0x40 when the chip-family word has
-+       * a bit of 0x6c031e0, as on GB202 (0x40011e0).  That word is known
-+       * only for GB202 here, so the slot count is sent for SM ISA 0xa04.
++       * a bit of 0x6c031e0.  The word comes from the per-3D-class table
++       * E 0xfaf160 (lookup E 0x4e3cf0): AMPERE_A and every later 3D class
++       * have such a bit, TURING_A does not (GB202 measured: 0x1000).
++       * VOLTA_A is not in that driver's table.
 +       */
-+      if (sm_isa == 0xa04)
++      if (pdev->info.cls_eng3d >= AMPERE_A)
 +         P_IMMD(p, NVC3C0, SET_CWD_SLOT_COUNT, 0x40);
 +   }
 +
     return VK_SUCCESS;
  }
  
-@@ -106,7 +196,13 @@
+@@ -106,7 +205,13 @@
  {
     if (cmd->vk.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY) {
        struct nv_push *p = nvk_cmd_buffer_push(cmd, 10);
@@ -152,7 +161,7 @@
           P_IMMD(p, NVB1C0, INVALIDATE_SKED_CACHES, 0);
        }
        P_IMMD(p, NVA0C0, INVALIDATE_SAMPLER_CACHE_NO_WFI, {
-@@ -137,6 +233,31 @@
+@@ -137,6 +242,31 @@
     }
  }
  

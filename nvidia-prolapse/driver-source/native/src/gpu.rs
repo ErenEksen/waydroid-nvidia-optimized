@@ -1021,6 +1021,12 @@ impl Subcontext {
         tsg.free_veids.set(rest);
         Ok(Self { veid, tsg })
     }
+    /// Before Volta a channel group has no subcontexts: every channel of the
+    /// group runs in the group's single GR context. Such a member holds the
+    /// group without a VEID (0, never returned to the free set).
+    fn legacy(tsg: Rc<Tsg>) -> Self {
+        Self { veid: 0, tsg }
+    }
 }
 /// Lowest free VEID of `free` and the set without it; `None` when empty.
 fn lowest_free_veid(free: u64) -> Option<(u32, u64)> {
@@ -1496,23 +1502,23 @@ impl Queue {
         let caps = crate::capabilities::query(device)?;
         let modern = caps.usermode.is_some();
         if let Some(share) = share {
-            if !modern {
-                return Err(Error::Contract(
-                    "a context sharing another context's TSG needs subcontexts (Volta+ context-share objects); this GPU has none".into(),
-                ));
-            }
             // Stock's subcontext channels carry only the compute class (its
             // async-compute and compute-queue channels get one 0xcec0 object
             // on GB202, no 3D, 2D or copy object); 3D runs only on VEID 0.
+            // Before Volta the joining channel shares the group's GR context
+            // with the graphics channel, and it too carries the compute class
+            // only (stock 580.178.04 on GP10x).
             if mask != 16 {
                 return Err(Error::Contract(format!(
                     "a context in a shared TSG supports only the compute engine (mask 0x10), got {mask:#x}"
                 )));
             }
-            device.client.compat.require_constant(
-                "NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_SPECIFIED",
-                CTXSHARE_SPECIFIED.into(),
-            )?;
+            if modern {
+                device.client.compat.require_constant(
+                    "NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_SPECIFIED",
+                    CTXSHARE_SPECIFIED.into(),
+                )?;
+            }
             if !Rc::ptr_eq(&share.subcontext.tsg.object.device, device) {
                 return Err(Error::Contract(
                     "a shared TSG belongs to another RM device".into(),
@@ -1576,8 +1582,14 @@ impl Queue {
             }
         };
         // Declared before the context share and channel: on an error below
-        // they drop (RM free) first and the VEID returns afterwards.
-        let subcontext = Subcontext::take(tsg)?;
+        // they drop (RM free) first and the VEID returns afterwards. Before
+        // Volta there are no subcontexts and no context-share objects: a
+        // channel joining the group is allocated under the TSG with
+        // hContextShare 0 and runs in the group's GR context (stock
+        // 580.178.04 skips the context-share allocation below Volta,
+        // libnvidia-eglcore.so.580.178.04 E 0xa76fab, and still places the
+        // compute queue's channel in the graphics queue's TSG, E 0xa7b167).
+        let subcontext = if modern { Subcontext::take(tsg)? } else { Subcontext::legacy(tsg) };
         let veid = subcontext.veid;
         let group = Rc::clone(&subcontext.tsg.object);
         let context = if modern {
