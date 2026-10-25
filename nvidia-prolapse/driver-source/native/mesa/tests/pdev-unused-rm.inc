@@ -1,5 +1,7 @@
 /* Generated exact prototypes from nv_rm.h; unreachable test tripwires. */
 int32_t nv_rm_context_create(struct NvRmDevice* device, uint32_t engines, uint64_t* context) { assert(!"unexpected nv_rm_context_create"); abort(); }
+int32_t nv_rm_context_create_shared(struct NvRmDevice* device, uint32_t engines,
+                            uint64_t share, uint64_t* context) { assert(!"unexpected nv_rm_context_create_shared"); abort(); }
 int32_t nv_rm_exec(struct NvRmDevice* device,
            uint64_t context,
            const struct NvRmExec* pushes,

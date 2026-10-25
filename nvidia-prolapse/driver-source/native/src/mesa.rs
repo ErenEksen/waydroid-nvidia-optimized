@@ -1218,7 +1218,7 @@ impl Bridge {
                 let pool = &self.core.pool;
                 let context = match inner.export_queue {
                     Some(context) => context,
-                    None => match self.create_context(inner, 1) {
+                    None => match self.create_context(inner, 1, None) {
                         Ok(context) => {
                             inner.export_queue = Some(context);
                             context
@@ -1256,7 +1256,7 @@ impl Bridge {
                 let context = match inner.export_queue {
                     Some(context) => context,
                     None => {
-                        let context = self.create_context(inner, 1)?;
+                        let context = self.create_context(inner, 1, None)?;
                         inner.export_queue = Some(context);
                         context
                     }
@@ -1362,16 +1362,33 @@ impl Bridge {
         self.capture
             .store(true, std::sync::atomic::Ordering::Relaxed);
     }
-    fn create_context(&self, inner: &mut Inner, engines: u32) -> Result<u64> {
+    /// `share`: the context whose TSG the new context's channel joins on
+    /// its own subcontext (VEID); `None` gives the context a TSG of its own.
+    fn create_context(&self, inner: &mut Inner, engines: u32, share: Option<u64>) -> Result<u64> {
         let retire = self.slot_locked(inner)?;
-        match Queue::new_with_events(
-            &inner.device,
-            &inner.space,
-            engines,
-            &inner.events,
-            &self.core.pool,
-            retire,
-        ) {
+        let created = match share {
+            None => Queue::new_with_events(
+                &inner.device,
+                &inner.space,
+                engines,
+                &inner.events,
+                &self.core.pool,
+                retire,
+            ),
+            Some(share) => match queue_ref(inner, share) {
+                Ok(share) => Queue::new_in_group(
+                    &inner.device,
+                    &inner.space,
+                    engines,
+                    &inner.events,
+                    &self.core.pool,
+                    retire,
+                    share,
+                ),
+                Err(error) => Err(error),
+            },
+        };
+        match created {
             Ok(mut queue) => {
                 if let Some(cap) = inner.capture.as_mut() {
                     // Loud: an armed capture without timestamps is refused.
@@ -2125,7 +2142,30 @@ pub unsafe extern "C" fn nv_rm_context_create(p: *mut Bridge, engines: u32, out:
             let b = unsafe { bridge(p) }?;
             b.core.live()?;
             let mut guard = b.lock();
-            let id = b.create_context(&mut guard.0, engines)?;
+            let id = b.create_context(&mut guard.0, engines, None)?;
+            unsafe { output(out, id) }
+        })())
+    })
+}
+/// Create a context whose channel joins `share`'s TSG on the lowest free
+/// subcontext (VEID); work on the two contexts can run on the GR engine at
+/// the same time. Compute engine only; needs Volta+ subcontexts.
+#[no_mangle]
+pub unsafe extern "C" fn nv_rm_context_create_shared(
+    p: *mut Bridge,
+    engines: u32,
+    share: u64,
+    out: *mut u64,
+) -> i32 {
+    ffi(p as *const Bridge, move || {
+        report((|| {
+            if out.is_null() {
+                return Err(Error::Contract("null context output".into()));
+            }
+            let b = unsafe { bridge(p) }?;
+            b.core.live()?;
+            let mut guard = b.lock();
+            let id = b.create_context(&mut guard.0, engines, Some(share))?;
             unsafe { output(out, id) }
         })())
     })
@@ -2844,3 +2884,7 @@ mod hardware_tests;
 #[cfg(test)]
 #[path = "mesa_reclaim_tests.rs"]
 mod reclaim_tests;
+
+#[cfg(test)]
+#[path = "mesa_multiqueue_tests.rs"]
+mod multiqueue_tests;

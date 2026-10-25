@@ -940,6 +940,106 @@ fn host_semaphore(
 /// Drop order is intentional: engine/channel handles precede their memory, and
 /// the ledger's semaphore-slot references (last field) are released only after
 /// the channel object is freed, so no GPU access to a recycled slot is possible.
+/// NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_SYNC / _SPECIFIED (nvos.h).
+const CTXSHARE_SYNC: u32 = 0;
+const CTXSHARE_SPECIFIED: u32 = 2;
+/// NVOS04_FLAGS_GROUP_CHANNEL_RUNQUEUE_ONE (4:4) and
+/// NVOS04_FLAGS_GROUP_CHANNEL_THREAD_ONE (29:28), alloc_channel.h.
+const CHANNEL_RUNQUEUE_ONE: u32 = 1 << 4;
+const CHANNEL_THREAD_ONE: u32 = 1 << 28;
+
+/// One RM channel group (KEPLER_CHANNEL_GROUP_A) shared by every queue whose
+/// channel sits in it. The `Rc` count is the group's reference count: RM
+/// frees the TSG when the last queue holding it drops. `free_veids` is the
+/// set of unused subcontext IDs, a 64-bit mask that starts full; a channel
+/// takes its lowest set bit (stock 615 TSG block +0x10, initialised to all
+/// ones at E 0x9e1400 and consumed with `tzcnt` at E 0x9e5f4f..0x9e5f6c).
+/// RM bounds the VEID by the GPU's subcontext count and fails the
+/// context-share allocation beyond it (kernel_ctxshare.c eheapAlloc).
+///
+/// VEID 0 belongs to the group, not to the queue that created it: the GR
+/// engine saves and restores the group's graphics context state (the ZCULL
+/// buffer among it) through subcontext 0's address space, so its context
+/// share must live as long as any channel of the group. Measured on GB202:
+/// freeing the VEID-0 share while a VEID-1 channel kept running faulted
+/// GPCCLIENT_RAST with FAULT_PDE at the ZCULL buffer's VA (Xid 31).
+/// Field order is the teardown order: the VEID-0 share is freed, then the
+/// TSG object (and with it RM's GR context of the group), and only then is
+/// the ZCULL buffer that context switches save into unmapped and freed.
+pub(crate) struct Tsg {
+    veid0_share: std::cell::RefCell<Option<Rc<Object>>>,
+    object: Rc<Object>,
+    free_veids: std::cell::Cell<u64>,
+    /// ZCULL context-switch buffer of the group's GR context, bound by its
+    /// graphics channel (VEID 0).
+    zcull: std::cell::RefCell<Option<GpuMapping>>,
+}
+impl Tsg {
+    fn new(object: Rc<Object>) -> Rc<Self> {
+        Rc::new(Self {
+            veid0_share: std::cell::RefCell::new(None),
+            object,
+            free_veids: std::cell::Cell::new(u64::MAX),
+            zcull: std::cell::RefCell::new(None),
+        })
+    }
+    fn keep_veid0_share(&self, share: Rc<Object>) -> Result<()> {
+        let mut slot = self.veid0_share.borrow_mut();
+        if slot.is_some() {
+            return Err(Error::Contract(
+                "TSG already has a VEID 0 context share".into(),
+            ));
+        }
+        *slot = Some(share);
+        Ok(())
+    }
+    fn keep_zcull(&self, mapping: GpuMapping) -> Result<()> {
+        let mut zcull = self.zcull.borrow_mut();
+        if zcull.is_some() {
+            return Err(Error::Contract(
+                "TSG already has a ZCULL context-switch buffer bound".into(),
+            ));
+        }
+        *zcull = Some(mapping);
+        Ok(())
+    }
+}
+/// A queue's VEID in its TSG. Dropping it returns the VEID to the TSG's free
+/// set and then releases the queue's TSG reference, after the queue's channel
+/// and its context share were freed (stock release loop E 0x9e3178: share
+/// free, VEID back into +0x10, refcount decrement, TSG free on the last).
+/// VEID 0 is not returned: it stays with the TSG together with its share.
+struct Subcontext {
+    veid: u32,
+    tsg: Rc<Tsg>,
+}
+impl Subcontext {
+    fn take(tsg: Rc<Tsg>) -> Result<Self> {
+        let (veid, rest) = lowest_free_veid(tsg.free_veids.get()).ok_or_else(|| {
+            Error::Contract("TSG has no free subcontext (all 64 VEIDs in use)".into())
+        })?;
+        tsg.free_veids.set(rest);
+        Ok(Self { veid, tsg })
+    }
+}
+/// Lowest free VEID of `free` and the set without it; `None` when empty.
+fn lowest_free_veid(free: u64) -> Option<(u32, u64)> {
+    (free != 0).then(|| {
+        let veid = free.trailing_zeros();
+        (veid, free & !(1u64 << veid))
+    })
+}
+impl Drop for Subcontext {
+    fn drop(&mut self) {
+        if self.veid == 0 {
+            return;
+        }
+        self.tsg
+            .free_veids
+            .set(self.tsg.free_veids.get() | 1u64 << self.veid);
+    }
+}
+
 pub(crate) struct Queue {
     _events: crate::events::ChannelEvents,
     userd: Option<rm::Mapping>,
@@ -947,10 +1047,11 @@ pub(crate) struct Queue {
     completion: crate::fences::NativeFenceSurface,
     engines: Vec<Rc<Object>>,
     channel: Rc<Object>,
-    group: Rc<Object>,
-    /// Graphics only: ZCULL context-switch buffer bound to `channel`; drops
-    /// (unmap, free) after the channel and its group are freed.
-    _zcull: Option<GpuMapping>,
+    /// This channel's subcontext (VEID) in its TSG. Declared after `channel`:
+    /// the channel's RM free releases its context-share dependency first, so
+    /// the VEID returns to the TSG only after RM freed the share, and the TSG
+    /// reference drops last.
+    subcontext: Subcontext,
     error_notifier: rm::Mapping,
     ring: rm::Mapping,
     _ring_gpu: GpuMapping,
@@ -1300,8 +1401,9 @@ const ZCULL_MODE_SEPARATE_BUFFER: u32 = 2;
 /// the channel (not the TSG), vMemPtr, SEPARATE_BUFFER} on the subdevice.
 /// Any failure fails channel creation (stock takes its error path). Stock
 /// shares one device buffer across a device's graphics channels and keeps
-/// it coherent with share walks that are not traced; each of our channels
-/// owns its buffer, which is stock's own unshared branch (E 0x9e7468).
+/// it coherent with share walks that are not traced; each of our TSGs (one
+/// graphics channel each) owns its buffer, which is stock's own unshared
+/// branch (E 0x9e7468), and keeps it until RM freed the TSG.
 fn bind_zcull(device: &Rc<Device>, space: &AddressSpace, channel: u32) -> Result<GpuMapping> {
     let mut properties = abi::EngineContextProperties {
         engine: ENGINE_GRAPHICS_ZCULL,
@@ -1355,12 +1457,65 @@ impl Queue {
         pool: &Arc<SlotPool>,
         retire: Slot,
     ) -> Result<Self> {
+        Self::create(device, space, mask, events, pool, retire, None)
+    }
+    /// A queue whose channel joins `share`'s TSG on the lowest free
+    /// subcontext (VEID) instead of getting a TSG of its own. Channels of one
+    /// TSG on different VEIDs run on the GR engine at the same time. This is
+    /// how stock 615 places a compute-only queue: its channel goes into the
+    /// graphics queue's TSG on its own VEID (ctxshare SPECIFIED, engine
+    /// GRAPHICS, compute object only; libnvidia-eglcore.so.615.78.08
+    /// E 0x9e5f35..0x9e5f6c, E 0x9e0170, E 0x9e17b0).
+    pub(crate) fn new_in_group(
+        device: &Rc<Device>,
+        space: &AddressSpace,
+        mask: u32,
+        events: &crate::events::RmEvents,
+        pool: &Arc<SlotPool>,
+        retire: Slot,
+        share: &Queue,
+    ) -> Result<Self> {
+        Self::create(device, space, mask, events, pool, retire, Some(share))
+    }
+    fn create(
+        device: &Rc<Device>,
+        space: &AddressSpace,
+        mask: u32,
+        events: &crate::events::RmEvents,
+        pool: &Arc<SlotPool>,
+        retire: Slot,
+        share: Option<&Queue>,
+    ) -> Result<Self> {
         // On error the caller still owns `retire`; on success QueueShared does.
         if mask == 0 || mask & !31 != 0 {
             return Err(Error::Contract("unsupported GPU engine mask".into()));
         }
         let caps = crate::capabilities::query(device)?;
         let modern = caps.usermode.is_some();
+        if let Some(share) = share {
+            if !modern {
+                return Err(Error::Contract(
+                    "a context sharing another context's TSG needs subcontexts (Volta+ context-share objects); this GPU has none".into(),
+                ));
+            }
+            // Stock's subcontext channels carry only the compute class (its
+            // async-compute and compute-queue channels get one 0xcec0 object
+            // on GB202, no 3D, 2D or copy object); 3D runs only on VEID 0.
+            if mask != 16 {
+                return Err(Error::Contract(format!(
+                    "a context in a shared TSG supports only the compute engine (mask 0x10), got {mask:#x}"
+                )));
+            }
+            device.client.compat.require_constant(
+                "NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT_SPECIFIED",
+                CTXSHARE_SPECIFIED.into(),
+            )?;
+            if !Rc::ptr_eq(&share.subcontext.tsg.object.device, device) {
+                return Err(Error::Contract(
+                    "a shared TSG belongs to another RM device".into(),
+                ));
+            }
+        }
         // Public NV_CHANNELGPFIFO_ALLOCATION_PARAMETERS.hObjectError accepts
         // a physical Memory handle. GSP requires FB backing for this notifier.
         // NvNotification is 16 bytes, error index 0, status at byte 14.
@@ -1400,23 +1555,37 @@ impl Queue {
                 ));
             }
         }
-        let mut group_params = abi::ChannelGroup {
-            vaspace: space.vaspace.handle,
-            engine: 1,
-            ..Default::default()
+        let tsg = match share {
+            Some(share) => Rc::clone(&share.subcontext.tsg),
+            None => {
+                let mut group_params = abi::ChannelGroup {
+                    vaspace: space.vaspace.handle,
+                    engine: 1,
+                    ..Default::default()
+                };
+                Tsg::new(Object::new(
+                    device,
+                    device.handle,
+                    0xa06c,
+                    &mut group_params,
+                    vec![Rc::clone(&space.vaspace)],
+                )?)
+            }
         };
-        let group = Object::new(
-            device,
-            device.handle,
-            0xa06c,
-            &mut group_params,
-            vec![Rc::clone(&space.vaspace)],
-        )?;
+        // Declared before the context share and channel: on an error below
+        // they drop (RM free) first and the VEID returns afterwards.
+        let subcontext = Subcontext::take(tsg)?;
+        let veid = subcontext.veid;
+        let group = Rc::clone(&subcontext.tsg.object);
         let context = if modern {
+            // NV_CTXSHARE_ALLOCATION_PARAMETERS: VEID 0 = SUBCONTEXT_SYNC,
+            // any other VEID = SUBCONTEXT_SPECIFIED with subctxId = VEID
+            // (nvos.h NV_CTXSHARE_ALLOCATION_FLAGS_SUBCONTEXT; stock 615
+            // E 0x9e01c0..0x9e01fa: flags = (veid != 0) * 2).
             let mut parameters = abi::ContextShare {
                 vaspace: space.vaspace.handle,
-                flags: 0,
-                subcontext: 0,
+                flags: if veid == 0 { CTXSHARE_SYNC } else { CTXSHARE_SPECIFIED },
+                subcontext: veid,
             };
             Some(Object::new(
                 device,
@@ -1428,6 +1597,9 @@ impl Queue {
         } else {
             None
         };
+        if let (0, Some(context)) = (veid, context.as_ref()) {
+            subcontext.tsg.keep_veid0_share(Rc::clone(context))?;
+        }
         let mut params = abi::Channel {
             error: error_mem.handle,
             fifo_address: ring_gpu.address(),
@@ -1438,6 +1610,11 @@ impl Queue {
             // of GPU generation. With hContextShare=0, SetLegacyMode creates
             // the legacy sync context and kernel_ctxshare.c inherits TSG pVAS.
             vaspace: 0,
+            // A channel on a VEID other than 0 runs on TSG runqueue one and
+            // SCG thread one, as stock 615 sets for every such channel
+            // (E 0x9e1c70 `orl $0x10000010`; alloc_channel.h
+            // NVOS04_FLAGS_GROUP_CHANNEL_RUNQUEUE 4:4, _THREAD 29:28).
+            flags: if veid == 0 { 0 } else { CHANNEL_RUNQUEUE_ONE | CHANNEL_THREAD_ONE },
             ..Default::default()
         };
         if modern {
@@ -1476,11 +1653,16 @@ impl Queue {
         }
         // Graphics contexts get their ZCULL context-switch buffer after the
         // engine objects, as stock does (objects, then ZCULL bind).
-        let zcull = if mask & 4 != 0 {
-            Some(bind_zcull(device, space, channel.handle)?)
-        } else {
-            None
-        };
+        // The buffer belongs to the TSG's GR context, not to this channel
+        // (RM keeps one KernelGraphicsContext per channel group,
+        // g_kernel_channel_group_api_nvoc.h hKernelGraphicsContext): the GR
+        // context switch keeps saving and restoring it while any channel of
+        // the TSG lives. It is therefore owned by the TSG and unmapped only
+        // after RM freed the TSG.
+        if mask & 4 != 0 {
+            let zcull = bind_zcull(device, space, channel.handle)?;
+            subcontext.tsg.keep_zcull(zcull)?;
+        }
         let mut token = 0;
         let doorbell = if let Some(class) = caps.usermode {
             device
@@ -1499,9 +1681,25 @@ impl Queue {
         }
         // Retirement follows the public completion surface's width (as before).
         // Last fallible step before the slot reference moves into QueueShared.
-        device
-            .client
-            .control(group.handle, 0xa06c0101, &mut [1u8, 0, 0])?;
+        if share.is_none() {
+            device
+                .client
+                .control(group.handle, 0xa06c0101, &mut [1u8, 0, 0])?;
+        } else {
+            // The TSG is already scheduled: RM put this channel on the TSG's
+            // runlist at allocation (kernel_channel.c:926). Bind and schedule
+            // the channel itself, as stock does for every channel
+            // (NVA06F_CTRL_CMD_BIND {NV2080_ENGINE_TYPE_GRAPHICS}, then
+            // NVA06F_CTRL_CMD_GPFIFO_SCHEDULE {bEnable 1}; stock 615
+            // E 0x9e19c5 / E 0x9e1a01; kchannelCtrlCmdBind_IMPL covers a
+            // channel added to a running TSG).
+            device
+                .client
+                .control(channel.handle, 0xa06f0104, &mut 1u32)?;
+            device
+                .client
+                .control(channel.handle, 0xa06f0103, &mut [1u8, 0, 0])?;
+        }
         let shared = Arc::new(QueueShared {
             pool: Arc::clone(pool),
             retire,
@@ -1515,8 +1713,7 @@ impl Queue {
             channel_class: caps.channel,
             engines,
             channel,
-            group,
-            _zcull: zcull,
+            subcontext,
             error_notifier,
             ring,
             _ring_gpu: ring_gpu,
@@ -1546,6 +1743,16 @@ impl Queue {
     pub(crate) fn shared(&self) -> &Arc<QueueShared> {
         &self.shared
     }
+    /// The channel's subcontext ID and its TSG's RM handle.
+    #[cfg(test)]
+    pub(crate) fn subcontext(&self) -> (u32, u32) {
+        (self.subcontext.veid, self.subcontext.tsg.object.handle)
+    }
+    /// GPU VA range of the TSG's ZCULL buffer, if bound.
+    #[cfg(test)]
+    pub(crate) fn zcull_range(&self) -> Option<(u64, u64)> {
+        self.subcontext.tsg.zcull.borrow().as_ref().map(|m| (m.address(), m.length()))
+    }
     pub(crate) fn channel_class(&self) -> u32 {
         self.channel_class
     }
@@ -1559,7 +1766,7 @@ impl Queue {
             ));
         }
         let bytes = crate::capture::TS_ENTRIES * 32;
-        let mem = self.group.device.allocate_aligned(bytes, 4096, false, true)?;
+        let mem = self.subcontext.tsg.object.device.allocate_aligned(bytes, 4096, false, true)?;
         let mut cpu = mem.map()?;
         for i in 0..bytes / 4 {
             cpu.write_u32(i * 4, 0)?;
@@ -1666,7 +1873,9 @@ impl Queue {
     ) -> Result<(rm::Mapping, GpuMapping)> {
         let bytes = (words.len() * 4).next_multiple_of(4096);
         let mem = self
-            .group
+            .subcontext
+            .tsg
+            .object
             .device
             .allocate_aligned(bytes, 4096, false, true)?;
         let mut cpu = mem.map()?;
@@ -1945,6 +2154,25 @@ impl Drop for Queue {
         // the channel still exists, then frees engines/channel before buffers,
         // and finally releases held semaphore slots.
         let _ = (&self.engines, &self.channel, &self.tail, &self.held);
+    }
+}
+
+#[cfg(test)]
+mod subcontext_tests {
+    use super::lowest_free_veid;
+    #[test]
+    fn veids_are_taken_lowest_first_and_returned() {
+        let mut free = u64::MAX;
+        for want in 0..64 {
+            let (veid, rest) = lowest_free_veid(free).unwrap();
+            assert_eq!(veid, want);
+            free = rest;
+        }
+        assert_eq!(lowest_free_veid(free), None);
+        // A returned VEID is the next one taken, even above a lower gap's end.
+        free |= 1 << 37;
+        free |= 1 << 5;
+        assert_eq!(lowest_free_veid(free), Some((5, 1 << 37)));
     }
 }
 

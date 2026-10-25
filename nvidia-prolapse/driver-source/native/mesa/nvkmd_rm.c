@@ -1259,11 +1259,21 @@ const struct nvkmd_ctx_ops nvkmd_rm_ctx_ops = { .destroy = rm_ctx_destroy,
                                                 .flush = rm_ctx_flush,
                                                 .sync = rm_ctx_sync };
 static VkResult
-rm_ctx_create(struct nvkmd_dev* base,
-              struct vk_object_base* log,
-              enum nvkmd_engines engines,
-              struct nvkmd_ctx** out)
+rm_ctx_create_in(struct nvkmd_dev* base,
+                 struct vk_object_base* log,
+                 enum nvkmd_engines engines,
+                 struct nvkmd_ctx* share,
+                 struct nvkmd_ctx** out)
 {
+   if (share) {
+      /* A shared context needs a channel of its own in the other context's
+       * TSG; a bind-only context or a bind-only share has none. */
+      if (share->dev != base || share->ops != &nvkmd_rm_ctx_ops ||
+          !nvkmd_rm_ctx(share)->channel || engines == NVKMD_ENGINE_BIND)
+         return vk_errorf(log, VK_ERROR_INITIALIZATION_FAILED,
+                          "Native Rust RM shared context: the share must be a "
+                          "channel context of the same device");
+   }
    struct nvkmd_rm_ctx* ctx = calloc(1, sizeof(*ctx));
    if (!ctx)
       return vk_error(log, VK_ERROR_OUT_OF_HOST_MEMORY);
@@ -1272,10 +1282,13 @@ rm_ctx_create(struct nvkmd_dev* base,
    util_dynarray_init(&ctx->pending, NULL);
    util_dynarray_init(&ctx->waits, NULL);
    if (engines != NVKMD_ENGINE_BIND) {
+      int32_t status =
+         share ? nv_rm_context_create_shared(nvkmd_rm_dev(base)->rm, engines,
+                                             nvkmd_rm_ctx(share)->channel,
+                                             &ctx->channel)
+               : nv_rm_context_create(nvkmd_rm_dev(base)->rm, engines, &ctx->channel);
       VkResult result =
-        rm_result(log,
-                  nv_rm_context_create(nvkmd_rm_dev(base)->rm, engines, &ctx->channel),
-                  "create context");
+        rm_result(log, status, share ? "create shared-TSG context" : "create context");
       if (result != VK_SUCCESS) {
          util_dynarray_fini(&ctx->waits);
          util_dynarray_fini(&ctx->pending);
@@ -1285,6 +1298,26 @@ rm_ctx_create(struct nvkmd_dev* base,
    }
    *out = &ctx->base;
    return VK_SUCCESS;
+}
+static VkResult
+rm_ctx_create(struct nvkmd_dev* base,
+              struct vk_object_base* log,
+              enum nvkmd_engines engines,
+              struct nvkmd_ctx** out)
+{
+   return rm_ctx_create_in(base, log, engines, NULL, out);
+}
+VkResult
+nvkmd_rm_create_shared_ctx(struct nvkmd_dev* dev,
+                           struct vk_object_base* log_obj,
+                           enum nvkmd_engines engines,
+                           struct nvkmd_ctx* share,
+                           struct nvkmd_ctx** out)
+{
+   if (!share)
+      return vk_errorf(log_obj, VK_ERROR_INITIALIZATION_FAILED,
+                       "Native Rust RM shared context without a share");
+   return rm_ctx_create_in(dev, log_obj, engines, share, out);
 }
 const struct nvkmd_dev_ops nvkmd_rm_dev_ops = { .destroy = rm_dev_destroy,
                                                 .get_gpu_timestamp = rm_timestamp,

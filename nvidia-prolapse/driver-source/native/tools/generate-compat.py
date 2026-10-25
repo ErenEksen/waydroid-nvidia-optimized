@@ -56,7 +56,7 @@ for tag,pp in paths.items():
 # Additional lifecycle contracts are independently compiled against each public
 # tag. Never fill missing old releases with another tag's layout.
 additional=[]
-for family in ['lifecycle','static-bar1','zcull','video']:
+for family in ['lifecycle','static-bar1','zcull','video','subcontext']:
  directories=sorted(p for p in (ROOT/'build/rm-abi-stability'/family).iterdir() if p.is_dir())
  assert len(directories)==221,(family,'incomplete public tag census')
  additional.extend(directories)

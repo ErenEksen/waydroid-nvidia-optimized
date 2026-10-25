@@ -284,6 +284,11 @@ impl Compat {
                 "NVA06C_CTRL_CMD_GPFIFO_SCHEDULE",
                 "NVA06C_CTRL_GPFIFO_SCHEDULE_PARAMS",
             ),
+            0xa06f0103 => (
+                "NVA06F_CTRL_CMD_GPFIFO_SCHEDULE",
+                "NVA06F_CTRL_GPFIFO_SCHEDULE_PARAMS",
+            ),
+            0xa06f0104 => ("NVA06F_CTRL_CMD_BIND", "NVA06F_CTRL_BIND_PARAMS"),
             0xc36f0108 => (
                 "NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN",
                 "NVC36F_CTRL_CMD_GPFIFO_GET_WORK_SUBMIT_TOKEN_PARAMS",

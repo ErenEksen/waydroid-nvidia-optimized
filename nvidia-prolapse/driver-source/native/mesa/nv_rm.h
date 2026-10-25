@@ -186,6 +186,15 @@ nv_rm_va_free(struct NvRmDevice* device, const uint64_t* mappings,
               NvRmVaRelease release, void* data);
 int32_t
 nv_rm_context_create(struct NvRmDevice* device, uint32_t engines, uint64_t* context);
+/* Like nv_rm_context_create, but the new context's channel joins the TSG of
+ * context `share` on the lowest free subcontext (VEID) instead of getting a
+ * TSG of its own, so work on both contexts can run on the GR engine at the
+ * same time. Only the compute engine (16) is supported, on Volta and later;
+ * anything else fails with a named reason. The TSG lives until the last
+ * context in it is destroyed. */
+int32_t
+nv_rm_context_create_shared(struct NvRmDevice* device, uint32_t engines,
+                            uint64_t share, uint64_t* context);
 int32_t
 nv_rm_context_destroy(struct NvRmDevice* device, uint64_t context);
 /* All pushes (including an incomplete push and its following continuation)
