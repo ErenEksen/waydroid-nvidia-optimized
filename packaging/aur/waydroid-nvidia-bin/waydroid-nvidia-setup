@@ -2,7 +2,7 @@
 # waydroid-nvidia-setup — provision Waydroid for NVIDIA GPUs. Run as root. Runs `waydroid init` first when
 # Waydroid is not initialized yet. Safe to re-run (it is also the remedy after an NVIDIA driver update).
 #
-#   waydroid-nvidia-setup [-s VANILLA|GAPPS] [--mode nvidia-prolapse|venus] [--native-gl on|off] [--refresh <hz>|auto]
+#   waydroid-nvidia-setup [-s VANILLA|GAPPS] [--mode nvidia-prolapse|glibc-shim|venus] [--native-gl on|off] [--refresh <hz>|auto]
 #   waydroid-nvidia-setup --restore-official-vendor
 #
 # -s, --system-type VANILLA|GAPPS|FOSS: the Android system image `waydroid init` downloads when Waydroid is not
@@ -23,6 +23,13 @@
 #      backup, puts ours next to your official system.img, points vendor_ota at this release's channel (Waydroid's
 #      updater then never replaces it; system OTAs stay official), and activates it (waydroid.cfg, `waydroid upgrade
 #      -o`, container unit check). An image already gated on the loaded module is not gated again;
+#      glibc-shim: NVIDIA's own driver libraries from this host (found where the dynamic loader finds them, at the
+#      loaded kernel module's version, both ABIs; driver 535 or newer) run inside Android through this release's
+#      glibc-compat shims (packaging/native/glibc_shim.py first checks every glibc and libdrm function the host's
+#      driver imports against the prebuilt shims). Puts the official vendor image back if ours is installed,
+#      installs the guest stack (ANGLE, hwcomposer, SurfaceFlinger) into /var/lib/waydroid/nv/guest, stages the
+#      shims, Vulkan HAL, gralloc backend, libdrm and EGL front, and switches the cfg. --native-gl on selects
+#      NVIDIA's own GLES (driver 570 or newer); off (the default) is ANGLE on NVIDIA's Vulkan driver;
 #      venus: puts the official vendor image back if ours is installed, installs the Venus guest stack (ANGLE,
 #      hwcomposer, SurfaceFlinger, Venus guest driver) into /var/lib/waydroid/nv/guest and switches the cfg;
 #   5. stops the Waydroid container for the switch, then enables and starts waydroid-container.service.
@@ -54,8 +61,8 @@ while [ $# -gt 0 ]; do
         --refresh) REFRESH="${2:?--refresh needs a value}"; shift 2
                    [[ "$REFRESH" == auto || ( "$REFRESH" =~ ^[0-9]+$ && "$REFRESH" -ge 1 && "$REFRESH" -le 1000 ) ]] ||
                        die "--refresh takes a number of Hz (1-1000) or auto" ;;
-        --mode) MODE_ARG="${2:?--mode needs nvidia-prolapse or venus}"; shift 2
-                [[ "$MODE_ARG" =~ ^(nvidia-prolapse|venus)$ ]] || die "--mode is nvidia-prolapse or venus (glibc-shim is a developer mode: docs/dev-setup.md)" ;;
+        --mode) MODE_ARG="${2:?--mode needs nvidia-prolapse, glibc-shim or venus}"; shift 2
+                [[ "$MODE_ARG" =~ ^(nvidia-prolapse|glibc-shim|venus)$ ]] || die "--mode is nvidia-prolapse, glibc-shim or venus" ;;
         --native-gl) GL_ARG="${2:?--native-gl needs on or off}"; shift 2
                      [[ "$GL_ARG" =~ ^(on|off)$ ]] || die "--native-gl is on or off" ;;
         -h|--help) awk 'NR > 1 && /^set -euo pipefail/ { exit } NR > 1' "$0"; exit 0 ;;
@@ -285,22 +292,19 @@ mode = os.environ.get("MODE_ARG") or w.get("nvidia_driver_mode")
 if mode == "rust-driver":
     log("nvidia_driver_mode = rust-driver is the development name of nvidia-prolapse")
     mode = "nvidia-prolapse"
-if mode == "glibc-shim":
-    sys.exit("waydroid-nvidia-setup: {} selects nvidia_driver_mode = glibc-shim, a developer mode this package does "
-             "not provision (docs/dev-setup.md). Re-run with --mode nvidia-prolapse or --mode venus".format(cfg_path))
 if not mode:
     mode = "nvidia-prolapse"
     log("no nvidia_driver_mode in the cfg: using the default nvidia-prolapse")
-elif mode not in ("nvidia-prolapse", "venus"):
-    sys.exit("waydroid-nvidia-setup: unknown nvidia_driver_mode = {!r} in {}; use --mode nvidia-prolapse|venus".format(
-        mode, cfg_path))
+elif mode not in ("nvidia-prolapse", "glibc-shim", "venus"):
+    sys.exit("waydroid-nvidia-setup: unknown nvidia_driver_mode = {!r} in {}; use --mode "
+             "nvidia-prolapse|glibc-shim|venus".format(mode, cfg_path))
 # nvidia_native_gl is written by the activation below (vendor_image.py --native-gl, driver-mode apply), so a failed
 # activation leaves the previous value
 gl = os.environ.get("GL_ARG") or (w.get("nvidia_native_gl") if w.get("nvidia_native_gl") in ("on", "off") else "off")
 if mode == "venus" and gl == "on":
     sys.exit("waydroid-nvidia-setup: venus has no GL driver of its own (GLES is ANGLE on Venus): use --native-gl off")
-if mode == "venus":
-    w["nvidia_guest_layout"] = "2"          # the Venus guest stack in /var/lib/waydroid/nv/guest
+if mode in ("venus", "glibc-shim"):
+    w["nvidia_guest_layout"] = "2"          # the guest stack in /var/lib/waydroid/nv/guest (ANGLE, hwcomposer, SF)
 log("nvidia_driver_mode = {}, nvidia_native_gl = {} (activated below)".format(mode, gl))
 with open(cfg_path, "w") as f:
     cp.write(f)
@@ -310,7 +314,8 @@ EOF
 read -r MODE PROPS_CHANGED <<<"$MODE"
 
 
-if [ "$MODE" = venus ]; then
+install_guest_stack() {   # validate the layout-2 guest files (ANGLE, hwcomposer, SurfaceFlinger; the Venus driver)
+    local rel abi soname
     say "validating the guest payload (both ABIs)"
     for rel in "${GUEST_LIBS[@]}"; do
         case "$rel" in vendor/lib/*) abi=x86 ;; vendor/lib64/*) abi=x86_64 ;; esac
@@ -319,6 +324,52 @@ if [ "$MODE" = venus ]; then
     done
     for rel in "${GUEST_BINS[@]}"; do verify_android_elf "$GUEST/$rel" x86_64; done
     echo "   ELF headers, ABIs and SONAMEs verified"
+}
+copy_guest_stack() {      # ... and install them into $NV_GUEST
+    local rel
+    say "installing the guest stack into $NV_GUEST"
+    install -d -m 0755 "$NV_GUEST"
+    for rel in "${GUEST_LIBS[@]}"; do install -Dm 0644 "$GUEST/$rel" "$NV_GUEST/$rel"; done
+    for rel in "${GUEST_BINS[@]}"; do install -Dm 0755 "$GUEST/$rel" "$NV_GUEST/$rel"; done
+}
+
+if [ "$MODE" = glibc-shim ]; then
+    GL=$(python3 -I -c 'import configparser,sys; c=configparser.ConfigParser(); c.read(sys.argv[1]); print(c.get("waydroid","nvidia_native_gl",fallback="off"))' "$CFG")
+    [ -z "$GL_ARG" ] || GL=$GL_ARG
+    [[ "$GL" =~ ^(on|off)$ ]] || GL=off
+    [ -f "$BUNDLE/BUILD-RECORD.json" ] || die "$BUNDLE missing: the release bundle is not installed (reinstall the package)"
+    install_guest_stack
+    command -v getconf >/dev/null 2>&1 || die "getconf is required (glibc)"
+    say "checking this host's NVIDIA driver against the glibc-shim build of this release (nothing changes yet)"
+    python3 -I "$NATIVE/packaging/native/glibc_shim.py" check --bundle "$BUNDLE" --native-gl "$GL" ||
+        die "glibc-shim mode cannot run on this driver (reason above); nothing was changed"
+    stop_container
+    if is_our_image; then
+        say "putting the official vendor image back (glibc-shim runs on it)"
+        $VENDOR_TOOL restore-official || { restart; die "the official vendor image was not restored (see above)"; }
+    fi
+    copy_guest_stack
+    say "staging glibc-shim mode"
+    TAG=$(sed -n 's/^waydroid-nvidia packaged install \(.*\)$/\1/p' "$NATIVE/PACKAGED" 2>/dev/null || true)
+    python3 -I "$NATIVE/packaging/native/glibc_shim.py" stage --bundle "$BUNDLE" --native-gl "$GL" ${TAG:+--tag "$TAG"} ||
+        { restart; die "glibc-shim mode was not staged (see above)"; }
+    say "activating glibc-shim mode"
+    python3 "$NATIVE/dev/driver-mode" apply glibc-shim --native-gl "$GL" || { restart; die "glibc-shim mode not activated (see above)"; }
+    start
+    if [ "$GL" = on ]; then GLES="NVIDIA's own"; else GLES="ANGLE on NVIDIA's Vulkan driver"; fi
+    cat <<DONE
+
+Done (glibc-shim mode: your host's NVIDIA driver inside Android; GLES: $GLES). As your desktop user:
+  waydroid session start
+After an NVIDIA driver update and reboot, run this setup again: glibc-shim is staged for the driver version it
+checked, and the container refuses to start with another one.
+Back to the default mode: sudo waydroid-nvidia-setup --mode nvidia-prolapse
+DONE
+    exit 0
+fi
+
+if [ "$MODE" = venus ]; then
+    install_guest_stack
 
     # The stack hooks the AIDL minigbm gralloc; pre-minigbm vendor images give SurfaceFlinger buffers our
     # driver never sees (issue #1: system and vendor images version independently).
@@ -335,10 +386,7 @@ Run 'waydroid init -f' to fetch current images (apps/data are kept), then re-run
         say "putting the official vendor image back (venus runs on it)"
         $VENDOR_TOOL restore-official || { restart; die "the official vendor image was not restored (see above)"; }
     fi
-    say "installing the guest stack into $NV_GUEST"
-    install -d -m 0755 "$NV_GUEST"
-    for rel in "${GUEST_LIBS[@]}"; do install -Dm 0644 "$GUEST/$rel" "$NV_GUEST/$rel"; done
-    for rel in "${GUEST_BINS[@]}"; do install -Dm 0755 "$GUEST/$rel" "$NV_GUEST/$rel"; done
+    copy_guest_stack
     say "activating venus mode"
     python3 "$NATIVE/dev/driver-mode" apply venus --native-gl off || { restart; die "venus mode not activated (see above)"; }
     start

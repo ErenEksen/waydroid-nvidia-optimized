@@ -14,7 +14,7 @@
 # Result (all root-owned, nothing writable by users; packaging/native/wd-native trusts this tree):
 #   /usr/lib/waydroid-nvidia/native/PACKAGED                 marks a packaged install (dev/source-native)
 #   /usr/lib/waydroid-nvidia/native/{dev,waydroid,tools,nvidia-prolapse/media,packaging/native}/...
-#   /usr/lib/waydroid-nvidia/native/release/                 the bundle: BUILD-RECORD.json, payload/, gate/
+#   /usr/lib/waydroid-nvidia/native/release/                 the bundle: BUILD-RECORD.json, payload/, gate/, glibc-shim/
 #   /usr/lib/waydroid-nvidia/vendor/                         the vendor image zip + channel JSON (waydroid-nvidia-setup
 #                                                            installs the image: packaging/native/vendor_image.py)
 #   /usr/lib/waydroid-nvidia/wd-native                       root helper (packaging/native/sudoers.example)
@@ -36,6 +36,10 @@ files=(
     tools/native_rust_profile.py
     packaging/native/release_gate.py
     packaging/native/vendor_image.py
+    packaging/native/glibc_shim.py
+    nvidia-prolapse/shim/tools/import-census.py
+    nvidia-prolapse/shim/dispositions.tsv
+    nvidia-prolapse/shim/dispositions-x86.tsv
     nvidia-prolapse/media/stage-odm.sh
     nvidia-prolapse/media/test/validate_xml.py
 )
@@ -64,7 +68,16 @@ if have != set(record['files']):
 bad = [r for r, d in record['files'].items() if hashlib.sha256((bundle / r).read_bytes()).hexdigest() != d]
 if bad:
     sys.exit(f'install-native: {len(bad)} bundle files fail their sha256 (first {bad[0]})')
-print(f'install-native: release bundle verified, {len(have)} files, commit {record["commit"][:12]}')
+# glibc-shim mode's tree (packaging/native/glibc_shim.py), when the release ships one
+shim = record.get('glibc_shim_files') or {}
+have_shim = {str(p.relative_to(bundle)) for p in (bundle / 'glibc-shim').rglob('*') if p.is_file()}
+if have_shim != set(shim):
+    sys.exit(f'install-native: glibc-shim files differ from BUILD-RECORD.json: {sorted(have_shim ^ set(shim))[:5]}')
+bad = [r for r, d in shim.items() if hashlib.sha256((bundle / r).read_bytes()).hexdigest() != d]
+if bad:
+    sys.exit(f'install-native: {len(bad)} glibc-shim files fail their sha256 (first {bad[0]})')
+print(f'install-native: release bundle verified, {len(have)} files + {len(shim)} glibc-shim files, '
+      f'commit {record["commit"][:12]}')
 EOF
 find "$NAT/release" -type d -exec chmod 0755 {} +
 find "$NAT/release" -type f -path '*/gate/bin/*' -exec chmod 0755 {} +

@@ -153,6 +153,7 @@ export WAYDROID_SYSTEM_IMG=$SYSIMG WAYDROID_VENDOR_IMG=$VENIMG    # media/vndk/b
 #          libnv_bionic_native.so of its ABI's NVK build)
 #   nvk-android + media -> media-service  (the Codec2 service links the x86_64 backend)
 #   hwcomposer, hal (-> HAL tests), gralloc (-> minigbm), media: only the steps above this section
+#   gralloc (minigbm) -> glibc-shim (shims, the HAL over NVIDIA's ICD, gralloc backend, EGL front)
 #   everything -> gate programs -> collect
 # Each target logs to $LOGS/<target>.log; a failure names the target, prints the end of its log and stops
 # the others. NATIVE_PARALLEL=0 runs the same targets one at a time, in declaration order. Each ninja keeps its -j
@@ -225,6 +226,15 @@ t_hal()        { "$PY" "$NATIVE/mesa/build-hal.py"; "$PY" "$NATIVE/mesa/build-ha
 t_gralloc()    { "$PY" "$NATIVE/mesa/build-gralloc.py" --target all
                  make -C nvidia-prolapse/gralloc minigbm-fetch
                  make -C nvidia-prolapse/gralloc minigbm SYSTEM_IMG="$SYSIMG" VENDOR_IMG="$VENIMG"; }
+# glibc-shim mode (NVIDIA's own userspace from the user's host through our glibc-compat shims): the guest side only.
+# The shims are cut from the per-branch reference import lists (nvidia-prolapse/shim/imports): no NVIDIA driver here.
+t_glibc_shim() { local why="release build: the builder has no NVIDIA driver; the per-branch reference lists are the census"
+                 make -C nvidia-prolapse/shim REFERENCE_ONLY="$why"
+                 make -C nvidia-prolapse/shim ARCH=x86 REFERENCE_ONLY="$why"
+                 make -C nvidia-prolapse/hal android android32
+                 make -C nvidia-prolapse/gralloc android android32 check check-minigbm
+                 make -C nvidia-prolapse/egl sources
+                 make -C nvidia-prolapse/egl android android32 check; }
 t_media()      { nvidia-prolapse/media/vndk/build.sh; make -C nvidia-prolapse/media test; }
 t_media_svc()  { NV_VIDEO_LIB_DIR=$(dirname "$("$PY" -c "import sys; sys.path.insert(0, 'tools'); import native_rust_profile as p; print(p.rust_library(__import__('pathlib').Path('$REPO'), 'android', 'release'))")") \
                      nvidia-prolapse/media/vndk/build.sh service; }
@@ -244,8 +254,9 @@ target hwcomposer     ""                         t_hwcomposer
 target hal            ""                         t_hal
 target gralloc        ""                         t_gralloc
 target media          ""                         t_media
+target glibc-shim     "gralloc"                  t_glibc_shim
 target media-service  "media nvk-android"        t_media_svc
-target gate           "nvrm-android nvrm-android32 hal media-service" \
+target gate           "nvrm-android nvrm-android32 hal media-service glibc-shim" \
                       "$PY" packaging/native/build-gate.py "$REPO/build/native-gate"
 run_targets
 

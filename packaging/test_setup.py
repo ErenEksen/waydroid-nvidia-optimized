@@ -157,3 +157,12 @@ def test_python_entrypoints_set_the_c_locale(script, tmp_path):
     out = subprocess.run([sys.executable, '-c', code, 'status'], capture_output=True, text=True,
                          env={'PATH': os.environ['PATH'], 'LANG': 'es_ES.UTF-8'})
     assert out.stdout.split() == ['C', 'unset'], out.stderr
+
+
+def test_glibc_shim_is_a_mode(env):
+    """glibc-shim is provisioned by the package (it was refused as a developer mode before)."""
+    code, out, calls = env('--mode', 'glibc-shim', system_ota='None')
+    assert code != 0 and '--mode is' not in out and 'developer mode' not in out
+    assert 'readelf is required' in out           # the next check after the mode argument was accepted
+    code, out, _ = env('--mode', 'bogus', system_ota='None')
+    assert code != 0 and '--mode is nvidia-prolapse, glibc-shim or venus' in out

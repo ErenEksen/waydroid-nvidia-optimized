@@ -28,9 +28,9 @@ Please report problems as issues titled `[public-test] ...` ([what to include](d
 | GTX 750 / 750 Ti, GTX 950M / 960M (Maxwell 1) | ⚪ | ⚪ | ❌ |
 | Older GPUs (Kepler and before: their last driver is 470) | ❌ | ❌ | ❌ |
 | Driver 615, open kernel module | ✅ | ✅ | ✅ |
-| Driver 580–610, open module | 🧪 | ❌ | ✅ |
+| Driver 580–610, open module | 🧪 | ⚪ | ✅ |
 | Driver 550–610, closed module | 🧪 (550.107 is refused) | ⚪ | ❌ |
-| Driver 535 | ⚪ | ❌ | ⚪ |
+| Driver 535 | ⚪ | ⚪ | ⚪ |
 | Driver 470 and older | ❌ | ❌ | ❌ |
 
 Only the official Android 13 image (LineageOS 20) is supported. Hardware video decode (H.264, HEVC, VP9, AV1)
@@ -71,11 +71,13 @@ described in [docs/install-manual.md](docs/install-manual.md#uninstall).
 |---|---|---|
 | `nvidia-prolapse` (default) | Our open-source driver (Mesa NVK plus our own NVIDIA backend) runs inside Android and talks to the kernel module directly | almost always: it has video decode and the widest driver support |
 | `venus` | Android's Vulkan calls go over a socket to the NVIDIA driver on the host | the default mode fails on your machine; slowest, needs the open kernel module |
-| `glibc-shim` | Your host's own NVIDIA driver files are loaded inside Android | developers only: needs the exact driver version it was built for |
+| `glibc-shim` | Your host's own NVIDIA driver (535 or newer) runs inside Android through our compatibility libraries | you want NVIDIA's own driver and shader compiler; the setup checks your driver first and needs its 32-bit libraries too |
 
-Switch with `sudo waydroid-nvidia-setup --mode venus` (or `--mode nvidia-prolapse`). Apps get OpenGL ES through
-ANGLE by default. `--native-gl on` uses our own GL driver (`nvrm`) instead; it is a bit faster but newer, so
-compare with `--native-gl off` before reporting a GL bug.
+Switch with `sudo waydroid-nvidia-setup --mode venus` (or `--mode glibc-shim`, `--mode nvidia-prolapse`). Apps get
+OpenGL ES through ANGLE by default. `--native-gl on` uses the mode's own GL driver instead: our `nvrm` in the
+default mode (a bit faster but newer, so compare with `--native-gl off` before reporting a GL bug), NVIDIA's GLES in
+`glibc-shim` (driver 570 or newer). In `glibc-shim`, run the setup again after every driver update, as in the
+default mode.
 
 ## Known issues
 

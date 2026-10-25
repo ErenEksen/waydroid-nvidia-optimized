@@ -339,7 +339,7 @@ jobs:
           rm -rf "$RUNNER_TEMP/native-release" "$RUNNER_TEMP/native-logs"
           "$NATIVE_SRC/packaging/native/build-native.sh" "$RUNNER_TEMP/native-release"
           mkdir -p stage
-          cp -a "$RUNNER_TEMP/native-release/payload" "$RUNNER_TEMP/native-release/gate" stage/
+          cp -a "$RUNNER_TEMP/native-release/payload" "$RUNNER_TEMP/native-release/gate" "$RUNNER_TEMP/native-release/glibc-shim" stage/
           cp "$RUNNER_TEMP/native-release/BUILD-RECORD.json" stage/
       - name: Per-target build logs
         if: always()
@@ -520,8 +520,12 @@ jobs:
           have = {str(p.relative_to(b)) for t in ('payload', 'gate') for p in (b / t).rglob('*') if p.is_file()}
           assert r['format'] == 2 and have == set(r['files']), 'bundle differs from BUILD-RECORD.json'
           assert all(hashlib.sha256((b / f).read_bytes()).hexdigest() == d for f, d in r['files'].items())
+          shim = r['glibc_shim_files']
+          assert shim and {str(p.relative_to(b)) for p in (b / 'glibc-shim').rglob('*') if p.is_file()} == set(shim), \
+              'glibc-shim tree differs from BUILD-RECORD.json'
+          assert all(hashlib.sha256((b / f).read_bytes()).hexdigest() == d for f, d in shim.items())
           PY
-          (cd native && find payload gate -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.native)
+          (cd native && find payload gate glibc-shim -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.native)
           tar --zstd -C native -cf "out/waydroid-nvidia-native-x86_64-${TAG}.tar.zst" .
           # nvidia-prolapse vendor image: built from THIS bundle (identity prop checked by vendor-ota.py), shipped as a
           # Waydroid OTA zip + its one-image channel JSON (the setup points vendor_ota at it)

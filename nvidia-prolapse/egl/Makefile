@@ -2,6 +2,7 @@
 #   libEGL_nvnative.so, libGLESv1_CM_nvnative.so, libGLESv2_nvnative.so   the front (Android EGL loader <-> glvnd vendor)
 #   libnvnative-egl-android.so + nvnative_egl_android.json               NVIDIA external platform for EGL_PLATFORM_ANDROID_KHR
 #
+#   make sources    fetch the pinned third-party commits below into $(SRC_ROOT) (depth 1)
 #   make            host + android + android32 + check
 #   make host       out/host/   glibc, ASan/UBSan, for test/host-window on the host GPU
 #   make android    out/android/    NDK r30 API 33 x86_64 (guest /vendor_extra/lib64[/egl])
@@ -41,6 +42,13 @@ GLVND_SHA := faa23f21fc677af5792825dc30cb1ccef4bf33a6
 FWN      ?= $(SRC_ROOT)/fw-native
 FWN_SHA  := 2fe7eddf185ecb63223eeadc58804f9bf6cbd426
 
+# where `make sources` fetches each pinned commit from (depth 1, into $(SRC_ROOT); an existing clone is used when it
+# has the commit)
+SOURCES := $(EGLX11)=https://github.com/NVIDIA/egl-x11.git=$(EGLX11_SHA) \
+           $(EPLAT)=https://github.com/NVIDIA/eglexternalplatform.git=$(EPLAT_SHA) \
+           $(GLVND)=https://gitlab.freedesktop.org/glvnd/libglvnd.git=$(GLVND_SHA) \
+           $(FWN)=https://android.googlesource.com/platform/frameworks/native=$(FWN_SHA)
+
 GEN := out/gen
 BASE_SRCS := config-list.c platform-base.c platform-utils.c refcountobj.c
 BASE_HDRS := config-list.h glvnd_list.h platform-base.h platform-impl.h platform-utils.h refcountobj.h
@@ -49,11 +57,20 @@ GEN_FILES := $(addprefix $(GEN)/eplbase/,$(BASE_SRCS) $(BASE_HDRS)) $(GEN)/eplba
              $(GEN)/include/glvnd/libeglabi.h $(GEN)/include/glvnd/GLdispatchABI.h $(GEN)/include/GL/gl.h \
              $(GEN)/include/GL/glext.h $(GEN)/front_entries.h
 
+.PHONY: sources
+sources:
+	@set -e; for p in $(SOURCES); do d=$${p%%=*}; rest=$${p#*=}; url=$${rest%=*}; sha=$${rest##*=}; \
+	    if git -C $$d cat-file -e $$sha^{commit} 2>/dev/null; then echo "sources: $$d has $$sha"; continue; fi; \
+	    [ ! -e $$d ] || [ -d $$d/.git ] || { echo "sources: $$d exists and is not a git clone; move it aside" >&2; exit 1; }; \
+	    mkdir -p $$d; git -C $$d init -q; \
+	    python3 ../../tools/fetch.py retry -- git -C $$d fetch -q --depth 1 $$url $$sha; \
+	    git -C $$d cat-file -e $$sha^{commit}; echo "sources: $$d at $$sha ($$url)"; done
+
 # extract <file> of <repo>@<sha>; loud remedy when the pinned commit is not there
 define EXTRACT
 	@mkdir -p $(dir $@)
-	@git -C $(1) cat-file -e $(2):$(3) 2>/dev/null || { echo "$(1) does not contain $(2):$(3). Remedy: clone the pinned" \
-	    "source into $(1) (see build/p7/NV-EGL-CONTRACT.md 'Sources') or set $(4)=<a clone with $(2)>" >&2; exit 1; }
+	@git -C $(1) cat-file -e $(2):$(3) 2>/dev/null || { echo "$(1) does not contain $(2):$(3). Remedy: make sources" \
+	    "(fetches every pinned commit) or set $(4)=<a clone with $(2)>" >&2; exit 1; }
 	git -C $(1) show $(2):$(3) > $@.tmp && mv $@.tmp $@
 endef
 $(GEN)/eplbase/driver-platform-surface.h:

@@ -45,7 +45,7 @@ dev/driver-mode status
 `driver-mode` never installs an image; `--install vendor-image` only selects one that setup already installed.
 With the root helper installed (`packaging/native/wd-native`, rules in `packaging/native/sudoers.example`),
 `dev/driver-mode set MODE ...` does the stop, apply and restart for you. `glibc-shim` needs its staging tree
-first (`dev/native-deploy`). The mode rules are in [waydroid/README.md](../waydroid/README.md).
+first (`dev/native-deploy` from a checkout; a package stages it with `sudo waydroid-nvidia-setup --mode glibc-shim`). The mode rules are in [waydroid/README.md](../waydroid/README.md).
 
 A checkout runs the Waydroid it builds (`dev/build-waydroid` writes `build/waydroid`). A packaged install runs the
 system Waydroid.

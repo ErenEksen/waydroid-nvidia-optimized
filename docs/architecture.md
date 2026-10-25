@@ -32,7 +32,11 @@ app ──▶ ANGLE or NVIDIA GLES ──▶ Android Vulkan HAL ──▶ host's
 
 NVIDIA's userspace driver is built for glibc, Android uses bionic. Our shim libraries carry the glibc names and
 translate the calls the NVIDIA libraries make. The host's own driver files are bind-mounted into the container
-unmodified, so the guest needs exactly the host driver version the shims were generated for.
+unmodified, found where the system's dynamic loader finds them (any distribution layout) at the exact version of the
+loaded kernel module. One shim build covers driver 535 to 615: it exports every glibc function those branches import
+(the import lists in `nvidia-prolapse/shim/imports/`), and the setup checks the installed driver's own imports
+against it before switching. Drivers 470 and older are refused: their Vulkan driver cannot share buffers with
+Android's compositor (no `VK_EXT_external_memory_dma_buf` / `VK_EXT_image_drm_format_modifier`).
 
 Code: `nvidia-prolapse/shim/`, `hal/`, `egl/`, `gralloc/`, `libdrm/`.
 
