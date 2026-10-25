@@ -382,7 +382,7 @@ pub struct StaticBar1Info {
 }
 
 /// NV0080_CTRL_FIFO_GET_ENGINE_CONTEXT_PROPERTIES_PARAMS (ctrl0080fifo.h);
-/// identical in all 221 public tags (tools/probe-zcull.py).
+/// identical in all 225 public tags (tools/probe-zcull.py).
 #[repr(C)]
 #[derive(Default)]
 pub struct EngineContextProperties {
@@ -392,7 +392,7 @@ pub struct EngineContextProperties {
 }
 
 /// NV2080_CTRL_GR_GET_ZCULL_INFO_PARAMS (ctrl2080gr.h): ten NvU32 fields in
-/// header order, identical in all 221 public tags (tools/probe-zcull.py).
+/// header order, identical in all 225 public tags (tools/probe-zcull.py).
 /// Same order as Mesa's nv_zcull_device_info / drm_nouveau_get_zcull_info
 /// (nv_device_info.h:17-30) without the trailing ctxsw size/alignment.
 #[repr(C)]
@@ -411,7 +411,7 @@ pub struct ZcullInfo {
 }
 
 /// NV2080_CTRL_GR_CTXSW_ZCULL_BIND_PARAMS (ctrl2080gr.h); identical in all
-/// 221 public tags (tools/probe-zcull.py).
+/// 225 public tags (tools/probe-zcull.py).
 #[repr(C)]
 #[derive(Default)]
 pub struct ZcullBind {

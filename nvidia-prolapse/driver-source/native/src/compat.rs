@@ -568,7 +568,7 @@ mod tests {
         }
         assert_eq!(
             (present, size_only, with_range, with_wc),
-            (86, 2, 84, 53),
+            (90, 2, 88, 57),
             "update only after rerunning the exact-tag static BAR1 C oracle"
         );
     }
@@ -917,7 +917,7 @@ mod tests {
             assert_eq!(wire.bytes, [0x22, 0, 0, 0, 10, 0, 0, 0], "{version}");
             checked += 1;
         }
-        assert_eq!(checked, 221);
+        assert_eq!(checked, 225);
     }
     #[test]
     fn cpu_unmap_cookie_preserves_full_width_and_public_status_offset() {
@@ -956,7 +956,7 @@ mod tests {
             checked += 1;
         }
         assert_eq!(
-            checked, 221,
+            checked, 225,
             "update only after running the exact-tag C oracle"
         );
     }
@@ -1098,19 +1098,19 @@ mod tests {
             external += usize::from(crate::external::validate_compat(c).is_ok());
             fences += usize::from(crate::fences::validate_compat(c).is_ok());
         }
-        assert_eq!(clients, 221);
-        assert_eq!(external, 221);
-        assert_eq!(fences, 133);
+        assert_eq!(clients, 225);
+        assert_eq!(external, 225);
+        assert_eq!(fences, 137);
     }
     #[test]
     fn exact_membership_and_unknown_version_are_distinct() {
-        assert_eq!(data::VERSIONS.len(), 331);
+        assert_eq!(data::VERSIONS.len(), 335);
         assert_eq!(
             data::VERSIONS
                 .iter()
                 .filter(|(v, _)| Compat::for_version(v).unwrap().require_client_abi().is_ok())
                 .count(),
-            221
+            225
         );
         assert!(Compat::for_version("580.94.13").is_ok());
         assert!(Compat::for_version("580.94.14").is_err());
@@ -1123,6 +1123,14 @@ mod tests {
             .unwrap()
             .require_client_abi()
             .is_ok());
+        // Published OGKM releases probed like every other tag; each must
+        // resolve to its measured profile, not to a neighbour's.
+        for version in ["580.196.07", "595.44.16", "595.112.07", "615.71.10"] {
+            assert!(Compat::for_version(version)
+                .unwrap()
+                .require_client_abi()
+                .is_ok());
+        }
     }
     #[test]
     fn every_field_fits_and_current_rust_sizes_match_census() {

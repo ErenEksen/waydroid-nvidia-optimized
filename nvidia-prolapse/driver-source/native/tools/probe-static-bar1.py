@@ -98,7 +98,8 @@ def one(tag):
             subprocess.run(['objcopy', '--dump-section', '.barabi=' + str(binary), str(obj)], check=True)
             values = dict(zip(keys, struct.unpack('<' + 'I' * max(1, len(keys)), binary.read_bytes())))
             outputs[abi] = values
-            commands.append(command)
+            # Record the scratch directory symbolically so provenance is reproducible.
+            commands.append([a.replace(str(tmp), '$TMP') for a in command])
             lines = []
             if present:
                 lines += [CMD + '\t' + hex(values[CMD]), TYPE + '\tsize=' + str(values[TYPE + '.size']) + ' align=' + str(values[TYPE + '.align'])]
@@ -119,7 +120,8 @@ def one(tag):
 
 if __name__ == '__main__':
     tags = sorted(p.name for p in (ROOT / 'build/rm-abi-stability/ranges/probe').iterdir() if (p / 'probe-m64.tsv').exists())
-    assert len(tags) == 221
+    # Census: every published OGKM tag, no more, no less.
+    assert tags == sorted(git('tag').decode().split()), 'public tag census differs from the OGKM tag list'
     OUT.mkdir(parents=True, exist_ok=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(one, tags))

@@ -57,6 +57,7 @@ def one(tag):
  return tag
 if __name__=='__main__':
  tags=sorted(p.name for p in (ROOT/'build/rm-abi-stability/ranges/probe').iterdir() if (p/'probe-m64.tsv').exists())
+ assert tags==sorted(git('tag').decode().split()),'public tag census differs from the OGKM tag list'
  OUT.mkdir(parents=True,exist_ok=True)
  with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
   for tag in pool.map(one,tags):print(tag,flush=True)
