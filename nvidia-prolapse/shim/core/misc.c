@@ -141,6 +141,11 @@ NVG_EXPORT char *nvg_dgettext(const char *domain, const char *msgid) {
     return (char *)msgid;
 }
 
+/* gettext(msgid) is dgettext(NULL, msgid): with no catalogs it returns msgid (glibc intl/gettext.c). */
+NVG_EXPORT char *nvg_gettext(const char *msgid) {
+    return (char *)msgid;
+}
+
 NVG_EXPORT char *nvg_bind_textdomain_codeset(const char *domain, const char *codeset) {
     (void)domain;
     (void)codeset;

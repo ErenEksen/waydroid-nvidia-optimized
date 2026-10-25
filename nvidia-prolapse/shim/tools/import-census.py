@@ -10,6 +10,11 @@ requires that file to be the DT_SONAME of a direct DT_NEEDED child
 unversioned definition in a DSO without that version (find_verdef_version_index,
 check_symbol_version).
 
+--reference FILE (repeatable) adds the names of an earlier census output, e.g. the
+per-driver reference lists in imports/ (DESIGN.md "Driver branches"): the result is the
+union over every given blob and reference, which is what a shim build for several driver
+versions exports. A reference row is checked like a blob import.
+
 Then add the names marked runtime=<front> in dispositions.tsv, and fail on:
   - an imported glibc name with no row in dispositions.tsv  (G0 invariant)
   - a verneed file that is not one of the six fronts
@@ -21,6 +26,13 @@ Then add the names marked runtime=<front> in dispositions.tsv, and fail on:
 --arch x86 reads ELF32 i386 blobs, uses the i386 front set (ld-linux.so.2 instead
 of ld-linux-x86-64.so.2) and applies --override (dispositions-x86.tsv) on top of
 --dispositions, row by row (DESIGN.md "32-bit x86").
+
+--allow-unused reports table rows the inputs do not import instead of failing (used to
+cut one driver's reference list, imports/<version>-<arch>.tsv, from its libraries).
+
+--covered-by CENSUS checks the blobs against the export set of a finished shim build (its
+gen/census.tsv): every imported (front, name) must be in it, else the shim build does not
+cover this driver and the check fails naming each missing import.
 
 Output (--out): TSV  front  name  versions  blobs
 """
@@ -141,14 +153,49 @@ def read_dispositions(path):
     return disp
 
 
+def read_census(path):
+    """Rows (front, name, versions, blobs) of a census output (--out of an earlier run)."""
+    with open(path) as f:
+        hdr = f.readline().rstrip("\n").split("\t")
+        if hdr != ["front", "name", "versions", "blobs"]:
+            raise SystemExit(f"import-census: {path}: bad header {hdr}")
+        return [tuple(line.rstrip("\n").split("\t")) for line in f if line.strip()]
+
+
+def covered_by(path, sets, arch):
+    """Fail unless every imported (front, name) of the blobs is exported by the build behind `path`."""
+    have = {(fr, name) for fr, name, _, _ in read_census(path)}
+    missing = sorted((fr, name, ",".join(sorted(b))) for fr, names in sets.items()
+                     for name, (_, b) in names.items() if (fr, name) not in have and "runtime-dlvsym" not in b)
+    for fr, name, blobs in missing:
+        print(f"import-census: {name} ({fr}) imported by {blobs} is not exported by the shim build "
+              f"{path}", file=sys.stderr)
+    if missing:
+        sys.exit(f"import-census: --arch {arch}: {len(missing)} imports of this driver are not covered by the "
+                 f"shim build; it was cut for other driver versions (update the shims for this driver)")
+    print(f"import-census: --arch {arch}: every import of these blobs is exported by {path}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dispositions", required=True)
     ap.add_argument("--override", help="per-arch rows applied on top of --dispositions")
     ap.add_argument("--arch", default="x86_64", choices=sorted(FRONTS_BY_ARCH))
-    ap.add_argument("--out", required=True)
-    ap.add_argument("blobs", nargs="+")
+    ap.add_argument("--out")
+    ap.add_argument("--reference", action="append", default=[],
+                    help="an earlier census output whose names are added (repeatable)")
+    ap.add_argument("--allow-unused", action="store_true",
+                    help="report table rows the inputs do not import instead of failing")
+    ap.add_argument("--covered-by", metavar="CENSUS",
+                    help="check that a finished shim build (its census.tsv) exports every import of the blobs")
+    ap.add_argument("blobs", nargs="*")
     a = ap.parse_args()
+    if not a.blobs and not a.reference:
+        ap.error("give blobs and/or --reference lists")
+    if a.covered_by and (a.reference or not a.blobs):
+        ap.error("--covered-by checks blobs only (no --reference)")
+    if not a.covered_by and not a.out:
+        ap.error("--out is required")
     FRONTS = FRONTS_BY_ARCH[a.arch]
 
     disp = read_dispositions(a.dispositions)
@@ -169,6 +216,26 @@ def main():
             v, b = sets[fname].setdefault(name, (set(), set()))
             v.add(ver)
             b.add(base)
+    for ref in a.reference:
+        for fname, name, vers, blobs in read_census(ref):
+            if "runtime-dlvsym" in blobs.split(","):
+                continue  # added below from the table, as for blobs
+            if fname not in sets:
+                errors.append(f"import-census: {ref}: {name} from {fname}, which is not a front")
+                continue
+            if name not in disp:
+                errors.append(f"import-census: undispositioned import {name}@{vers} ({fname}) in {ref}")
+                continue
+            v, b = sets[fname].setdefault(name, (set(), set()))
+            v.update(x for x in vers.split(",") if x != "-")
+            b.update(blobs.split(","))
+    if a.covered_by:
+        if errors:
+            for e in errors:
+                print(e, file=sys.stderr)
+            sys.exit(1)
+        covered_by(a.covered_by, sets, a.arch)
+        return
     imported = {n for s in sets.values() for n in s}
     unused = []
     for name, (d, target, runtime) in disp.items():
@@ -179,7 +246,9 @@ def main():
             v, b = sets[runtime].setdefault(name, (set(), set()))
             b.add("runtime-dlvsym")
         elif name not in imported:
-            if a.override is None or name in override:
+            if a.allow_unused:
+                unused.append(name)
+            elif a.override is None or name in override:
                 errors.append(f"import-census: dispositions row {name} is neither imported "
                               f"by the given blobs nor a runtime name (stale table?)")
             else:
@@ -198,8 +267,8 @@ def main():
     print("import-census: " + ", ".join(f"{fr} {len(sets[fr])}" for fr in FRONTS)
           + f"; {total} distinct names, all dispositioned")
     if unused:
-        print(f"import-census: --arch {a.arch}: {len(unused)} base rows not imported by these "
-              f"blobs (no export generated): {' '.join(sorted(unused))}")
+        print(f"import-census: --arch {a.arch}: {len(unused)} table rows not imported by these "
+              f"inputs (no export generated): {' '.join(sorted(unused))}")
 
 
 if __name__ == "__main__":

@@ -3,8 +3,10 @@
 #   make ARCH=x86 the same for 32-bit x86 (i686) -> out32/libdrm.so.2, checked against the lib32 driver
 #   make check    artifact check only (SONAME, NEEDED, every drm* name the blobs reference)
 #   make clean    remove out/ and the meson build dir (the clone stays)
-#   NO_BLOB_CENSUS=REASON  skip the NVIDIA-blob census (a builder without NVIDIA userspace; the
-#                          nvidia-prolapse stack's libdrm users are NVK, nvrm and gralloc, not the blobs)
+#   The check covers every drm* name of every supported driver branch (imports/<version>-<arch>.names)
+#   and the loaded driver's own libraries (found through the loader cache: ../shim/tools/find-driver.py).
+#   NO_BLOB_CENSUS=REASON  skip the census of the host's NVIDIA libraries (a builder without the NVIDIA
+#                          driver); the reference lists are still checked
 
 NDK      ?= /opt/android-ndk
 TC       := $(NDK)/toolchains/llvm/prebuilt/linux-x86_64
@@ -24,14 +26,12 @@ BLD      := $(TOP)/build/libdrm/build-android33-x86_64
 OUT      := $(HERE)/out
 CROSS    := $(HERE)/x86_64-android33.ini
 TRIPLE   := x86_64-linux-android33
-BLOBDIR  ?= /usr/lib
 HOSTDRM  ?= /usr/lib/libdrm.so.2
 else ifeq ($(ARCH),x86)
 BLD      := $(TOP)/build/libdrm/build-android33-x86
 OUT      := $(HERE)/out32
 CROSS    := $(HERE)/x86-android33.ini
 TRIPLE   := i686-linux-android33
-BLOBDIR  ?= /usr/lib32
 HOSTDRM  ?= /usr/lib32/libdrm.so.2
 else
 $(error ARCH must be x86_64 or x86, not '$(ARCH)')
@@ -79,17 +79,27 @@ $(OUT)/libdrm.so.2: $(BLD)/libdrm.so
 	@mkdir -p $(OUT)
 	cp -f $< $@.tmp && mv -f $@.tmp $@
 
-$(OUT)/.checked: $(OUT)/libdrm.so.2 $(HERE)/check-libdrm.py FORCE
-	@rm -f $@
+REFERENCES := $(sort $(wildcard $(HERE)/imports/*-$(ARCH).names))
+ifeq ($(REFERENCES),)
+$(error no driver reference lists $(HERE)/imports/*-$(ARCH).names)
+endif
+# the host driver's closure (none with NO_BLOB_CENSUS), then the check
+CHECK = set -e; blobs=""; \
+	if [ -z "$(NO_BLOB_CENSUS)" ]; then \
+	  blobs=$$($(PYTHON) $(TOP)/nvidia-prolapse/shim/tools/find-driver.py --arch $(ARCH)) || { \
+	    echo "libdrm: no usable host NVIDIA driver for $(ARCH) (above); a builder without it: make NO_BLOB_CENSUS=\"<reason>\"" >&2; exit 1; }; fi; \
 	$(PYTHON) $(HERE)/check-libdrm.py --readelf $(READELF) --allow-needed libc.so,libm.so,libdl.so \
-	    --arch $(ARCH) --blobdir $(BLOBDIR) --host-libdrm $(HOSTDRM) --pinned-version $(VERSION) \
+	    --arch $(ARCH) --host-libdrm $(HOSTDRM) --pinned-version $(VERSION) \
+	    $(addprefix --reference ,$(REFERENCES)) $$(for b in $$blobs; do printf -- '--blob %s ' "$$b"; done) \
 	    $(if $(NO_BLOB_CENSUS),--no-blob-census "$(NO_BLOB_CENSUS)") $(OUT)/libdrm.so.2
+
+$(OUT)/.checked: $(OUT)/libdrm.so.2 $(HERE)/check-libdrm.py $(REFERENCES) FORCE
+	@rm -f $@
+	@$(CHECK)
 	@touch $@
 
 check: $(OUT)/libdrm.so.2
-	$(PYTHON) $(HERE)/check-libdrm.py --readelf $(READELF) --allow-needed libc.so,libm.so,libdl.so \
-	    --arch $(ARCH) --blobdir $(BLOBDIR) --host-libdrm $(HOSTDRM) --pinned-version $(VERSION) \
-	    $(if $(NO_BLOB_CENSUS),--no-blob-census "$(NO_BLOB_CENSUS)") $(OUT)/libdrm.so.2
+	@$(CHECK)
 
 clean:
 	rm -rf $(OUT) $(BLD)

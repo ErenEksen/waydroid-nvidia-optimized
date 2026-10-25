@@ -192,6 +192,20 @@ NVG_EXPORT int nvg_pthread_attr_init(pthread_attr_t *attr) {
     return attr_init_glibc(attr);
 }
 
+/* glibc PTHREAD_INHERIT_SCHED is 0 and PTHREAD_EXPLICIT_SCHED 1 (pthread.h enum); bionic swaps them
+ * (PTHREAD_EXPLICIT_SCHED 0, PTHREAD_INHERIT_SCHED 1). Any other value is EINVAL in glibc
+ * (nptl/pthread_attr_setinheritsched.c); the table check in gen/constants.h pins both values. */
+NVG_EXPORT int nvg_pthread_attr_setinheritsched(pthread_attr_t *attr, int inherit) {
+    switch (inherit) {
+    case NVG_GLIBC_PTHREAD_INHERIT_SCHED:
+        return pthread_attr_setinheritsched(attr, PTHREAD_INHERIT_SCHED);
+    case NVG_GLIBC_PTHREAD_EXPLICIT_SCHED:
+        return pthread_attr_setinheritsched(attr, PTHREAD_EXPLICIT_SCHED);
+    default:
+        return EINVAL;
+    }
+}
+
 NVG_EXPORT int nvg_pthread_create(pthread_t *t, const pthread_attr_t *attr,
                                   void *(*fn)(void *), void *arg) {
     if (attr != NULL) {

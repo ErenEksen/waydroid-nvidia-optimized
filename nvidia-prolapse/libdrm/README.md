@@ -16,7 +16,7 @@ with `libdrm.so.2` denied through the LD_AUDIT deny-list (`AUDIT_DENY=libdrm.so.
 LD_AUDIT=probe/libldaudit.so`) the device lists 290 extensions and dma_buf is missing; with it loadable,
 291, dma_buf included. The one other difference in the report: without libdrm,
 `VK_EXT_physical_device_drm` says `hasPrimary=0 hasRender=0` (with it: primary 226:2, render 226:129),
-so the driver also uses libdrm to find its own DRM nodes. None of the five blobs has libdrm in
+so the driver also uses libdrm to find its own DRM nodes. None of the driver's libraries has libdrm in
 `DT_NEEDED`; the driver looks it up by its desktop SONAME at runtime and resolves the `drm*` entry
 points itself.
 
@@ -53,10 +53,12 @@ Upstream's `meson.build` links an *unversioned* `libdrm.so` when it detects Andr
 `make check` (`check-libdrm.py`) reads the artifact with `llvm-readelf` and fails on any of:
 - not ELF64 x86-64 `ET_DYN`, `DT_SONAME` other than `libdrm.so.2`, a `DT_NEEDED` outside
   `libc.so`/`libm.so`/`libdl.so` (a glibc SONAME is named as such), `TEXTREL`;
-- any `drm*` name the driver's blobs reference that is not exported as `FUNC GLOBAL DEFAULT`. The
-  census is taken at check time from the host blobs of the running kernel module's version
-  (`/proc/driver/nvidia/version`), the way `strings -a | grep -E '^drm[A-Z][A-Za-z0-9_]+$'` sees them;
-  for 615.71.09 that is 46 names (glsi 39, eglcore 12, EGL_nvidia/gpucomp/glvkspirv 0);
+- any `drm*` name the driver's libraries reference that is not exported as `FUNC GLOBAL DEFAULT`: the names of
+  every supported driver branch (`imports/<version>-<arch>.names`, cut from each branch's libraries), plus a census
+  taken at check time from the host driver's libraries at the running kernel module's version (found through the
+  loader cache by `../shim/tools/find-driver.py`), the way `strings -a | grep -E '^drm[A-Z][A-Za-z0-9_]+$'` sees
+  them; 39 names for 535 and 550 (glsi 39, eglcore 5), 46 from 570 on (glsi 39, eglcore 12, EGL_nvidia/gpucomp/
+  glvkspirv 0). `NO_BLOB_CENSUS=<reason>` skips only the host census (a builder without the driver);
 - the exported `drm*` set differing from the host's `/usr/lib/libdrm.so.2` when the host has the
   pinned version (a different host version prints the difference instead).
 

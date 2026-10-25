@@ -114,6 +114,8 @@
 #define NVG_GLIBC_MUTEX_KIND_RECURSIVE 1   /* PTHREAD_MUTEX_RECURSIVE_NP */
 #define NVG_GLIBC_MUTEX_KIND_ERRORCHECK 2  /* PTHREAD_MUTEX_ERRORCHECK_NP */
 #define NVG_GLIBC_MUTEX_KIND_ADAPTIVE 3    /* PTHREAD_MUTEX_ADAPTIVE_NP */
+#define NVG_GLIBC_PTHREAD_INHERIT_SCHED 0  /* pthread.h enum */
+#define NVG_GLIBC_PTHREAD_EXPLICIT_SCHED 1
 
 /* glibc sysdeps/unix/sysv/linux/x86/xstatver.h (pre-2.33 bits/stat.h):
  * x86_64 _STAT_VER_LINUX 1, _MKNOD_VER_LINUX 0 (observed: eglcore calls __fxstat(1, ...),

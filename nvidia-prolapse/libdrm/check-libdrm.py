@@ -5,9 +5,11 @@ Reads the real ELF with llvm-readelf and the host's NVIDIA blobs:
 
   - ELF64 x86-64 (--arch x86: ELF32 i386), ET_DYN; DT_SONAME is exactly libdrm.so.2
   - DT_NEEDED is a subset of the bionic set (--allow-needed); no glibc SONAME
-  - every drm* name the driver's blobs reference (census computed now, from the blobs of the
-    running kernel module's version, like `strings -a | grep -E '^drm[A-Z][A-Za-z0-9_]+$'`)
-    is a defined dynamic symbol, GLOBAL, DEFAULT visibility, FUNC
+  - every drm* name the driver's blobs reference is a defined dynamic symbol, GLOBAL, DEFAULT
+    visibility, FUNC: the names of every supported driver branch (--reference, the lists in
+    imports/<version>-<arch>.names cut from each branch's libraries), plus a census computed now
+    from the given blobs (--blob: the loaded driver's closure, as the shims' tools/find-driver.py
+    finds it), like `strings -a | grep -E '^drm[A-Z][A-Za-z0-9_]+$'`
   - ABI shape against the host's own libdrm (--host-libdrm): the exported drm* sets are
     compared; when the host library is the pinned version, any difference is an error,
     otherwise the difference is printed
@@ -26,17 +28,6 @@ GLIBC_SONAMES = re.compile(r"^(libc\.so\.6|libm\.so\.6|libdl\.so\.2|libpthread\.
 
 def readelf(tool, args, path):
     return subprocess.run([tool] + args + [path], check=True, capture_output=True, text=True).stdout
-
-
-def driver_version(path="/proc/driver/nvidia/version"):
-    try:
-        text = open(path).read()
-    except OSError as e:
-        sys.exit(f"check-libdrm: cannot read {path} ({e.strerror}); is the nvidia kernel module loaded?")
-    m = re.search(r"^NVRM version:.*?\s(\d+\.\d+(?:\.\d+)?)\s", text, re.M)
-    if not m:
-        sys.exit(f"check-libdrm: no 'NVRM version: ... <x.y.z>' line in {path}")
-    return m.group(1)
 
 
 def census(blobs):
@@ -62,16 +53,8 @@ def dyn_exports(tool, so):
     return out
 
 
-def blob_census(a, errors):
-    """drm* names the loaded driver version's NVIDIA blobs reference (glibc-shim mode loads them)."""
-    v = driver_version()
-    blobs = []
-    for name in ("libEGL_nvidia.so", "libnvidia-glsi.so", "libnvidia-eglcore.so",
-                 "libnvidia-gpucomp.so", "libnvidia-glvkspirv.so"):
-        p = os.path.join(a.blobdir, f"{name}.{v}")
-        if not os.path.isfile(p):
-            sys.exit(f"check-libdrm: {p} missing (driver {v} loaded; nvidia-utils {v} not installed?)")
-        blobs.append(p)
+def blob_census(blobs, errors):
+    """drm* names the given NVIDIA blobs reference (glibc-shim mode loads them)."""
     want = census(blobs)
     if not want:
         errors.append(f"blob census found no drm* names in {blobs}: the census itself is broken")
@@ -79,8 +62,23 @@ def blob_census(a, errors):
     for name, where in want.items():
         for w in where:
             per_blob[w] = per_blob.get(w, 0) + 1
-    print(f"check-libdrm: driver {v}: {len(want)} distinct drm* names referenced "
+    print(f"check-libdrm: host driver: {len(want)} distinct drm* names referenced "
           f"({', '.join(f'{os.path.basename(b)} {per_blob.get(os.path.basename(b), 0)}' for b in blobs)})")
+    return want
+
+
+def reference_names(paths, errors):
+    """{name: [list file]} of the per-branch reference lists (one drm* name per line)."""
+    want = {}
+    for p in paths:
+        names = [l.strip() for l in open(p) if l.strip()]
+        bad = [n for n in names if not DRM_NAME.fullmatch(n.encode())]
+        if bad or not names:
+            errors.append(f"{p}: not a list of drm* names ({bad[:3] or 'empty'})")
+        for n in names:
+            want.setdefault(n, []).append(os.path.basename(p))
+    if paths:
+        print(f"check-libdrm: {len(want)} distinct drm* names over {len(paths)} driver reference lists")
     return want
 
 
@@ -89,7 +87,10 @@ def main():
     ap.add_argument("--readelf", required=True)
     ap.add_argument("--allow-needed", required=True)
     ap.add_argument("--arch", default="x86_64", choices=("x86_64", "x86"))
-    ap.add_argument("--blobdir", default="/usr/lib")
+    ap.add_argument("--blob", action="append", default=[], help="a driver library to take a census of (repeatable)")
+    ap.add_argument("--reference", action="append", default=[],
+                    help="a driver branch's drm* name list, imports/<version>-<arch>.names (repeatable)")
+    ap.add_argument("--census-out", help="write the names the --blob census found (one per line) to this file")
     ap.add_argument("--host-libdrm", default="/usr/lib/libdrm.so.2")
     ap.add_argument("--pinned-version", required=True, help="e.g. 2.4.134")
     ap.add_argument("--no-blob-census", metavar="REASON",
@@ -122,11 +123,18 @@ def main():
         errors.append("has TEXTREL")
     print(f"check-libdrm: SONAME {soname} NEEDED {needed}")
 
+    want = reference_names(a.reference, errors)
     if a.no_blob_census:
-        print(f"check-libdrm: NVIDIA-blob census skipped: {a.no_blob_census}")
-        want = {}
+        print(f"check-libdrm: census of the host's NVIDIA libraries skipped: {a.no_blob_census}")
+    elif not a.blob:
+        errors.append("no --blob given and no --no-blob-census reason")
     else:
-        want = blob_census(a, errors)
+        found = blob_census(a.blob, errors)
+        if a.census_out:
+            with open(a.census_out, "w") as f:
+                f.write("".join(n + "\n" for n in sorted(found)))
+        for n, where in found.items():
+            want.setdefault(n, []).extend(where)
     have = dyn_exports(R, so)
     missing = sorted(n for n in want if n not in have)
     wrong = sorted(f"{n} {have[n]}" for n in want if n in have and have[n] != ("FUNC", "GLOBAL", "DEFAULT"))

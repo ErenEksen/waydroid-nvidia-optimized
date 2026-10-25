@@ -1,6 +1,6 @@
 # libnvglibc: glibc-compat shims for NVIDIA's userspace inside bionic.
 # See DESIGN.md. `make` builds out/ (x86_64) and runs every check; any failure stops the build.
-# `make ARCH=x86` (or `make all32`) builds the i386 set into out32/ from the host's lib32 driver
+# `make ARCH=x86` (or `make all32`) builds the i386 set into out32/ (with the host's 32-bit driver, when loaded)
 # (DESIGN.md "32-bit x86"). Both share the sources; gen/ and gen32/ are per arch.
 
 ARCH        ?= x86_64
@@ -17,7 +17,6 @@ ifeq ($(ARCH),x86_64)
 CC          := $(TC)/bin/x86_64-linux-android33-clang
 STUBDIR     := $(TC)/sysroot/usr/lib/x86_64-linux-android/33
 HOSTCC      ?= gcc
-BLOBDIR     ?= /usr/lib
 FRONTS := libc.so.6 libm.so.6 libpthread.so.0 librt.so.1 libdl.so.2 ld-linux-x86-64.so.2
 GEN := gen
 OUT := out
@@ -27,7 +26,6 @@ else ifeq ($(ARCH),x86)
 CC          := $(TC)/bin/i686-linux-android33-clang
 STUBDIR     := $(TC)/sysroot/usr/lib/i686-linux-android/33
 HOSTCC      ?= gcc -m32
-BLOBDIR     ?= /usr/lib32
 FRONTS := libc.so.6 libm.so.6 libpthread.so.0 librt.so.1 libdl.so.2 ld-linux.so.2
 GEN := gen32
 OUT := out32
@@ -45,9 +43,16 @@ FRONT_CFLAGS := -fPIC -ffreestanding -fno-builtin -fvisibility=hidden -O2 -Wall 
 FRONT_LDFLAGS = -shared -nostdlib -nostartfiles -Wl,-soname,$(1) \
                 -Wl,--version-script=$(GEN)/$(1).map -Wl,--no-undefined-version -Wl,-z,defs
 
-# The driver version is read from the running kernel module, never typed in.
-DRIVER_VERSION_CMD := awk '/^NVRM version/ { for (i = 1; i <= NF; i++) \
-    if ($$i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$$/) { print $$i; exit } }' /proc/driver/nvidia/version
+# The fronts export the union of every driver branch's imports (imports/<version>-<arch>.tsv, the
+# reference lists cut from each branch's libraries; DESIGN.md "Driver branches"), so one build serves
+# every supported driver. On a host with the NVIDIA driver loaded, its own closure (found through the
+# loader cache at the kernel module's version: tools/find-driver.py) is added and must be covered too.
+# A build machine without the driver names the reason: make REFERENCE_ONLY="<why>" (CI release builds).
+REFERENCE_ONLY ?=
+REFERENCES := $(sort $(wildcard imports/*-$(ARCH).tsv))
+ifeq ($(REFERENCES),)
+$(error no driver reference lists imports/*-$(ARCH).tsv)
+endif
 
 .PHONY: all all32 check-abi test clean dispositions FORCE
 all: check-abi test $(OUT)/.checked
@@ -58,20 +63,18 @@ all32:
 $(GEN) $(OUT):
 	mkdir -p $@
 
-# Blob paths: libEGL_nvidia.so.0 resolved to its real file, which must carry the
-# kernel module's version; the other four by name in the same directory.
 $(GEN)/blobs.list: FORCE | $(GEN)
-	@set -e; v=$$($(DRIVER_VERSION_CMD) 2>/dev/null || true); \
-	if [ -z "$$v" ]; then echo "shim: cannot read the driver version from /proc/driver/nvidia/version (NVIDIA kernel module not loaded?)" >&2; exit 1; fi; \
-	egl=$$(readlink -f $(BLOBDIR)/libEGL_nvidia.so.0 || true); \
-	case "$$egl" in *.so.$$v) ;; *) echo "shim: $(BLOBDIR)/libEGL_nvidia.so.0 resolves to '$$egl', not driver $$v (userspace/kernel mismatch, wrong BLOBDIR, or the $(ARCH) userspace (lib32-nvidia-utils for x86) not installed)" >&2; exit 1;; esac; \
-	{ echo "$$egl"; for l in glsi eglcore gpucomp glvkspirv; do f=$(BLOBDIR)/libnvidia-$$l.so.$$v; \
-	  if [ ! -f "$$f" ]; then echo "shim: missing $$f (driver $$v)" >&2; exit 1; fi; echo "$$f"; done; } > $@.tmp; \
-	if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; echo "shim: driver $$v, blobs in $(BLOBDIR)"; fi
+	@set -e; if [ -n "$(REFERENCE_ONLY)" ]; then \
+	  : > $@.tmp; echo "shim: reference lists only ($(REFERENCE_ONLY))"; \
+	else \
+	  $(PYTHON) tools/find-driver.py --arch $(ARCH) > $@.tmp || { rm -f $@.tmp; \
+	    echo "shim: no usable host driver for $(ARCH) (above); on a build machine without the NVIDIA driver use make REFERENCE_ONLY=\"<reason>\"" >&2; exit 1; }; \
+	fi; \
+	if cmp -s $@.tmp $@; then rm -f $@.tmp; else mv $@.tmp $@; fi
 
-$(GEN)/census.tsv: $(GEN)/blobs.list dispositions.tsv $(OVERRIDE) tools/import-census.py
+$(GEN)/census.tsv: $(GEN)/blobs.list $(REFERENCES) dispositions.tsv $(OVERRIDE) tools/import-census.py
 	$(PYTHON) tools/import-census.py --arch $(ARCH) --dispositions dispositions.tsv $(OVERRIDE_ARG) \
-	    --out $@ $$(cat $(GEN)/blobs.list)
+	    $(addprefix --reference ,$(REFERENCES)) --out $@ $$(cat $(GEN)/blobs.list)
 
 $(GEN)/constants.h: tools/gen-constants.py dispositions.tsv $(OVERRIDE) | $(GEN)
 	$(PYTHON) tools/gen-constants.py --host-cc "$(HOSTCC)" --ndk-cc "$(CC) -ferror-limit=0" \

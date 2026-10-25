@@ -9,6 +9,9 @@ __errno_location	translate	__errno	-
 __freelocale	translate	freelocale	-
 __fxstat	translate	nvg___fxstat	-
 __fxstat64	translate	nvg___fxstat64	-
+__getdelim	translate	getdelim	-
+__isinf	identical	__isinf	-
+__isnan	identical	__isnan	-
 __isoc99_fscanf	translate	fscanf	-
 __isoc99_sscanf	translate	sscanf	-
 __iswctype_l	translate	iswctype_l	-
@@ -78,9 +81,12 @@ dlsym	identical	dlsym	-
 dlvsym	translate	nvg_dlvsym	-
 dup	identical	dup	-
 dup2	identical	dup2	-
+dup3	identical	dup3	-
 erf	identical	erf	-
+execle	identical	execle	-
 execv	identical	execv	-
 execve	identical	execve	-
+execvp	identical	execvp	-
 exit	identical	exit	-
 exp	identical	exp	-
 exp2	identical	exp2	-
@@ -115,9 +121,11 @@ fputs	identical	fputs	-
 fread	identical	fread	-
 free	identical	free	-
 frexp	identical	frexp	-
+fscanf	identical	fscanf	-
 fseek	identical	fseek	-
 fseeko	identical	fseeko	-
 fseeko64	identical	fseeko64	-
+fstatfs	identical	fstatfs	-
 ftell	identical	ftell	-
 ftello	identical	ftello	-
 ftello64	identical	ftello64	-
@@ -135,10 +143,13 @@ gethostname	identical	gethostname	-
 getlogin_r	identical	getlogin_r	-
 getpagesize	identical	getpagesize	-
 getpid	identical	getpid	-
+getpwnam	identical	getpwnam	-
 getpwnam_r	identical	getpwnam_r	-
+getpwuid	identical	getpwuid	-
 getpwuid_r	identical	getpwuid_r	-
 getrlimit	identical	getrlimit	-
 getrusage	identical	getrusage	-
+gettext	implement	nvg_gettext	-
 gettimeofday	identical	gettimeofday	-
 getuid	identical	getuid	-
 getwc	identical	getwc	-
@@ -150,6 +161,7 @@ ioctl	identical	ioctl	-
 isalnum	identical	isalnum	-
 isalpha	identical	isalpha	-
 isatty	identical	isatty	-
+iscntrl	identical	iscntrl	-
 islower	identical	islower	-
 isprint	identical	isprint	-
 isspace	identical	isspace	-
@@ -159,6 +171,7 @@ iswdigit	identical	iswdigit	-
 isxdigit	identical	isxdigit	-
 kill	identical	kill	-
 ldexp	identical	ldexp	-
+link	identical	link	-
 listen	identical	listen	-
 localtime	identical	localtime	-
 localtime_r	identical	localtime_r	-
@@ -200,6 +213,7 @@ open64	identical	open64	-
 openat	identical	openat	-
 openat64	identical	openat64	-
 opendir	identical	opendir	-
+perror	identical	perror	-
 pipe	identical	pipe	-
 pipe2	identical	pipe2	-
 poll	identical	poll	-
@@ -217,6 +231,10 @@ ppoll	identical	ppoll	-
 printf	identical	printf	-
 pthread_attr_destroy	identical	pthread_attr_destroy	-
 pthread_attr_init	translate	nvg_pthread_attr_init	-
+pthread_attr_setdetachstate	identical	pthread_attr_setdetachstate	-
+pthread_attr_setinheritsched	translate	nvg_pthread_attr_setinheritsched	-
+pthread_attr_setschedparam	identical	pthread_attr_setschedparam	-
+pthread_attr_setschedpolicy	identical	pthread_attr_setschedpolicy	-
 pthread_attr_setstacksize	identical	pthread_attr_setstacksize	-
 pthread_cond_broadcast	identical (weak)	pthread_cond_broadcast	-
 pthread_cond_destroy	identical (weak)	pthread_cond_destroy	-
@@ -236,6 +254,7 @@ pthread_getspecific	identical	pthread_getspecific	-
 pthread_join	identical (weak)	pthread_join	-
 pthread_key_create	identical	pthread_key_create	-
 pthread_key_delete	identical	pthread_key_delete	-
+pthread_kill	identical	pthread_kill	-
 pthread_mutex_destroy	translate	nvg_pthread_mutex_destroy	-
 pthread_mutex_init	translate	nvg_pthread_mutex_init	-
 pthread_mutex_lock	translate (weak)	nvg_pthread_mutex_lock	-
@@ -274,9 +293,11 @@ recv	identical	recv	-
 recvmsg	identical	recvmsg	-
 remove	identical	remove	-
 rewind	identical	rewind	-
+rmdir	identical	rmdir	-
 round	identical	round	-
 scandir	identical	scandir	-
 scandir64	identical	scandir64	-
+scanf	identical	scanf	-
 sched_get_priority_max	identical	sched_get_priority_max	-
 sched_get_priority_min	identical	sched_get_priority_min	-
 sched_getaffinity	identical	sched_getaffinity	-
@@ -286,9 +307,11 @@ sem_destroy	identical	sem_destroy	-
 sem_init	identical	sem_init	-
 sem_post	identical	sem_post	-
 sem_timedwait	identical	sem_timedwait	libpthread.so.0
+sem_trywait	identical	sem_trywait	-
 sem_wait	identical	sem_wait	libpthread.so.0
 send	identical	send	-
 sendmsg	identical	sendmsg	-
+setenv	identical	setenv	-
 setrlimit	identical	setrlimit	-
 setsid	identical	setsid	-
 setsockopt	identical	setsockopt	-
@@ -336,6 +359,7 @@ strncpy	identical	strncpy	-
 strnlen	identical	strnlen	-
 strpbrk	identical	strpbrk	-
 strrchr	identical	strrchr	-
+strsep	identical	strsep	-
 strsignal	identical	strsignal	-
 strstr	identical	strstr	-
 strtod	identical	strtod	-
@@ -350,6 +374,7 @@ strtoull	identical	strtoull	-
 symlink	identical	symlink	-
 syscall	identical	syscall	-
 sysconf	translate	nvg_sysconf	-
+system	identical	system	-
 tan	identical	tan	-
 tanf	identical	tanf	-
 tanh	identical	tanh	-

@@ -179,11 +179,8 @@ static int fits_files(uint64_t v) {
     return v <= UINT32_MAX || v == UINT64_MAX;
 }
 
-NVG_EXPORT int nvg_statfs(const char *path, struct nvg_glibc_statfs *g) {
-    struct statfs64 b;
-    if (statfs64(path, &b) != 0) {
-        return -1;
-    }
+static int statfs_out(const struct statfs64 *bp, struct nvg_glibc_statfs *g) {
+    const struct statfs64 b = *bp;
     if (((uint64_t)b.f_blocks | b.f_bfree | b.f_bavail | (uint64_t)b.f_bsize | (uint64_t)b.f_frsize) >>
             32 || !fits_files(b.f_files) || !fits_files(b.f_ffree)) {
         errno = EOVERFLOW;
@@ -202,6 +199,23 @@ NVG_EXPORT int nvg_statfs(const char *path, struct nvg_glibc_statfs *g) {
     g->f_frsize = (int32_t)b.f_frsize;
     g->f_flags = (int32_t)b.f_flags;
     return 0;
+}
+
+NVG_EXPORT int nvg_statfs(const char *path, struct nvg_glibc_statfs *g) {
+    struct statfs64 b;
+    if (statfs64(path, &b) != 0) {
+        return -1;
+    }
+    return statfs_out(&b, g);
+}
+
+/* fstatfs() is the same 32-bit compat struct and rule on an open fd (fs/statfs.c compat_fstatfs). */
+NVG_EXPORT int nvg_fstatfs(int fd, struct nvg_glibc_statfs *g) {
+    struct statfs64 b;
+    if (fstatfs64(fd, &b) != 0) {
+        return -1;
+    }
+    return statfs_out(&b, g);
 }
 
 /* ---- passwd ----
@@ -238,6 +252,27 @@ NVG_EXPORT int nvg_getpwuid_r(uid_t uid, struct nvg_glibc_passwd *g, char *buf, 
     struct passwd b, *bres = NULL;
     int r = getpwuid_r(uid, &b, buf, len, &bres);
     return passwd_out(r, &b, bres, g, result);
+}
+
+/* getpwnam()/getpwuid() return a static struct in both libraries (POSIX: not thread-safe, overwritten by the
+ * next call). Here the static is glibc's layout, pointing at the strings of bionic's own static result. */
+static struct nvg_glibc_passwd passwd_static;
+
+static struct nvg_glibc_passwd *passwd_static_out(const struct passwd *b) {
+    if (b == NULL) {
+        return NULL;
+    }
+    struct nvg_glibc_passwd *res = NULL;
+    passwd_out(0, b, (struct passwd *)b, &passwd_static, &res);
+    return res;
+}
+
+NVG_EXPORT struct nvg_glibc_passwd *nvg_getpwnam(const char *name) {
+    return passwd_static_out(getpwnam(name));
+}
+
+NVG_EXPORT struct nvg_glibc_passwd *nvg_getpwuid(uid_t uid) {
+    return passwd_static_out(getpwuid(uid));
 }
 
 /* ---- strtold_l ----

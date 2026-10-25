@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # deploy-guest — stage the P1 spike into the running Waydroid guest's /data/local/tmp/nvp.
 # Must run as root (the data dir is root-owned): sudo -n dev/deploy-guest
-# Copies: the five host blobs for the installed driver version (read from /proc/driver/nvidia/version),
+# Copies: the host driver's ICD closure for the installed driver version (read from /proc/driver/nvidia/version),
 # the shim build outputs (shim/out), nvprobe + nvprobe.sh, and the host glibc version string.
 set -euo pipefail
 NVP=$(cd "$(dirname "$(readlink -f "$0")")/../nvidia-prolapse" && pwd)   # the nvidia-prolapse sub-project
@@ -12,9 +12,11 @@ D=$DATA/local/tmp/nvp
 V=$(awk '/NVRM version/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) {print $i; exit}}' /proc/driver/nvidia/version)
 [ -n "$V" ] || { echo "deploy-guest: cannot read the driver version from /proc/driver/nvidia/version" >&2; exit 1; }
 mkdir -p "$D/lib" "$D/shim" "$D/bin"
-for f in libEGL_nvidia.so.$V libnvidia-glsi.so.$V libnvidia-eglcore.so.$V libnvidia-gpucomp.so.$V libnvidia-glvkspirv.so.$V; do
-    [ -e "/usr/lib/$f" ] || { echo "deploy-guest: /usr/lib/$f missing (nvidia-utils $V not installed?)" >&2; exit 1; }
-    cmp -s "/usr/lib/$f" "$D/lib/$f" || cp -f "/usr/lib/$f" "$D/lib/$f"
+# the driver's ICD closure, found through the loader cache at the kernel module's version
+BLOBS=$(python3 -I "$NVP/shim/tools/find-driver.py" --arch x86_64) || exit 1
+for p in $BLOBS; do
+    f=$(basename "$p")
+    cmp -s "$p" "$D/lib/$f" || cp -f "$p" "$D/lib/$f"
 done
 ln -sfn "libEGL_nvidia.so.$V" "$D/lib/libEGL_nvidia.so.0"
 [ -d "$NVP/shim/out" ] || { echo "deploy-guest: $NVP/shim/out missing — run make in shim/ first" >&2; exit 1; }

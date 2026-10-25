@@ -171,11 +171,13 @@ take such constants: `sysconf`, `newlocale`, `nl_langinfo_l`, `dlopen`, `sigacti
 
 ## Build (`make`, NDK r30, API 33, x86_64)
 
-Inputs: the installed blobs (resolved from `/usr/lib/libEGL_nvidia.so.0` → real file;
-the version is read from `/proc/driver/nvidia/version`, never typed), `dispositions.tsv`,
+Inputs: the per-branch reference import lists `imports/<version>-<arch>.tsv` (see "Driver
+branches"), the installed blobs when the driver is loaded (`tools/find-driver.py`: found through
+the loader cache; the version is read from `/proc/driver/nvidia/version`, never typed), `dispositions.tsv`,
 the NDK API-33 stubs.
 
-1. `tools/import-census.py BLOBS…` → per-front name sets from each blob's
+1. `tools/import-census.py --reference imports/… BLOBS…` → per-front name sets, the union over every
+   reference list and blob, from each blob's
    `.gnu.version_r` (verneed **file**, by versym index) and dynamic symbol table.
    A name in the blobs that is not in `dispositions.tsv` is a **build error**
    ("undispositioned import X in Y") — this is the G0 invariant enforced for future
@@ -205,6 +207,38 @@ the NDK API-33 stubs.
      `libdl.so` `llvm-nm -D --defined-only`).
 6. `make check-abi`: host `tools/abi-check.c` prints glibc sizes/offsets; compare with
    `glibc_abi.h` constants.
+
+## Driver branches (one build for 535–615)
+
+The closure differs per branch (measured with `readelf -d` and the dlopen strings of each branch's libraries,
+535.309.01, 550.163.01, 570.211.01, 580.178.04, 595.99.02, 610.57.04, 615.78.08): `libEGL_nvidia.so.0` (the ICD)
+dlopens `libnvidia-eglcore`, which dlopens `libnvidia-glvkspirv`; every `libnvidia-*.so.<version>` in their
+DT_NEEDED belongs to the closure too: `libnvidia-glsi` everywhere, `libnvidia-gpucomp` from 550 on (535's eglcore
+neither needs nor names it). `tools/find-driver.py` derives the closure that way from the installed libraries, so
+a library the branch has is never left out and one it lacks is never asked for.
+
+The glibc imports differ too. Each branch's list is cut from its own libraries (`import-census.py --allow-unused
+--out imports/<version>-<arch>.tsv <closure>`; only the names, fronts and versions are kept) and the build exports
+the union, so one set of fronts serves every branch: a name only an older branch imports is an export the newer
+blobs never reference, which costs one slot. A table row no list imports is still an error (the table stays exact
+for the union). Rows the older branches added, by disposition:
+- identical: `dup3 execle execvp fscanf iscntrl __isinf __isnan link perror rmdir scanf sem_trywait setenv strsep
+  system pthread_kill pthread_attr_setdetachstate pthread_attr_setschedparam pthread_attr_setschedpolicy`, and on
+  x86_64 `fstatfs getpwnam getpwuid` (struct statfs/passwd identical there); i386 `__register_frame
+  __deregister_frame` (bionic `@LIBC_R`);
+- translate: `__getdelim` → `getdelim`; `pthread_attr_setinheritsched` (glibc `PTHREAD_INHERIT_SCHED` 0 /
+  `PTHREAD_EXPLICIT_SCHED` 1, bionic the other way round; gen-constants reports the family as differing);
+  i386 `fstatfs` (the non-LFS statfs translator on an fd), `getpwnam`/`getpwuid` (glibc's i386 struct passwd in a
+  static, pointing at bionic's static strings);
+- implement: `gettext` (returns msgid, as `dgettext`).
+The names eglcore resolves by `dlvsym` on `libpthread.so.0` (its `pthread_*`/`sem_*` strings) are covered for every
+branch by the union. 470 and 390 are out of scope (their Vulkan has no dma-buf/modifier extensions; 470 imports
+SysV shared memory, 390 has no glvkspirv).
+
+A host driver is checked against a finished build with `import-census.py --covered-by gen/census.tsv <closure>`:
+every (front, name) it imports must be exported, else the check names each missing import. The package's setup
+runs it before it stages glibc-shim mode, so a driver release newer than the reference lists is refused there, by
+name, instead of aborting inside an app.
 
 ## Runtime contract (what the loader must do)
 
