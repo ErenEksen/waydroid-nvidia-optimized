@@ -148,7 +148,8 @@ NVK_PATCHES = ("build-compat.patch", "rm-integration.patch", "pascal-a-clear.pat
                "nvk-prevolta-modifier-memory-types.patch", "nvk-3d-view-of-2d-image.patch",
                "nvk-pixel-shader-barrier.patch", "nak-qmd-cwd-membar.patch",
                "nak-qmd-dependency.patch", "nvk-cs-join-qmd.patch",
-               "nvk-compute-queue-family.patch", "nvk-stock-compute-init.patch")
+               "nvk-compute-queue-family.patch", "nvk-stock-compute-init.patch",
+               "nak-qmd-occupancy.patch")
 
 GL_TRIPLES = {"android": "x86_64-linux-android", "android32": "i686-linux-android"}
 # Android: distinct library names so the image's own Mesa (libEGL_mesa.so,
@@ -221,6 +222,11 @@ NVK_PATCH_LIST = [
     # cache sequence with IGNORE_VEID, CWD slot count on GB20x); SKED
     # cache invalidates then happen only in that WFI-ALL form.
     HERE / "nvk-stock-compute-init.patch",
+    # QMD V05 (Blackwell): every dispatch carries the proprietary
+    # driver's occupancy limits; without them a full-GPU grid and the
+    # graphics work of another queue in the same channel group
+    # time-slice instead of running together.
+    HERE / "nak-qmd-occupancy.patch",
 ]
 
 def prepared_stamp(source, inputs):
