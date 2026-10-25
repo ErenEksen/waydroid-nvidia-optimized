@@ -533,6 +533,11 @@ nvkmd_rm_try_create_pdev(struct _drmDevice* drm,
        * Turing+ generic compressible kind. NVK's dedicated-allocation
        * compression (has_compression) stays off. */
       .has_rm_compression = info->generic_kind == 0x06,
+      /* Subcontexts exist from Volta (VOLTA_COMPUTE_A 0xc3c0): a channel group
+       * has 64 VEIDs, VEID 0 belongs to the group's first context, so up to
+       * 63 contexts can join it (nv_rm_context_create_shared). */
+      .max_shared_ctx = pdev->base.dev_info.cls_compute >= 0xc3c0 ? 63 : 0,
+      .sm_isa_version = info->sm_isa,
    };
    pdev->base.drm.render_dev = st.st_rdev;
    pdev->fd = fd;
@@ -1326,4 +1331,5 @@ const struct nvkmd_dev_ops nvkmd_rm_dev_ops = { .destroy = rm_dev_destroy,
                                                 .alloc_tiled_mem = rm_mem_tiled,
                                                 .import_dma_buf = rm_mem_import,
                                                 .alloc_va = rm_va_alloc,
-                                                .create_ctx = rm_ctx_create };
+                                                .create_ctx = rm_ctx_create,
+                                                .create_shared_ctx = nvkmd_rm_create_shared_ctx };

@@ -786,3 +786,20 @@ instruction invalidate, 0x80-aligned addresses, 8 of 8 uses flagged.
 
 Android: build the same source with the NDK's `x86_64-linux-android33-clang ... -lvulkan` and run it
 in the guest.
+
+`vk-async-compute.c` (build lines in its header, shaders in
+`vk-async-compute.glsl`) runs a graphics queue and a compute-only-family queue
+of one device on a real GPU: `overlap` times a busy draw and a busy dispatch
+alone and together (overlap factor), `pingpong` chains 16 dependent
+dispatches across the two queues with a timeline semaphore (in step order and
+with the compute steps submitted first) and with binary semaphores, the
+compute queue's steps dispatched indirectly, `teardown` destroys the device
+with both queues busy, `solo` runs a device with only a compute-family queue.
+Every result is checked; exit 77 means the device has no compute-only family.
+
+`vk-compute-queue-compressed.c` (build line in its header) runs only on a compute-only-family queue: BC1 and BC7
+2D images (64x64, 4 levels, 3 layers) are filled by vkCmdCopyBufferToImage, copied to a second image by
+vkCmdCopyImage and read back by vkCmdCopyImageToBuffer, every block compared. That queue has no copy engine, so
+these copies are compute work, and a view that reinterprets a compressed level as blocks gets its layer stride
+from that single level: layers past the first need one view per layer. Exit 77 = no compute-only family.
+10-25 (RTX 5090): PASS on NVK + Rust RM and on the stock driver. 0 Xid.

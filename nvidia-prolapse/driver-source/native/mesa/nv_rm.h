@@ -39,7 +39,10 @@ struct NvRmInfo {
     * is logged at open. */
    struct NvRmZcullInfo zcull;
    uint32_t zcull_ctxsw_size, zcull_ctxsw_align;
-   uint32_t has_zcull_info, reserved;
+   uint32_t has_zcull_info;
+   /* RM's SM ISA code (NV2080_CTRL_GR_INFO_INDEX_SM_VERSION, e.g. 0xa04 on
+    * GB20x); `sm` is the shader model decimal derived from it. */
+   uint32_t sm_isa;
 };
 struct NvRmAllocation {
    uint64_t id, size;

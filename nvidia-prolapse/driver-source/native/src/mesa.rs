@@ -73,7 +73,9 @@ pub struct Info {
     zcull_ctxsw_size: u32,
     zcull_ctxsw_align: u32,
     has_zcull_info: u32,
-    reserved: u32,
+    /// RM's SM ISA code (NV2080_CTRL_GR_INFO_INDEX_SM_VERSION), from which
+    /// `sm` is derived.
+    sm_isa: u32,
 }
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -1661,7 +1663,7 @@ fn query_info(d: &Device) -> Result<Info> {
         zcull_ctxsw_size,
         zcull_ctxsw_align,
         has_zcull_info,
-        reserved: 0,
+        sm_isa: gr[0][1],
     })
 }
 
@@ -2848,6 +2850,7 @@ mod tests {
         assert_eq!(offset_of!(Info, zcull), 152);
         assert_eq!(offset_of!(Info, zcull_ctxsw_size), 192);
         assert_eq!(offset_of!(Info, has_zcull_info), 200);
+        assert_eq!(offset_of!(Info, sm_isa), 204);
         assert_eq!(offset_of!(Info, generic_kind), 68);
         assert_eq!(offset_of!(Info, vram_size), 72);
         assert_eq!(offset_of!(Info, bar_size), 80);

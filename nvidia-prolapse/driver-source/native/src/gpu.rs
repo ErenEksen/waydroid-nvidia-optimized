@@ -1052,6 +1052,9 @@ pub(crate) struct Queue {
     /// the VEID returns to the TSG only after RM freed the share, and the TSG
     /// reference drops last.
     subcontext: Subcontext,
+    /// Compute class without 3D on this channel: every batch's tail starts
+    /// with a compute-class WAIT_FOR_IDLE (see `submit_encoded`).
+    compute_only: bool,
     error_notifier: rm::Mapping,
     ring: rm::Mapping,
     _ring_gpu: GpuMapping,
@@ -1714,6 +1717,7 @@ impl Queue {
             engines,
             channel,
             subcontext,
+            compute_only: mask & 16 != 0 && mask & 4 == 0,
             error_notifier,
             ring,
             _ring_gpu: ring_gpu,
@@ -1986,6 +1990,19 @@ impl Queue {
         scratch.tail.clear();
         for op in waits {
             encode_op(&mut scratch.prefix, self.channel_class, slot_native64, *op)?;
+        }
+        if self.compute_only {
+            // A channel with the compute class alone completes a batch the
+            // way the proprietary driver completes its compute queue's
+            // (615.78.08: compute-class WAIT_FOR_IDLE before the completion
+            // release): the host WFI and RELEASE_WFI below do not wait for
+            // compute grids launched on such a channel, and the 3D-class
+            // subchannel switch that idles GR on a graphics channel does not
+            // happen there. Measured on GB202 without it: the release came
+            // first and a later grid wrote freed memory (Xid 31).
+            // NVC7C0_WAIT_FOR_IDLE 0x0110 on the compute subchannel 1
+            // (clc7c0.h; NVK binds the compute class there).
+            method(&mut scratch.signals, 1, 0x110, &[0]);
         }
         signal_methods(
             &mut scratch.signals,

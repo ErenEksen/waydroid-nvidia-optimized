@@ -147,7 +147,8 @@ NVK_PATCHES = ("build-compat.patch", "rm-integration.patch", "pascal-a-clear.pat
                "nvk-shader-upload-publish.patch", "nvk-shader-prefetch-in-range.patch",
                "nvk-prevolta-modifier-memory-types.patch", "nvk-3d-view-of-2d-image.patch",
                "nvk-pixel-shader-barrier.patch", "nak-qmd-cwd-membar.patch",
-               "nak-qmd-dependency.patch", "nvk-cs-join-qmd.patch")
+               "nak-qmd-dependency.patch", "nvk-cs-join-qmd.patch",
+               "nvk-compute-queue-family.patch", "nvk-stock-compute-init.patch")
 
 GL_TRIPLES = {"android": "x86_64-linux-android", "android32": "i686-linux-android"}
 # Android: distinct library names so the image's own Mesa (libEGL_mesa.so,
@@ -209,6 +210,17 @@ NVK_PATCH_LIST = [
     # decrements) instead of WAIT_FOR_IDLE, as NVIDIA's driver does.
     HERE / "nak-qmd-dependency.patch",
     HERE / "nvk-cs-join-qmd.patch",
+    # A compute-only queue family whose queues run on their own
+    # subcontext in graphics queue 0's channel group (BLACKWELL_COMPUTE_B,
+    # backends with shared contexts), as the proprietary driver exposes
+    # and places its compute queues; its transfers and clears run as
+    # compute work there.
+    HERE / "nvk-compute-queue-family.patch",
+    # Every compute context starts with the proprietary driver's compute
+    # initialiser words where they are public (SPA/QMD version, SKED
+    # cache sequence with IGNORE_VEID, CWD slot count on GB20x); SKED
+    # cache invalidates then happen only in that WFI-ALL form.
+    HERE / "nvk-stock-compute-init.patch",
 ]
 
 def prepared_stamp(source, inputs):
