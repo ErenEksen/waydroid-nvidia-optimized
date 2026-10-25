@@ -7,7 +7,7 @@
 #   - the glibc-compat shims from nvidia-prolapse/shim/out (libnvglibc.so + six fronts)
 #   - host-glibc-version   (what the shims report as gnu_get_libc_version())
 #   - libEGL_nvidia.so.0 -> libEGL_nvidia.so.<driver>   (relative symlink; the ICD's soname)
-#   - empty placeholders for the five host blobs, which the container bind-mounts over
+#   - empty placeholders for the host driver's ICD closure, which the container bind-mounts over
 #     (waydroid/nvidia_native.py emits those entries; the blobs themselves are never copied)
 #   - hw/vulkan.nvidia.so          our Vulkan HAL   (nvidia-prolapse/hal/out/android)
 #   - libgbm_mesa_wrapper.so       our gralloc backend (nvidia-prolapse/gralloc/out/android); the container
@@ -18,7 +18,7 @@
 #                                  /vendor/lib64/libminigbm_gralloc_gbm_mesa.so
 # and /var/lib/waydroid/nvidia-glibc-shim-staging/vendor_extra/lib/ (32-bit x86, P6) with the same set built
 # for i686: shims from nvidia-prolapse/shim/out32 (ld-linux.so.2 front), host-glibc-version, the
-# libEGL_nvidia.so.0 symlink, placeholders for the five lib32 blobs (bound from /usr/lib32),
+# libEGL_nvidia.so.0 symlink, placeholders for the 32-bit driver closure (bound from the host's 32-bit libraries),
 # hw/vulkan.nvidia.so (hal/out/android32), libdrm.so.2 (libdrm/out32), and
 #   - libgbm_mesa_wrapper.so       the backend built 32-bit (out/android32), bound over
 #                                  /vendor/lib/libgbm_mesa_wrapper.so for the image's 32-bit
@@ -137,16 +137,17 @@ for pair in "$L:android:lib64" "$L32:android32:lib"; do
         rmdir "$D/egl" 2>/dev/null && echo "removed old $D/egl" || die "$D/egl holds files other than the front; inspect and remove them"
     fi
 done
-# per ABI dir: sidecar, placeholders for the host's blobs, soname link, stale-placeholder sweep
-for pair in "$L:/usr/lib:nvidia-utils" "$L32:/usr/lib32:lib32-nvidia-utils"; do
-    D=${pair%%:*}; rest=${pair#*:}; HOSTDIR=${rest%%:*}; PKG=${rest#*:}
+# per ABI dir: sidecar, placeholders for the host's driver closure (found through the loader cache by the
+# generator: waydroid/nvidia_native.py --host-closure), soname link, stale-placeholder sweep
+for pair in "$L:64" "$L32:32"; do
+    D=${pair%%:*}; BITS=${pair#*:}
     printf '%s\n' "$GLIBC" > "$D/host-glibc-version.tmp" && chmod 644 "$D/host-glibc-version.tmp" && mv -f "$D/host-glibc-version.tmp" "$D/host-glibc-version"
-    for b in libEGL_nvidia libnvidia-glsi libnvidia-eglcore libnvidia-gpucomp libnvidia-glvkspirv; do
-        [ -f "$HOSTDIR/$b.so.$V" ] || die "$HOSTDIR/$b.so.$V missing ($PKG $V not installed?)"
-        tgt="$D/$b.so.$V"
+    CLOSURE=$("$REPO/waydroid/nvidia_native.py" --host-closure "$BITS") || die "the host's ${BITS}-bit NVIDIA driver libraries (above)"
+    while read -r name _; do
+        tgt="$D/$name"
         # an existing one may be bind-mounted right now: leave it alone
         [ -e "$tgt" ] || { : > "$tgt"; chmod 644 "$tgt"; }
-    done
+    done <<< "$CLOSURE"
     ln -sfn "libEGL_nvidia.so.$V" "$D/libEGL_nvidia.so.0"
     # Stale placeholders from a previous driver version are an error waiting to happen: remove.
     for old in "$D"/libEGL_nvidia.so.[0-9]* "$D"/libnvidia-*.so.[0-9]*; do

@@ -90,11 +90,13 @@
 #    libdrm only as an unversioned libdrm.so, so the staging tree carries one under the name the
 #    driver asks for, in the sphal search path next to the ICD.
 #
-#  * /usr/lib/<blob>.<driver>  ->  /vendor_extra/lib64/<blob>.<driver>   (one bind per file)
-#    NVIDIA's own userspace, straight from the host install, read-only, unmodified. The
-#    version is read from the running kernel module (/proc/driver/nvidia/version), never
-#    typed, because the RM refuses a userspace/kernel mismatch and we want that refusal to
-#    happen *here*, with a file name, not inside an app.
+#  * <host libdir>/<blob>.<driver>  ->  /vendor_extra/lib64/<blob>.<driver>   (one bind per file)
+#    NVIDIA's own userspace, straight from the host install, read-only, unmodified, found through the
+#    dynamic loader's cache (host_closure(): any distribution layout). The files are the ICD closure of
+#    the installed branch (libEGL_nvidia, glsi, eglcore, glvkspirv, and gpucomp from 550 on), derived
+#    from the libraries' own DT_NEEDED. The version is read from the running kernel module
+#    (/proc/driver/nvidia/version), never typed, because the RM refuses a userspace/kernel mismatch and
+#    we want that refusal to happen *here*, with a file name, not inside an app.
 #
 #  * <root>/vendor_extra/lib64/libgbm_mesa_wrapper.so  ->  /vendor/lib64/libgbm_mesa_wrapper.so
 #    Stock minigbm (gralloc.minigbm_gbm_mesa) loads its backend from the vendor image; the
@@ -154,9 +156,10 @@
 #    path, mediaserver) get the same stack under vendor_extra/lib, which LineageOS 20's linker
 #    config searches as /vendor_extra/${LIB} for them: the i386 shims (ld-linux.so.2 instead of
 #    ld-linux-x86-64.so.2), host-glibc-version, the libEGL_nvidia.so.0 soname link, placeholders,
-#    hw/vulkan.nvidia.so, libdrm.so.2 (all built for i686), and the five i386 driver libraries
-#    bind-mounted from /usr/lib32 (lib32-nvidia-utils) at the kernel module's version. Mandatory:
-#    without it a 32-bit app's ANGLE finds no Vulkan device and every 32-bit GLES app fails.
+#    hw/vulkan.nvidia.so, libdrm.so.2 (all built for i686), and the i386 driver closure bind-mounted
+#    from the host's 32-bit driver libraries at the kernel module's version. Mandatory: without it a
+#    32-bit app's ANGLE finds no Vulkan device and every 32-bit GLES app fails; when the distribution has
+#    not installed them, the generator names the package (lib32_remedy()).
 #
 # Nothing is 'optional': a missing piece fails `waydroid upgrade -o` with the entry's name
 # instead of surfacing as an opaque failure deep inside the guest (project principle: no
@@ -168,21 +171,32 @@ import hashlib
 import os
 import re
 
-HOST_LIBDIR = "/usr/lib"
-HOST_LIBDIR32 = "/usr/lib32"
+# The host's NVIDIA libraries are found the way the dynamic loader finds them: by soname in its cache
+# (ldconfig's /etc/ld.so.cache), so any distribution layout works (/usr/lib + /usr/lib32 on Arch,
+# /usr/lib/x86_64-linux-gnu + /usr/lib/i386-linux-gnu on Debian/Ubuntu, /usr/lib64 + /usr/lib on Fedora).
+LD_SO_CACHE = "/etc/ld.so.cache"
+OS_RELEASE = "/etc/os-release"
 DEV_DIR = "/dev"
 PROC_VERSION = "/proc/driver/nvidia/version"
 NVIDIA_VENDOR = "0x10de"
-DEPLOY = "waydroid-nvidia-prolapse-setup, or dev/native-deploy in a dev checkout"
-# The minimal ICD closure (from the libraries' DT_NEEDED and dlopen lists): libEGL_nvidia.so.0 *is* the
-# Vulkan ICD; glsi/gpucomp are DT_NEEDED, eglcore/glvkspirv are dlopened by the driver.
-BLOBS = (
-    "libEGL_nvidia.so.{v}",
-    "libnvidia-glsi.so.{v}",
-    "libnvidia-eglcore.so.{v}",
-    "libnvidia-gpucomp.so.{v}",
-    "libnvidia-glvkspirv.so.{v}",
-)
+DEPLOY = "sudo waydroid-nvidia-setup --mode glibc-shim, or dev/native-deploy in a dev checkout"
+# The ICD closure (host_closure()): libEGL_nvidia.so.0 *is* the Vulkan ICD; it dlopens libnvidia-eglcore,
+# which dlopens libnvidia-glvkspirv (their dlopen strings, every branch 535..615); every libnvidia-*.so.<v>
+# in their DT_NEEDED belongs to it as well: glsi always, gpucomp from 550 on (535's eglcore has none).
+ICD_SONAME = "libEGL_nvidia.so.0"
+ICD_FILE = "libEGL_nvidia.so.{v}"
+DLOPEN_ROOTS = ("libnvidia-eglcore.so.{v}", "libnvidia-glvkspirv.so.{v}")
+# glibc elf/cache.h: FLAG_ELF_LIBC6 | FLAG_X8664_LIB64 (x86_64), FLAG_ELF_LIBC6 (i386)
+LD_CACHE_FLAGS = {64: 0x0303, 32: 0x0003}
+# Oldest driver branch glibc-shim runs on. 470 and 390 (the last branches for Kepler and Fermi) have no
+# VK_EXT_external_memory_dma_buf / VK_EXT_image_drm_format_modifier in their Vulkan driver, so Android's
+# compositor and apps cannot share a buffer with it (and 390 has no libnvidia-glvkspirv at all).
+GLIBC_SHIM_MIN_BRANCH = 535
+# What NVIDIA's GLES through our EGL front (nvidia_native_gl = on) asks of libEGL_nvidia at load (the
+# front's platform library refuses to load without them): the platform-surface interface (570 and newer)
+# and EGL_ANDROID_native_fence_sync (550 and newer). The default GLES (ANGLE on the Vulkan driver) needs neither.
+NVNATIVE_DRIVER_ENTRIES = ("eglPlatformGetVersionNVX", "eglPlatformImportColorBufferNVX",
+                           "eglDupNativeFenceFDANDROID")
 SHIMS = (
     "libnvglibc.so", "libc.so.6", "libm.so.6", "libpthread.so.0", "librt.so.1", "libdl.so.2",
     "ld-linux-x86-64.so.2",
@@ -721,6 +735,174 @@ def driver_version(proc_path=None):
     return m.group(1)
 
 
+def driver_branch(v):
+    """The branch (major) number of a driver version: 535 for '535.309.01'."""
+    return int(v.split(".", 1)[0])
+
+
+def check_glibc_shim_branch(v):
+    """Raise OSError unless glibc-shim can run on driver `v` (GLIBC_SHIM_MIN_BRANCH)."""
+    if driver_branch(v) < GLIBC_SHIM_MIN_BRANCH:
+        raise OSError("NVIDIA driver mode glibc-shim: driver {} is older than {}: its Vulkan driver has no "
+                      "VK_EXT_external_memory_dma_buf and no VK_EXT_image_drm_format_modifier, so Android's "
+                      "compositor and apps cannot share buffers with it. glibc-shim needs driver {} or newer; "
+                      "older GPUs (Kepler and before) have no newer driver".format(
+                          v, GLIBC_SHIM_MIN_BRANCH, GLIBC_SHIM_MIN_BRANCH))
+
+
+def read_ld_cache(path=None):
+    """[(flags, soname, path)] of glibc's loader cache (format 1.1, alone or after the old format).
+
+    path defaults to LD_SO_CACHE, read at call time (tests point it at a fake cache)."""
+    import struct
+    path = path or LD_SO_CACHE
+    try:
+        with open(path, "rb") as f:
+            d = f.read()
+    except OSError as e:
+        raise OSError("NVIDIA driver mode glibc-shim: cannot read the loader cache {} ({}); run ldconfig".format(
+            path, e.strerror))
+    base = 0
+    if d.startswith(b"ld.so-1.7.0"):
+        (n_old,) = struct.unpack_from("<I", d, 12)
+        base = (16 + 12 * n_old + 7) & ~7
+    if d[base:base + 20] != b"glibc-ld.so.cache1.1":
+        raise OSError("NVIDIA driver mode glibc-shim: {} is not a glibc loader cache (format 1.1); run "
+                      "ldconfig".format(path))
+    (nlibs,) = struct.unpack_from("<I", d, base + 20)
+    out = []
+    for i in range(nlibs):
+        flags, key, value, _, _ = struct.unpack_from("<iIIIQ", d, base + 48 + 24 * i)
+        out.append((flags, d[base + key:d.index(b"\0", base + key)].decode(),
+                    d[base + value:d.index(b"\0", base + value)].decode()))
+    return out
+
+
+def _elf_needed(path, bits):
+    """DT_NEEDED names of a little-endian x86 ELF shared object of `bits` (32/64). Raises OSError otherwise."""
+    import mmap
+    import struct
+    with open(path, "rb") as f:
+        d = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)    # lazily: gpucomp is > 100 MB
+    try:
+        if d[:4] != b"\x7fELF" or d[4] != {64: 2, 32: 1}[bits] or d[5] != 1:
+            raise OSError("NVIDIA driver mode glibc-shim: {} is not a little-endian ELF{} file".format(path, bits))
+        if bits == 64:
+            (phoff,) = struct.unpack_from("<Q", d, 0x20)
+            phentsize, phnum = struct.unpack_from("<HH", d, 0x36)
+            phfmt, dynfmt, at = "<IIQQQQQQ", "<qQ", (0, 2, 3, 5)
+        else:
+            (phoff,) = struct.unpack_from("<I", d, 0x1c)
+            phentsize, phnum = struct.unpack_from("<HH", d, 0x2a)
+            phfmt, dynfmt, at = "<IIIIIIII", "<iI", (0, 1, 2, 4)
+        loads, dynamic = [], None
+        for i in range(phnum):
+            f = struct.unpack_from(phfmt, d, phoff + i * phentsize)
+            p_type, p_offset, p_vaddr, p_filesz = (f[j] for j in at)
+            if p_type == 1:
+                loads.append((p_vaddr, p_offset, p_filesz))
+            elif p_type == 2:
+                dynamic = (p_offset, p_filesz)
+        if dynamic is None:
+            raise OSError("NVIDIA driver mode glibc-shim: {} has no dynamic section".format(path))
+        size = struct.calcsize(dynfmt)
+        entries = [struct.unpack_from(dynfmt, d, dynamic[0] + i * size) for i in range(dynamic[1] // size)]
+        strtab = next((val for tag, val in entries if tag == 5), None)
+        off = next((o + strtab - va for va, o, sz in loads if strtab is not None and va <= strtab < va + sz), None)
+        if off is None:
+            raise OSError("NVIDIA driver mode glibc-shim: {} has no usable DT_STRTAB".format(path))
+        return [d[off + val:d.find(b"\0", off + val)].decode() for tag, val in entries if tag == 1]
+    finally:
+        d.close()
+
+
+def lib32_remedy(os_release=None):
+    """What to install for the 32-bit NVIDIA libraries on this distribution (from /etc/os-release)."""
+    ids = []
+    try:
+        with open(os_release or OS_RELEASE) as f:
+            for line in f:
+                k, _, v = line.strip().partition("=")
+                if k in ("ID", "ID_LIKE"):
+                    ids += v.strip('"').split()
+    except OSError:
+        pass
+    if "ubuntu" in ids:
+        return ("on Ubuntu: sudo dpkg --add-architecture i386, then install libnvidia-gl-<branch>:i386 for your "
+                "driver branch (e.g. libnvidia-gl-580:i386)")
+    if "debian" in ids:
+        return ("on Debian: sudo dpkg --add-architecture i386, then install libegl-nvidia0:i386 and "
+                "nvidia-vulkan-icd:i386")
+    if "fedora" in ids or "rhel" in ids:
+        return "on Fedora (RPM Fusion): install xorg-x11-drv-nvidia-libs.i686"
+    if "arch" in ids:
+        return ("on Arch: install lib32-nvidia-utils (the lib32 package of your driver branch, e.g. "
+                "lib32-nvidia-580xx-utils; needs the multilib repository)")
+    return "install the 32-bit (i386) libraries of your NVIDIA driver package"
+
+
+def host_closure(v, bits, cache=None):
+    """[(soname, host path)] of the driver's ICD closure for one ABI, found through the loader cache.
+
+    Every file carries the kernel module's version `v` exactly; a missing or mismatched one raises OSError
+    naming it and the remedy (for 32-bit: the distribution's package, lib32_remedy())."""
+    check_glibc_shim_branch(v)
+    if cache is None:
+        cache = read_ld_cache()
+    by_name = {}
+    for flags, soname, path in cache:
+        if flags == LD_CACHE_FLAGS[bits]:
+            by_name.setdefault(soname, path)
+    what = "32-bit " if bits == 32 else ""
+    remedy = lib32_remedy() if bits == 32 else "reinstall your NVIDIA driver's userspace of version " + v
+    icd = by_name.get(ICD_SONAME)
+    if icd is None:
+        raise OSError("NVIDIA driver mode glibc-shim: the loader cache has no {}{} (the NVIDIA {}driver "
+                      "libraries are not installed; 32-bit Android apps need them): {}".format(
+                          what, ICD_SONAME, what, remedy))
+    real = os.path.realpath(icd)
+    if os.path.basename(real) != ICD_FILE.format(v=v):
+        raise OSError("NVIDIA driver mode glibc-shim: {} ({}-bit) is {}, not {} of the loaded kernel module {}: the "
+                      "driver's userspace and kernel module differ (reboot after a driver update, or {})".format(
+                          icd, bits, real, ICD_FILE.format(v=v), v, remedy))
+    if not os.path.isfile(real):
+        raise OSError("NVIDIA driver mode glibc-shim: {} ({}-bit) points at {}, which is missing: {}".format(
+            icd, bits, real, remedy))
+    found = [(os.path.basename(real), real)]
+    want = _elf_needed(real, bits) + [r.format(v=v) for r in DLOPEN_ROOTS]
+    while want:
+        name = want.pop(0)
+        if not name.startswith("libnvidia-") or any(n == name for n, _ in found):
+            continue
+        path = by_name.get(name)
+        if path is None or not os.path.isfile(path):
+            stem = name.rsplit(".so.", 1)[0] + ".so."
+            others = sorted(n for n in by_name if n.startswith(stem))
+            raise OSError("NVIDIA driver mode glibc-shim: {}{} is missing{} although the kernel module is {}{}: "
+                          "{}".format(what, name, " ({})".format(path) if path else " from the loader cache", v,
+                                      " (installed: {})".format(", ".join(others)) if others else "", remedy))
+        if not name.endswith(".so." + v):
+            raise OSError("NVIDIA driver mode glibc-shim: {} needs {}, not of driver {}".format(found[0][1], name, v))
+        found.append((name, path))
+        want += _elf_needed(path, bits)
+    return found
+
+
+def check_nvnative_driver(icd_path):
+    """Raise OSError unless libEGL_nvidia at icd_path has what NVIDIA's GLES through our front needs."""
+    import mmap
+    with open(icd_path, "rb") as f:
+        d = mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ)
+    try:
+        missing = [n for n in NVNATIVE_DRIVER_ENTRIES if d.find(n.encode() + b"\0") < 0]
+    finally:
+        d.close()
+    if missing:
+        raise OSError("NVIDIA driver mode glibc-shim: nvidia_native_gl = on (NVIDIA's own GLES on Android) needs "
+                      "driver entry points that {} lacks: {}. This driver runs glibc-shim with nvidia_native_gl = "
+                      "off only (GLES through ANGLE on its Vulkan driver)".format(icd_path, ", ".join(missing)))
+
+
 def nvidia_render_node(sysfs="/sys/class/drm"):
     """/dev/dri/renderD<N> of the NVIDIA GPU, chosen by PCI vendor id."""
     for vendor_file in sorted(glob.glob(os.path.join(sysfs, "renderD*", "device", "vendor"))):
@@ -756,8 +938,8 @@ def _check_abi_tree(staging, sub, shims, v, bits):
     if not os.path.isfile(sidecar) or os.path.getsize(sidecar) == 0:
         raise OSError("NVIDIA native mode: {} is missing or empty; the deploy step ({}) writes "
                       "the host glibc version there".format(sidecar, DEPLOY))
-    link = os.path.join(libdir, "libEGL_nvidia.so.0")
-    want = BLOBS[0].format(v=v)
+    link = os.path.join(libdir, ICD_SONAME)
+    want = ICD_FILE.format(v=v)
     if not os.path.islink(link) or os.readlink(link) != want:
         raise OSError("NVIDIA native mode: {} should be a symlink to {} (driver {} is loaded); "
                       "re-run {} after a driver update".format(link, want, v, DEPLOY))
@@ -1340,16 +1522,14 @@ def _source_rm_nodes(root, manifest=None):
     return nodes
 
 
-def lxc_nodes(root, host_libdir=None, dev=None, existing=(), host_libdir32=None):
+def lxc_nodes(root, dev=None, existing=(), native_gl=False):
     """lxc.mount.entry lines for NVIDIA native mode. Raises OSError naming the missing piece.
 
-    host_libdir/host_libdir32/dev/ANGLE_GUEST_ROOT default to the module constants, read at call time
-    (tests point them at a fake tree). `existing`: the entries generated so far; when one already
-    binds the NVIDIA render node (waydroid.cfg drm_device names it, so upstream gpu.py emitted it),
-    it is not bound a second time.
+    dev/LD_SO_CACHE/ANGLE_GUEST_ROOT default to the module constants, read at call time (tests point them
+    at a fake tree). `existing`: the entries generated so far; when one already binds the NVIDIA render
+    node (waydroid.cfg drm_device names it, so upstream gpu.py emitted it), it is not bound a second time.
+    native_gl (glibc-shim): NVIDIA's GLES is selected, so the driver must have what the EGL front needs.
     """
-    host_libdir = host_libdir or HOST_LIBDIR
-    host_libdir32 = host_libdir32 or HOST_LIBDIR32
     dev = dev or DEV_DIR
     if os.path.exists(os.path.join(root, SOURCE_RM_MANIFEST)):
         manifest = verify_source_rm(root)
@@ -1360,22 +1540,22 @@ def lxc_nodes(root, host_libdir=None, dev=None, existing=(), host_libdir32=None)
                                       [nvidia_render_node()])
         return _source_rm_nodes(root, manifest) + devices
     v = driver_version()
+    check_glibc_shim_branch(v)
     staging = os.path.join(root, "vendor_extra")
     libdir = _check_abi_tree(staging, "lib64", SHIMS, v, 64)
     libdir32 = _check_abi_tree(staging, "lib", SHIMS32, v, 32)
     egl = [(sub, _check_egl_tree(root, sub, bits, ANGLE_GUEST_ROOT)) for sub, bits in (("lib64", 64), ("lib", 32))]
     wrapper = os.path.join(libdir, GBM_WRAPPER)
     wrapper32 = os.path.join(libdir32, GBM_WRAPPER)
+    cache = read_ld_cache()
+    closures = [(host_closure(v, bits, cache), guestdir) for bits, guestdir in ((64, GUEST_LIBDIR), (32, GUEST_LIBDIR32))]
+    if native_gl:
+        for files, _ in closures:
+            check_nvnative_driver(files[0][1])
 
     nodes = ["lxc.mount.entry = {} vendor_extra none rbind 0 0".format(staging)]
-    for hostdir, guestdir, pkg in ((host_libdir, GUEST_LIBDIR, "nvidia-utils"),
-                                   (host_libdir32, GUEST_LIBDIR32, "lib32-nvidia-utils")):
-        for blob in BLOBS:
-            name = blob.format(v=v)
-            src = os.path.join(hostdir, name)
-            if not os.path.isfile(src):
-                raise OSError("NVIDIA native mode: {} is missing although the kernel module is {} "
-                              "({} not installed, or a different version?)".format(src, v, pkg))
+    for files, guestdir in closures:
+        for name, src in files:
             nodes.append("lxc.mount.entry = {} {}/{} none rbind,create=file 0 0".format(src, guestdir, name))
     nodes.append("lxc.mount.entry = {} {} none bind 0 0".format(wrapper, GBM_WRAPPER_GUEST))
     nodes.append("lxc.mount.entry = {} {} none bind 0 0".format(wrapper32, GBM_WRAPPER_GUEST32))
@@ -1730,7 +1910,7 @@ def mode_nodes(dm, waydroid, existing=()):
     if dm.vendor_image:
         return vendor_image_nodes(dm, waydroid, existing=existing)
     refuse_prolapse_image(dm, waydroid)
-    return lxc_nodes(dm.root, existing=existing) if dm.native else []
+    return lxc_nodes(dm.root, existing=existing, native_gl=dm.native_gl) if dm.native else []
 
 
 # `waydroid init` installs official images only (downloaded or preinstalled); the nvidia-prolapse vendor image comes
@@ -1821,10 +2001,17 @@ def _main(argv):
     parser.add_argument("--cfg", help="check a waydroid.cfg (mode, [properties], generator); announce on stderr")
     parser.add_argument("--describe", action="store_true",
                         help="with --cfg: print mode/root/gl/egl and the derived properties (no generator run)")
+    parser.add_argument("--host-closure", type=int, choices=(32, 64), metavar="BITS",
+                        help="print '<soname> <host path>' for each NVIDIA driver library glibc-shim binds for "
+                             "that ABI (64 or 32), found through the loader cache at the kernel module's version")
     parser.add_argument("--session-props", metavar="PROPFILE",
                         help="print the per-session display properties a container start would derive for "
                              "PROPFILE (e.g. /var/lib/waydroid/waydroid_base.prop) on this host now")
     args = parser.parse_args(argv)
+    if args.host_closure:
+        for name, path in host_closure(driver_version(), args.host_closure):
+            print(name, path)
+        return
     if args.session_props:
         with open(args.session_props) as f:
             base = f.read().splitlines()

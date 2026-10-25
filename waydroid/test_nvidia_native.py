@@ -41,10 +41,103 @@ ENVLINE = b"__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES=${ORIGIN}/nvnative_egl_andr
 JSON = b'{"file_format_version": "1.0.0", "ICD": {"library_path": "libnvnative-egl-android.so"}}'
 
 
+# The driver's ICD closure in host_closure() order: the ICD, its DT_NEEDED, the two dlopen roots, theirs.
+CLOSURE = ("libEGL_nvidia.so.{v}", "libnvidia-glsi.so.{v}", "libnvidia-eglcore.so.{v}",
+           "libnvidia-glvkspirv.so.{v}", "libnvidia-gpucomp.so.{v}")
+# DT_NEEDED (libnvidia-* only) per closure library and branch, as the real libraries have them
+# (readelf -d of 535.309.01, 550.163.01 ... 615.78.08: gpucomp joins eglcore's DT_NEEDED in 550).
+NEEDED = {"libEGL_nvidia": ["libnvidia-glsi.so.{v}"], "libnvidia-glsi": [],
+          "libnvidia-eglcore": ["libnvidia-glsi.so.{v}", "libnvidia-gpucomp.so.{v}"],
+          "libnvidia-gpucomp": [], "libnvidia-glvkspirv": []}
+NEEDED_535 = dict(NEEDED, **{"libnvidia-eglcore": ["libnvidia-glsi.so.{v}"]})
+
+
+def fake_elf(bits, needed, extra=b""):
+    """A minimal little-endian x86 shared object whose dynamic section lists `needed` as DT_NEEDED
+    (`extra`: bytes appended after it, e.g. entry point names a test wants found in the file)."""
+    import struct
+    strtab = b"\0" + b"".join(n.encode() + b"\0" for n in needed)
+    offs, o = [], 1
+    for n in needed:
+        offs.append(o)
+        o += len(n) + 1
+    if bits == 64:
+        eh, ph, dynfmt, machine, cls = 64, 56, "<qQ", 62, 2
+    else:
+        eh, ph, dynfmt, machine, cls = 52, 32, "<iI", 3, 1
+    str_off = eh + 2 * ph
+    dyn_off = (str_off + len(strtab) + 7) & ~7
+    dyn = b"".join(struct.pack(dynfmt, 1, x) for x in offs) + struct.pack(dynfmt, 5, str_off) + struct.pack(dynfmt, 0, 0)
+    total = dyn_off + len(dyn)
+    ident = b"\x7fELF" + bytes([cls, 1, 1]) + b"\0" * 9
+    if bits == 64:
+        hdr = ident + struct.pack("<HHIQQQIHHHHHH", 3, machine, 1, 0, eh, 0, 0, eh, ph, 2, 0, 0, 0)
+        phs = struct.pack("<IIQQQQQQ", 1, 5, 0, 0, 0, total, total, 0x1000)
+        phs += struct.pack("<IIQQQQQQ", 2, 6, dyn_off, dyn_off, dyn_off, len(dyn), len(dyn), 8)
+    else:
+        hdr = ident + struct.pack("<HHIIIIIHHHHHH", 3, machine, 1, 0, eh, 0, 0, eh, ph, 2, 0, 0, 0)
+        phs = struct.pack("<IIIIIIII", 1, 0, 0, 0, total, total, 5, 0x1000)
+        phs += struct.pack("<IIIIIIII", 2, dyn_off, dyn_off, dyn_off, len(dyn), len(dyn), 6, 4)
+    body = hdr + phs + strtab
+    return body + b"\0" * (dyn_off - len(body)) + dyn + extra
+
+
+def fake_ld_cache(path, entries):
+    """Write a glibc ld.so.cache (format 1.1) holding (flags, soname, path) entries."""
+    import struct
+    strings, offs = b"", []
+    base = 48 + 24 * len(entries)
+    for _, k, v in entries:
+        ko = base + len(strings)
+        strings += k.encode() + b"\0"
+        vo = base + len(strings)
+        strings += v.encode() + b"\0"
+        offs.append((ko, vo))
+    data = b"glibc-ld.so.cache1.1" + struct.pack("<IIB3xI12x", len(entries), len(strings), 0, 0)
+    for (flags, _, _), (ko, vo) in zip(entries, offs):
+        data += struct.pack("<iIIIQ", flags, ko, vo, 0, 0)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        f.write(data + strings)
+
+
+# Where each distribution family installs the NVIDIA libraries (64-bit dir, 32-bit dir).
+LAYOUTS = {"arch": ("usr-lib", "usr-lib32"),
+           "debian": ("usr/lib/x86_64-linux-gnu", "usr/lib/i386-linux-gnu"),
+           "fedora": ("usr/lib64", "usr/lib")}
+
+
+def make_fake_driver(top, v=V, layout="arch", needed=NEEDED, skip=(), bits_present=(64, 32), cache_extra=(),
+                     icd_entries=nn.NVNATIVE_DRIVER_ENTRIES):
+    """The host's NVIDIA driver closure for one branch in a distribution layout, plus the loader cache that
+    finds it (<top>/ld.so.cache). `skip`: closure names left out (file and cache entry); `icd_entries`: the
+    entry point names libEGL_nvidia carries (570+: all of NVNATIVE_DRIVER_ENTRIES). Returns the cache."""
+    entries = list(cache_extra)
+    for bits in bits_present:
+        d = os.path.join(top, LAYOUTS[layout][0 if bits == 64 else 1])
+        flags = 0x0303 if bits == 64 else 0x0003
+        for stem, deps in needed.items():
+            name = "{}.so.{}".format(stem, v)
+            if name in skip or (stem == "libnvidia-gpucomp" and needed is NEEDED_535):
+                continue
+            extra = b"".join(n.encode() + b"\0" for n in icd_entries) if stem == "libEGL_nvidia" else b""
+            touch(os.path.join(d, name), fake_elf(bits, [x.format(v=v) for x in deps], extra))
+            if stem == "libEGL_nvidia":
+                link = os.path.join(d, "libEGL_nvidia.so.0")
+                if not os.path.lexists(link):
+                    os.symlink(name, link)
+                entries.append((flags, "libEGL_nvidia.so.0", link))
+            else:
+                entries.append((flags, name, os.path.join(d, name)))
+    cache = os.path.join(top, "ld.so.cache")
+    fake_ld_cache(cache, entries)
+    return cache
+
+
 def make_fake_host(top):
-    """A complete staging tree (lib64 + lib, incl. the staged egl dirs) + host libdirs + dev dir +
-    ANGLE guest layout. Returns (root, hostlib, dev); the 32-bit host libdir is <top>/usr-lib32,
-    the ANGLE root <top>/nv-guest."""
+    """A complete staging tree (lib64 + lib, incl. the staged egl dirs) + the host driver (Arch layout, found
+    through <top>/ld.so.cache) + dev dir + ANGLE guest layout. Returns (root, hostlib, dev); the 32-bit host
+    libdir is <top>/usr-lib32, the ANGLE root <top>/nv-guest."""
     root = os.path.join(top, "nvidia-glibc-shim-staging")
     for sub, bits in (("lib64", 64), ("lib", 32)):
         egl = os.path.join(root, "vendor", sub, "egl")
@@ -62,7 +155,7 @@ def make_fake_host(top):
         for shim in shims:
             touch(os.path.join(lib, shim), b"\x7fELF")
         touch(os.path.join(lib, "host-glibc-version"), b"2.42\n")
-        for blob in nn.BLOBS:
+        for blob in CLOSURE:
             touch(os.path.join(lib, blob.format(v=V)))          # placeholders
         os.symlink("libEGL_nvidia.so." + V, os.path.join(lib, "libEGL_nvidia.so.0"))
         touch(os.path.join(lib, "hw", "vulkan.nvidia.so"), b"\x7fELF")
@@ -71,9 +164,8 @@ def make_fake_host(top):
     touch(os.path.join(root, "vendor_extra", "lib64", nn.MINIGBM_CORE), ELF[64])
     touch(os.path.join(root, "vendor_extra", "lib", nn.MINIGBM_CORE), ELF[32])
     hostlib = os.path.join(top, "usr-lib")
-    for d in (hostlib, hostlib + "32"):
-        for blob in nn.BLOBS:
-            touch(os.path.join(d, blob.format(v=V)), b"\x7fELF")
+    make_fake_driver(top)
+    touch(os.path.join(top, "os-release"), b'NAME="Arch Linux"\nID=arch\n')
     dev = os.path.join(top, "dev")
     for node in ("nvidiactl", "nvidia-modeset", "nvidia0"):
         touch(os.path.join(dev, node))
@@ -83,10 +175,10 @@ def make_fake_host(top):
 def expected_entries(root, hostlib, dev):
     lib = os.path.join(root, "vendor_extra", "lib64")
     e = ["lxc.mount.entry = {}/vendor_extra vendor_extra none rbind 0 0".format(root)]
-    for blob in nn.BLOBS:
+    for blob in CLOSURE:
         name = blob.format(v=V)
         e.append("lxc.mount.entry = {}/{} vendor_extra/lib64/{} none rbind,create=file 0 0".format(hostlib, name, name))
-    for blob in nn.BLOBS:
+    for blob in CLOSURE:
         name = blob.format(v=V)
         e.append("lxc.mount.entry = {}32/{} vendor_extra/lib/{} none rbind,create=file 0 0".format(hostlib, name, name))
     e.append("lxc.mount.entry = {}/libgbm_mesa_wrapper.so vendor/lib64/libgbm_mesa_wrapper.so none bind 0 0".format(lib))
@@ -129,8 +221,8 @@ class FakeHostMixin:
         m = self.module
         for attr, value in (("driver_version", lambda *a, **k: V),
                             ("nvidia_render_node", lambda *a, **k: RENDER),
-                            ("HOST_LIBDIR", self.hostlib),
-                            ("HOST_LIBDIR32", self.hostlib + "32"),
+                            ("LD_SO_CACHE", os.path.join(self.top, "ld.so.cache")),
+                            ("OS_RELEASE", os.path.join(self.top, "os-release")),
                             ("ANGLE_GUEST_ROOT", os.path.join(self.top, "nv-guest")),
                             ("DEV_DIR", self.dev),
                             ("image_build_props", lambda *a, **k: dict(STOCK_PROPS))):
@@ -140,6 +232,145 @@ class FakeHostMixin:
 
     def tearDown(self):
         self._tmp.cleanup()
+
+
+class DriverDiscoveryTest(unittest.TestCase):
+    """host_closure(): the driver's libraries found through the loader cache, per distribution and branch."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.top = self._tmp.name
+        self.addCleanup(self._tmp.cleanup)
+        for attr, value in (("LD_SO_CACHE", os.path.join(self.top, "ld.so.cache")),
+                            ("OS_RELEASE", os.path.join(self.top, "os-release"))):
+            p = mock.patch.object(nn, attr, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def closure(self, v, bits):
+        return nn.host_closure(v, bits)
+
+    def assertRefused(self, v, bits, *needles):
+        with self.assertRaises(OSError) as cm:
+            nn.host_closure(v, bits)
+        for needle in needles:
+            self.assertIn(needle, str(cm.exception))
+        return str(cm.exception)
+
+    def test_each_distribution_layout(self):
+        for layout, (d64, d32) in LAYOUTS.items():
+            with self.subTest(layout=layout):
+                shutil.rmtree(self.top)
+                os.makedirs(self.top)
+                make_fake_driver(self.top, layout=layout)
+                for bits, d in ((64, d64), (32, d32)):
+                    got = self.closure(V, bits)
+                    self.assertEqual([n for n, _ in got], [c.format(v=V) for c in CLOSURE])
+                    self.assertEqual({os.path.dirname(p) for _, p in got}, {os.path.join(self.top, d)})
+
+    def test_closure_per_branch(self):
+        # 535: eglcore has no gpucomp (none in the branch); 550 and newer: gpucomp is eglcore's DT_NEEDED
+        for v, needed, n in (("535.309.01", NEEDED_535, 4), ("550.163.01", NEEDED, 5), ("580.178.04", NEEDED, 5),
+                             ("615.78.08", NEEDED, 5)):
+            with self.subTest(v=v):
+                shutil.rmtree(self.top)
+                os.makedirs(self.top)
+                make_fake_driver(self.top, v=v, needed=needed)
+                names = [x for x, _ in self.closure(v, 64)]
+                self.assertEqual(len(names), n, names)
+                self.assertEqual(names[0], "libEGL_nvidia.so." + v)
+                self.assertEqual("libnvidia-gpucomp.so." + v in names, needed is NEEDED)
+                for root in nn.DLOPEN_ROOTS:
+                    self.assertIn(root.format(v=v), names)
+
+    def test_a_library_the_branch_has_is_never_dropped(self):
+        # gpucomp is in eglcore's DT_NEEDED: missing from the install = refused by name, not skipped
+        make_fake_driver(self.top, skip=("libnvidia-gpucomp.so." + V,))
+        self.assertRefused(V, 64, "libnvidia-gpucomp.so." + V, "missing", V)
+        for root in nn.DLOPEN_ROOTS:
+            with self.subTest(root=root):
+                shutil.rmtree(self.top)
+                os.makedirs(self.top)
+                make_fake_driver(self.top, skip=(root.format(v=V),))
+                self.assertRefused(V, 64, root.format(v=V))
+
+    def test_userspace_of_another_version(self):
+        # the kernel module is V, the installed userspace 610.57.04 (driver updated, not rebooted)
+        make_fake_driver(self.top, v="610.57.04")
+        msg = self.assertRefused(V, 64, "libEGL_nvidia.so.610.57.04", "libEGL_nvidia.so." + V, "reboot")
+        self.assertIn("differ", msg)
+
+    def test_mixed_versions_in_the_closure(self):
+        # glsi of the old driver left behind, the new one missing: named with what is installed
+        make_fake_driver(self.top, skip=("libnvidia-glsi.so." + V,),
+                         cache_extra=[(0x0303, "libnvidia-glsi.so.610.57.04", "/usr/lib/libnvidia-glsi.so.610.57.04")])
+        self.assertRefused(V, 64, "libnvidia-glsi.so." + V, "installed: libnvidia-glsi.so.610.57.04")
+
+    def test_32bit_missing_names_the_distribution_package(self):
+        for os_id, needle in (("ID=arch", "lib32-nvidia-utils"), ("ID=ubuntu\nID_LIKE=debian", "libnvidia-gl-"),
+                              ("ID=debian", "nvidia-vulkan-icd:i386"), ("ID=fedora", "xorg-x11-drv-nvidia-libs.i686"),
+                              ("ID=cachyos\nID_LIKE=arch", "lib32-nvidia-utils"),
+                              ("ID=gentoo", "32-bit (i386) libraries")):
+            with self.subTest(os_id=os_id):
+                touch(nn.OS_RELEASE, os_id.encode() + b"\n")
+                make_fake_driver(self.top, bits_present=(64,))
+                self.assertEqual(len(self.closure(V, 64)), 5)
+                self.assertRefused(V, 32, "32-bit", "libEGL_nvidia.so.0", needle)
+
+    def test_cache_entries_of_the_other_abi_are_not_used(self):
+        # only i386 entries: the 64-bit lookup must not pick them
+        make_fake_driver(self.top, bits_present=(32,))
+        self.assertRefused(V, 64, "libEGL_nvidia.so.0", "not installed")
+        self.assertEqual(len(self.closure(V, 32)), 5)
+
+    def test_old_and_new_cache_format(self):
+        # glibc < 2.32 writes the old table first, then the 1.1 table (offsets relative to the new header)
+        import struct
+        make_fake_driver(self.top)
+        new = open(nn.LD_SO_CACHE, "rb").read()
+        old = b"ld.so-1.7.0\0" + struct.pack("<I", 2) + b"\0" * 24
+        old += b"\0" * (((len(old) + 7) & ~7) - len(old))
+        with open(nn.LD_SO_CACHE, "wb") as f:
+            f.write(old + new)
+        self.assertEqual(len(self.closure(V, 64)), 5)
+        with open(nn.LD_SO_CACHE, "wb") as f:
+            f.write(b"not a cache")
+        self.assertRefused(V, 64, nn.LD_SO_CACHE, "ldconfig")
+
+    def test_470_and_390_refused_with_the_reason(self):
+        for v in ("470.256.02", "390.157"):
+            with self.subTest(v=v):
+                make_fake_driver(self.top, v=v)
+                self.assertRefused(v, 64, v, "VK_EXT_external_memory_dma_buf", "VK_EXT_image_drm_format_modifier",
+                                   str(nn.GLIBC_SHIM_MIN_BRANCH))
+
+    def test_host_closure_cli(self):
+        make_fake_driver(self.top)
+        out = []
+        with mock.patch.object(nn, "driver_version", lambda *a, **k: V), \
+                mock.patch("builtins.print", lambda *a, **k: out.append(" ".join(map(str, a)))):
+            nn._main(["--host-closure", "32"])
+        self.assertEqual([l.split()[0] for l in out], [c.format(v=V) for c in CLOSURE])
+        self.assertTrue(all(l.split()[1].startswith(os.path.join(self.top, "usr-lib32")) for l in out))
+
+
+class NvnativeDriverTest(FakeHostMixin, unittest.TestCase):
+    """nvidia_native_gl = on (NVIDIA's GLES through the EGL front) needs NVX + native fence sync in the driver."""
+
+    def test_branches_without_the_entry_points(self):
+        # 535: no NVX, no eglDupNativeFenceFDANDROID; 550: no NVX (strings of the real libEGL_nvidia)
+        for missing in (nn.NVNATIVE_DRIVER_ENTRIES, nn.NVNATIVE_DRIVER_ENTRIES[:2]):
+            with self.subTest(missing=missing):
+                keep = [n for n in nn.NVNATIVE_DRIVER_ENTRIES if n not in missing]
+                for d in ("usr-lib", "usr-lib32"):
+                    os.unlink(os.path.join(self.top, d, "libEGL_nvidia.so.0"))
+                make_fake_driver(self.top, icd_entries=keep)
+                self.assertTrue(nn.lxc_nodes(self.root))                    # ANGLE: fine
+                with self.assertRaises(OSError) as cm:
+                    nn.lxc_nodes(self.root, native_gl=True)
+                for name in missing:
+                    self.assertIn(name, str(cm.exception))
+                self.assertIn("nvidia_native_gl = off", str(cm.exception))
 
 
 class GeneratorTest(FakeHostMixin, unittest.TestCase):
@@ -173,7 +404,7 @@ class GeneratorTest(FakeHostMixin, unittest.TestCase):
         got = nn.lxc_nodes(self.root)
         dsts = [e.split()[3] for e in got]
         self.assertEqual([d for d in dsts if d.startswith(("vendor_extra/lib/", "vendor/lib/"))],
-                         ["vendor_extra/lib/" + b.format(v=V) for b in nn.BLOBS] +
+                         ["vendor_extra/lib/" + b.format(v=V) for b in CLOSURE] +
                          ["vendor/lib/libgbm_mesa_wrapper.so", "vendor/lib/libminigbm_gralloc_gbm_mesa.so",
                           "vendor/lib/egl"] +
                          ["vendor/lib/egl/" + n for n in nn.EGL_ANGLE])
@@ -209,12 +440,13 @@ class GeneratorTest(FakeHostMixin, unittest.TestCase):
         self.assertRaisesNaming(link, "libEGL_nvidia.so." + V)
 
     def test_each_32bit_blob_required(self):
-        for blob in nn.BLOBS:
+        for blob in CLOSURE:
             with self.subTest(blob=blob):
                 path = os.path.join(self.hostlib + "32", blob.format(v=V))
                 os.rename(path, path + ".away")
                 try:
-                    self.assertRaisesNaming(path, V, "lib32-nvidia-utils")
+                    self.assertRaisesNaming(path, V if "EGL" not in blob else "libEGL_nvidia.so.0",
+                                            "lib32-nvidia-utils")
                 finally:
                     os.rename(path + ".away", path)
 
@@ -298,12 +530,12 @@ class GeneratorTest(FakeHostMixin, unittest.TestCase):
         self.assertFalse([e for e in nn.lxc_nodes(self.root) if "libdrm" in e])
 
     def test_each_blob_required(self):
-        for blob in nn.BLOBS:
+        for blob in CLOSURE:
             with self.subTest(blob=blob):
                 path = os.path.join(self.hostlib, blob.format(v=V))
                 os.rename(path, path + ".away")
                 try:
-                    self.assertRaisesNaming(path, V, "nvidia-utils")
+                    self.assertRaisesNaming(path, V, "reinstall your NVIDIA driver")
                 finally:
                     os.rename(path + ".away", path)
 
