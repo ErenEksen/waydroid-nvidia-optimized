@@ -25,9 +25,11 @@ def metadata_path(root, target):
 
 def identity(path):
     path = Path(path).resolve()
+    digest = hashlib.sha256()
     with path.open('rb') as source:
-        digest = hashlib.file_digest(source, 'sha256').hexdigest()
-    return {'path': str(path), 'sha256': digest}
+        for block in iter(lambda: source.read(1 << 20), b''):
+            digest.update(block)
+    return {'path': str(path), 'sha256': digest.hexdigest()}
 
 
 def source_snapshot(root):

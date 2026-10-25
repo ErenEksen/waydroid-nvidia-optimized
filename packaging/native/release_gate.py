@@ -51,8 +51,11 @@ REMEDY_BUNDLE = 'reinstall the package (Arch: pacman -S waydroid-nvidia-bin; oth
 
 
 def sha256(path):
+    digest = hashlib.sha256()
     with open(path, 'rb') as f:
-        return hashlib.file_digest(f, 'sha256').hexdigest()
+        for block in iter(lambda: f.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def now():

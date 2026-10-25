@@ -75,7 +75,11 @@ python3 -I - "$VZIP" "$VCHANNEL" <<'EOF'
 import hashlib, json, os, sys
 z, c = sys.argv[1:3]
 (entry,) = json.load(open(c))['response']
-if os.path.basename(z) != entry['filename'] or hashlib.file_digest(open(z, 'rb'), 'sha256').hexdigest() != entry['id']:
+digest = hashlib.sha256()
+with open(z, 'rb') as f:
+    for block in iter(lambda: f.read(1 << 20), b''):
+        digest.update(block)
+if os.path.basename(z) != entry['filename'] or digest.hexdigest() != entry['id']:
     sys.exit(f'install-native: {z} is not the image {c} names ({entry["filename"]}, sha256 {entry["id"]})')
 print(f'install-native: vendor image {entry["filename"]} matches its channel (datetime {entry["datetime"]})')
 EOF

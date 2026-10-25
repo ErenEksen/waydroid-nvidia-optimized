@@ -213,10 +213,10 @@ index b70dcf1..8a40c5a 100644
      tools.helpers.run.user(args, command, output="background")
 diff --git a/tools/helpers/nvidia_native.py b/tools/helpers/nvidia_native.py
 new file mode 100755
-index 0000000..a3c2087
+index 0000000..0a18cf5
 --- /dev/null
 +++ b/tools/helpers/nvidia_native.py
-@@ -0,0 +1,1855 @@
+@@ -0,0 +1,1863 @@
 +#!/usr/bin/env python3
 +# waydroid-nvidia-prolapse: LXC mount entries and property rules for NVIDIA-native mode.
 +# SPDX-License-Identifier: GPL-3.0-or-later
@@ -1161,9 +1161,17 @@ index 0000000..a3c2087
 +    return isinstance(record, dict) and record.get("enabled") is True
 +
 +
++def _sha256_of(f):
++    """sha256 of an open binary file, read in 1 MiB blocks."""
++    digest = hashlib.sha256()
++    for block in iter(lambda: f.read(1 << 20), b""):
++        digest.update(block)
++    return digest.hexdigest()
++
++
 +def _sha256(path):
 +    with open(path, "rb") as f:
-+        return hashlib.file_digest(f, "sha256").hexdigest()
++        return _sha256_of(f)
 +
 +
 +def check_native_gl(root, manifest):
@@ -1500,7 +1508,7 @@ index 0000000..a3c2087
 +        path = os.path.join(root, relative)
 +        try:
 +            with open(path, "rb") as f:
-+                actual = hashlib.file_digest(f, "sha256").hexdigest()
++                actual = _sha256_of(f)
 +        except PermissionError as e:
 +            # root-only staged file (odm/etc/build.prop is 0600 like vendor.img): not missing, verify as root
 +            raise PermissionError(e.errno, "Source RM artifact not readable as uid {} (verify as root: sudo -n "
@@ -1799,7 +1807,7 @@ index 0000000..a3c2087
 +
 +def _sha256_file(path):
 +    with open(path, "rb") as f:
-+        return hashlib.file_digest(f, "sha256").hexdigest()
++        return _sha256_of(f)
 +
 +
 +def load_vendor_image_record(state=None):

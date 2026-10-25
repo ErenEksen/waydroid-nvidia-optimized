@@ -942,9 +942,17 @@ def native_gl_enabled(manifest):
     return isinstance(record, dict) and record.get("enabled") is True
 
 
+def _sha256_of(f):
+    """sha256 of an open binary file, read in 1 MiB blocks."""
+    digest = hashlib.sha256()
+    for block in iter(lambda: f.read(1 << 20), b""):
+        digest.update(block)
+    return digest.hexdigest()
+
+
 def _sha256(path):
     with open(path, "rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
+        return _sha256_of(f)
 
 
 def check_native_gl(root, manifest):
@@ -1281,7 +1289,7 @@ def _check_source_rm_artifacts(root, manifest):
         path = os.path.join(root, relative)
         try:
             with open(path, "rb") as f:
-                actual = hashlib.file_digest(f, "sha256").hexdigest()
+                actual = _sha256_of(f)
         except PermissionError as e:
             # root-only staged file (odm/etc/build.prop is 0600 like vendor.img): not missing, verify as root
             raise PermissionError(e.errno, "Source RM artifact not readable as uid {} (verify as root: sudo -n "
@@ -1580,7 +1588,7 @@ def describe_image(props):
 
 def _sha256_file(path):
     with open(path, "rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
+        return _sha256_of(f)
 
 
 def load_vendor_image_record(state=None):
