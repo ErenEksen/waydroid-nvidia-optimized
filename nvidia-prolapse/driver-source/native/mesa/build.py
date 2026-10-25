@@ -180,9 +180,9 @@ NVK_PATCHES = (
     # A 3D view of a 2D image (invalid usage NVIDIA's driver accepts) is
     # described as a depth-1 3D image instead of tripping nil's assert.
     "nvk-3d-view-of-2d-image.patch",
-    # Blackwell B: colour-attachment output -> fragment reads drain with
-    # PIXEL_SHADER_BARRIER instead of WAIT_FOR_IDLE, and QMDs carry
-    # CWD_MEMBAR_TYPE = L1_MEMBAR, as NVIDIA's driver does.
+    # Colour-attachment output -> fragment reads drain with
+    # PIXEL_SHADER_BARRIER instead of WAIT_FOR_IDLE, and Blackwell B QMDs
+    # carry CWD_MEMBAR_TYPE = L1_MEMBAR, as NVIDIA's driver does.
     "nvk-pixel-shader-barrier.patch",
     "nak-qmd-cwd-membar.patch",
     # Blackwell B: compute -> compute barriers order through QMD
