@@ -648,16 +648,22 @@ static int hal_open(const struct hw_module_t *module, const char *id, struct hw_
     return 0;
 }
 
+/* close() never unloads the ICD: once loaded it stays for the life of the process (as the gralloc backend keeps it).
+ * NVIDIA's libEGL_nvidia keeps a dlopen() handle of its own (its "libEGL_nvidia.so.0" string; the dlopen and dlclose
+ * wrappers at ELF 0xb80e0 / 0xb8140 in 615.78.08) and closes it from the exit-time destructor it registers with
+ * __cxa_atexit (ELF 0x316d0 registers 0x9f950; 0x9f950 -> 0x33e70 -> 0x33ea0 -> 0xb8140). With our reference gone,
+ * that dlclose drops the last one and bionic unmaps the library while its destructor is still running: the process
+ * dies with SIGSEGV at exit, on the return address after the dlclose call (measured in the guest: HAL open, instance,
+ * close, exit -> SIGSEGV at libEGL_nvidia+0xb8178; without the close: exit 0). Android's libvulkan closes the device
+ * when an updated driver namespace replaces the built-in driver (frameworks/native android13-release
+ * vulkan/libvulkan/driver.cpp Hal::UnloadBuiltinDriver), so the path is reachable from apps too. */
 static int hal_close(struct hw_device_t *dev) {
     (void)dev;
     pthread_mutex_lock(&nvhal_lock);
     if (open_refs && --open_refs == 0) {
         if (instances.n) {
-            NVHAL_ERR("close(): %zu VkInstance(s) still alive; keeping the ICD loaded", instances.n);
+            NVHAL_ERR("close(): %zu VkInstance(s) still alive", instances.n);
         } else {
-            dlclose(icd_dl);
-            icd_dl = NULL;
-            nvhal_icd_gipa = NULL;
             nvhal_map_free(&instances);
             nvhal_map_free(&physdevs);
         }
