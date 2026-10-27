@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# packaging/install.sh — install a waydroid-nvidia release on any systemd distro (Arch users: AUR
-# waydroid-nvidia-bin does the same). Installs exactly what the AUR package installs, then you run
+# packaging/install.sh — install waydroid-nvidia-optimized from this source tree on any systemd distro. Needs no
+# other waydroid or waydroid-nvidia installation. Installs what the AUR waydroid-nvidia-bin package installs, with
+# this fork's optimized Venus components, then you run
 #   sudo waydroid-nvidia-setup [-s GAPPS] (runs waydroid init if needed, starts the container); waydroid session start
 #
-#   curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
-#   sudo packaging/install.sh [--tag vX.Y.Z[-rcN]] [--from DIR] [--check] [--no-deps]
+#   sudo packaging/install.sh [--from DIR] [--check] [--no-deps]      (./install.sh in the checkout does this)
 #   sudo packaging/install.sh --uninstall
 #
-#   --tag TAG     release to install (default: the newest release, prereleases included)
-#   --from DIR    use release assets already in DIR (the four tarballs, the vendor image zip and channel JSON, the
-#                 SELinux module .pp, SHA256SUMS, and the source tarball waydroid-nvidia-<TAG>.tar.gz) instead of
-#                 downloading them; their <asset>.sigstore.json bundles, when present in DIR, are verified with
-#                 cosign
+#   The binaries are pinned in packaging/releases/release.env and packaging/releases/SHA256SUMS: the base release
+#   (prebuilt vendor image, native driver bundle, guest and host stack) and this fork's Venus overlay. The scripts,
+#   services and Waydroid patches come from this tree.
+#   --from DIR    use the pinned files already in DIR instead of downloading them; their <asset>.sigstore.json
+#                 bundles, when present in DIR, are verified with cosign
 #   --check       download and verify only; install nothing
 #   --no-deps     do not install distro packages (each required tool is still checked by name)
 #   --uninstall   put the official vendor image back (waydroid-nvidia-setup --restore-official-vendor), then
 #                 remove every file a previous run installed (list in /var/lib/waydroid-nvidia/installed-files)
 #
-# Verification: every asset must have its own line in the release's SHA256SUMS. Every asset's build provenance is
-# verified too when a verifier is available: cosign (>= 2.4.3, no GitHub login) against the Sigstore bundle the
-# release ships next to each asset (<asset>.sigstore.json), else a logged-in GitHub CLI (gh attestation verify);
-# without either the script says "not checked". The source tarball's commit (git get-tar-commit-id) must equal the commit recorded in the
-# native bundle's BUILD-RECORD.json, so the tools and the binaries come from one CI build.
+# Verification: every file must match its line in packaging/releases/SHA256SUMS (versioned with this tree, never
+# taken from the download). The base assets' build provenance is verified too when a verifier is available: cosign
+# (>= 2.4.3, no GitHub login) against the Sigstore bundle the release ships next to each asset
+# (<asset>.sigstore.json), else a logged-in GitHub CLI (gh attestation verify); without either the script says "not
+# checked". The commit in the native bundle's BUILD-RECORD.json must be the pinned BASE_COMMIT.
 # Files owned by a distro package are never overwritten: the script stops and names the package.
 #
 # Credits: distro-family detection, per-family dependency lists, the one-line-per-asset SHA256SUMS rule
@@ -33,7 +33,7 @@ set -euo pipefail
 export LC_ALL=C
 unset LANGUAGE
 
-GH_REPO=${WAYDROID_NVIDIA_REPO:-Shiro836/waydroid-nvidia}
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 WAYDROID_UPSTREAM=https://github.com/waydroid/waydroid
 WAYDROID_SHA=a33a5c0b31d89d6ce687381104b30aff4dd2d330     # patches/waydroid/BASE
 WAYDROID_TARBALL_SHA256=e7817beac7e26f7d54b2d9f49c847dab8e137c92e403825829e7abbd0b63c411
@@ -44,10 +44,9 @@ PREFIX=/usr/lib/waydroid-nvidia
 die()  { echo "install.sh: $*" >&2; exit 1; }
 info() { echo "==> $*"; }
 
-TAG="" FROM="" CHECK=0 DEPS=1 UNINSTALL=0
+FROM="" CHECK=0 DEPS=1 UNINSTALL=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --tag) TAG=${2:?--tag needs a value}; shift 2 ;;
         --from) FROM=$(cd "${2:?--from needs a directory}" && pwd); shift 2 ;;
         --check) CHECK=1; shift ;;
         --no-deps) DEPS=0; shift ;;
@@ -56,7 +55,7 @@ while [ $# -gt 0 ]; do
         *) die "unknown argument: $1 (--help)" ;;
     esac
 done
-[ "$(id -u)" = 0 ] || die "run as root (sudo)"
+[ "$(id -u)" = 0 ] || [ "$CHECK" = 1 ] || die "run as root (sudo)"
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 hosts are supported"
 
 # ---------------------------------------------------------------- SELinux
@@ -178,50 +177,39 @@ done
 WORK=$(mktemp -d)
 trap 'rm -rf -- "$WORK"' EXIT
 fetch() { curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 --connect-timeout 15 -sS -o "$2" "$1"; }
-if [ -z "$TAG" ]; then
-    [ -z "$FROM" ] || die "--from needs --tag (the asset names carry it)"
-    fetch "https://api.github.com/repos/$GH_REPO/releases?per_page=1" "$WORK/releases.json" ||
-        die "cannot query the releases of $GH_REPO; pass --tag"
-    TAG=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[0]["tag_name"])' "$WORK/releases.json")
-fi
-[[ "$TAG" =~ ^v[0-9A-Za-z.+-]+$ ]] || die "invalid tag '$TAG'"
-info "release $TAG"
+SRC=$(cd "$HERE/.." && pwd)
+[ -f "$SRC/packaging/releases/release.env" ] || die "run this script from a waydroid-nvidia-optimized checkout"
+# shellcheck source=releases/release.env
+source "$SRC/packaging/releases/release.env"
+TAG=$BASE_TAG GH_REPO=$BASE_PROVENANCE_REPO
+info "base release $TAG, overlay $OVERLAY"
 ASSETS=(waydroid-nvidia-host-x86_64-$TAG.tar.zst waydroid-nvidia-guest-android-x86_64-$TAG.tar.zst
         waydroid-nvidia-guest-prebuilts-$TAG.tar.zst waydroid-nvidia-native-x86_64-$TAG.tar.zst
-        waydroid-nvidia-vendor-x86_64-$TAG.zip waydroid-nvidia-vendor-ota-$TAG.json)
-SRC_TAR=waydroid-nvidia-$TAG.tar.gz
-SEPP=waydroid-nvidia-selinux-$TAG.pp     # packaging/selinux built by CI; releases before it have none
-base=https://github.com/$GH_REPO/releases/download/$TAG
-if [ -n "$FROM" ]; then
-    [ -f "$FROM/SHA256SUMS" ] || die "$FROM/SHA256SUMS missing"; cp -- "$FROM/SHA256SUMS" "$WORK/"
-else
-    fetch "$base/SHA256SUMS" "$WORK/SHA256SUMS" || die "cannot download $base/SHA256SUMS"
-fi
-if grep -Eq " [ *]?(\./)?${SEPP//./\\.}\$" "$WORK/SHA256SUMS"; then
-    ASSETS+=("$SEPP")
-elif selinux_on && [ "$CHECK" = 0 ]; then
-    die "release $TAG ships no SELinux policy module ($SEPP), which Waydroid needs on this SELinux host.
-Install a newer release (--tag), or install on a host without SELinux"
-fi
-if [ -n "$FROM" ]; then
-    for f in "${ASSETS[@]}" "$SRC_TAR"; do
+        waydroid-nvidia-vendor-x86_64-$TAG.zip waydroid-nvidia-vendor-ota-$TAG.json waydroid-nvidia-selinux-$TAG.pp)
+SEPP=waydroid-nvidia-selinux-$TAG.pp
+# pinned sha256 of a file name, or death: an unpinned file is never used
+pin() { awk -v f="$1" '$2 == f { print $1; n++ } END { exit n != 1 }' "$SRC/packaging/releases/SHA256SUMS" ||
+        die "packaging/releases/SHA256SUMS has no single line for $1"; }
+get() {   # get NAME URL_BASE...: from --from DIR or the first source with the pinned bytes
+    local f=$1 sha; shift
+    sha=$(pin "$f")
+    if [ -n "$FROM" ]; then
         [ -f "$FROM/$f" ] || die "$FROM/$f missing"; cp -- "$FROM/$f" "$WORK/$f"
-    done
-    for f in "${ASSETS[@]}"; do [ ! -f "$FROM/$f.sigstore.json" ] || cp -- "$FROM/$f.sigstore.json" "$WORK/"; done
-else
-    for f in "${ASSETS[@]}"; do info "downloading $f"; fetch "$base/$f" "$WORK/$f" || die "cannot download $base/$f"; done
-    # Sigstore attestation bundles (releases from v0.2.0-rc2 on): a missing one only means cosign cannot be used
-    for f in "${ASSETS[@]}"; do fetch "$base/$f.sigstore.json" "$WORK/$f.sigstore.json" 2>/dev/null || rm -f "$WORK/$f.sigstore.json"; done
-    fetch "https://github.com/$GH_REPO/archive/refs/tags/$TAG.tar.gz" "$WORK/$SRC_TAR" || die "cannot download the $TAG source"
-fi
-# one line per asset (sha256sum -c --ignore-missing would pass a SHA256SUMS that omits an asset)
-: > "$WORK/verify"
+        echo "$sha  $WORK/$f" | sha256sum -c --quiet - || die "$FROM/$f does not match its pinned sha256"
+    else
+        info "downloading $f"
+        python3 -I "$SRC/tools/fetch.py" --out "$WORK/$f" --sha256 "$sha" "${@/%//$f}" || die "cannot download $f"
+    fi
+}
+for f in "${ASSETS[@]}"; do get "$f" "${BASE_URLS[@]}"; done
+get "$OVERLAY" "${OVERLAY_URLS[@]}"
+info "${#ASSETS[@]} base assets and the overlay match packaging/releases/SHA256SUMS"
+# Sigstore attestation bundles: a missing one only means cosign cannot be used
 for f in "${ASSETS[@]}"; do
-    grep -E "^[0-9a-f]{64} [ *]?(\./)?${f//./\\.}\$" "$WORK/SHA256SUMS" | sed -E 's#([ *])\./#\1#' >> "$WORK/verify" ||
-        die "SHA256SUMS has no line for $f; refusing to install it"
+    if [ -n "$FROM" ]; then [ ! -f "$FROM/$f.sigstore.json" ] || cp -- "$FROM/$f.sigstore.json" "$WORK/"
+    else for u in "${BASE_URLS[@]}"; do fetch "$u/$f.sigstore.json" "$WORK/$f.sigstore.json" 2>/dev/null && break; rm -f "$WORK/$f.sigstore.json"; done
+    fi
 done
-(cd "$WORK" && sha256sum -c --strict --quiet verify) || die "SHA256 verification failed"
-info "SHA256SUMS: ${#ASSETS[@]} assets verified"
 # Build provenance. 1) cosign against the release's Sigstore bundles: no GitHub account needed; the signing
 # certificate must name this repository's build.yml at this tag, issued for GitHub Actions. cosign before 2.4.3
 # cannot read the bundle format GitHub writes (v0.3), so it does not count as a verifier.
@@ -267,22 +255,18 @@ case "$verifier" in
                 die "build provenance of $f does not verify (gh attestation verify)"
         done
         info "build provenance verified (gh attestation verify)" ;;
-    *)  info "build provenance NOT verified ($why): SHA256SUMS only" ;;
+    *)  info "build provenance NOT verified ($why): pinned SHA256SUMS only" ;;
 esac
 RECORD_COMMIT=$(tar --zstd -xOf "$WORK/waydroid-nvidia-native-x86_64-$TAG.tar.zst" ./BUILD-RECORD.json |
                 python3 -I -c 'import json,sys; print(json.load(sys.stdin)["commit"])')
-# git reads only the first header: gzip then dies of SIGPIPE, which pipefail would report
-SRC_COMMIT=$(gzip -dc "$WORK/$SRC_TAR" 2>/dev/null | git get-tar-commit-id || true)
-[[ "$SRC_COMMIT" =~ ^[0-9a-f]{40}$ ]] || die "$SRC_TAR carries no commit id (not a git archive of the release tag)"
-[ "$SRC_COMMIT" = "$RECORD_COMMIT" ] || die "source tarball is commit $SRC_COMMIT, the native bundle was built from $RECORD_COMMIT"
-info "source $SRC_COMMIT = native bundle build commit"
+[ "$RECORD_COMMIT" = "$BASE_COMMIT" ] || die "the native bundle was built from $RECORD_COMMIT, this tree pins $BASE_COMMIT"
+info "native bundle build commit $RECORD_COMMIT = pinned BASE_COMMIT"
+python3 "$SRC/packaging/releases/extract-bundle.py" "$WORK/$OVERLAY" "$WORK/overlay" || die "$OVERLAY is not a complete overlay"
 if [ "$CHECK" = 1 ]; then info "--check: verified, nothing installed"; exit 0; fi
 
 # ---------------------------------------------------------------- stage into a package root
-ROOT=$WORK/root SRC=$WORK/src
-mkdir -p "$ROOT" "$SRC"
-tar -xzf "$WORK/$SRC_TAR" -C "$SRC" --strip-components=1
-[ -f "$SRC/packaging/native/install-native.sh" ] || die "$SRC_TAR is not a waydroid-nvidia source tree"
+ROOT=$WORK/root
+mkdir -p "$ROOT"
 info "patched waydroid ($WAYDROID_SHA + patches/waydroid/0001 + waydroid/0001-lxc-nvidia-native-mounts)"
 fetch "$WAYDROID_UPSTREAM/archive/$WAYDROID_SHA.tar.gz" "$WORK/waydroid.tar.gz" || die "cannot download waydroid $WAYDROID_SHA"
 echo "$WAYDROID_TARBALL_SHA256  $WORK/waydroid.tar.gz" | sha256sum -c --quiet || die "waydroid source tarball checksum mismatch"
@@ -306,6 +290,13 @@ mkdir -p "$WORK/host" "$WORK/guest"
 tar --zstd -xf "$WORK/waydroid-nvidia-host-x86_64-$TAG.tar.zst" -C "$WORK/host"
 tar --zstd -xf "$WORK/waydroid-nvidia-guest-android-x86_64-$TAG.tar.zst" -C "$WORK/guest"
 tar --zstd -xf "$WORK/waydroid-nvidia-guest-prebuilts-$TAG.tar.zst" -C "$WORK/guest"
+info "optimized Venus components from $OVERLAY"
+O=$WORK/overlay
+for f in virgl_test_server virgl_render_server libvirglrenderer.so.1; do cp -- "$O/$f" "$WORK/host/$f"; done
+cp -- "$O/vulkan-x86_64.so" "$WORK/guest/vendor/lib64/hw/vulkan.virtio.so"
+cp -- "$O/vulkan-x86.so" "$WORK/guest/vendor/lib/hw/vulkan.virtio.so"
+cp -- "$O/libgbm_mesa_wrapper.so" "$WORK/guest/vendor/lib64/libgbm_mesa_wrapper.so"
+# perf-v1's hwcomposer predates hwcomposer/patches 0002-0017: the base release's stays
 for f in virgl_test_server virgl_render_server libvirglrenderer.so.1; do
     install -Dm755 "$WORK/host/$f" "$ROOT$PREFIX/$f"
 done

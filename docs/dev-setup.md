@@ -53,8 +53,9 @@ system Waydroid.
 ## Install a local release like a user
 
 Build the release tarballs as the CI release job does, make the vendor zip and channel with
-`packaging/vendor-ota.py VENDOR_IMG BUILD-RECORD.json OUT --tag TAG`, then run
-`sudo packaging/install.sh --tag <tag> --from <dir with the assets>`. Until that tag exists on GitHub, an online
+`packaging/vendor-ota.py VENDOR_IMG BUILD-RECORD.json OUT --tag TAG`, point `packaging/releases/release.env`
+(`BASE_TAG`, `BASE_COMMIT`) and `packaging/releases/SHA256SUMS` at them, then run
+`sudo packaging/install.sh --from <dir with the assets>`. Until that tag exists on GitHub, an online
 `waydroid upgrade` fails on the vendor channel; `waydroid upgrade -o` works.
 
 ## CI

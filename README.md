@@ -1,11 +1,17 @@
-# waydroid-nvidia
+# Waydroid NVIDIA Optimized
 
 GPU-accelerated [Waydroid](https://waydro.id) on NVIDIA cards. Android apps and games render on your NVIDIA GPU
 inside the normal Waydroid container, with no VM. The default mode uses only the NVIDIA kernel module from your
 system; the rest of the driver is built from source.
 
-This `public-test` branch is the next version and replaces `main` once testers confirm it works.
-Please report problems as issues titled `[public-test] ...` ([what to include](docs/troubleshooting.md#reporting-a-problem)).
+This is a self-contained fork of [Shiro836/waydroid-nvidia](https://github.com/Shiro836/waydroid-nvidia): it carries
+all of upstream's `public-test` (v0.2.0-rc12) and installs on its own, with no upstream package needed. On top of
+it:
+
+- **Venus mode:** guest Mesa, host renderer and gralloc with lower-overhead synchronization and submit reuse
+  ([results](docs/performance-epic7-2026-09-19.md), [scope](docs/performance-smoothness.md)), and a private
+  persistent renderer shader cache.
+- **hwcomposer:** per-frame logs only on request, opaque regions sent only when they change (`hwcomposer/patches/0018`).
 
 ## Why switch from Venus
 
@@ -41,17 +47,19 @@ Waydroid kernel support (binder). A brand-new driver release may be refused unti
 
 ## Install
 
-Current release: [v0.2.0-rc12](https://github.com/Shiro836/waydroid-nvidia/releases/tag/v0.2.0-rc12) (prerelease).
-The installer is for systemd distributions. On Arch use it too: the AUR package still has the previous release.
+For systemd distributions, Arch included. Run as your desktop user (it asks for sudo):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
-sudo waydroid-nvidia-setup
+git clone https://github.com/ErenEksen/waydroid-nvidia-optimized.git && cd waydroid-nvidia-optimized
+./install.sh
+sudo waydroid-nvidia-setup                  # add --mode venus for this fork's optimized Venus path
 waydroid session start
 ```
 
-The installer verifies every download and will not overwrite files owned by a distro package, so remove an older
-`waydroid` or `waydroid-nvidia-bin` package first. On SELinux hosts (Fedora) it also builds and loads Waydroid's
+`./install.sh --check` only downloads and verifies. Every download is pinned by SHA-256 in this repository
+(`packaging/releases/`); the prebuilt base (vendor image, native driver bundle) is upstream's v0.2.0-rc12 build.
+The installer will not overwrite files owned by a distro package, so remove an older `waydroid` or
+`waydroid-nvidia-bin` package first. On SELinux hosts (Fedora) it also builds and loads Waydroid's
 SELinux policy module, the one Fedora's own `waydroid-selinux` package ships. `waydroid-nvidia-setup` checks your
 system, tests the driver on your GPU, and only then installs our Android vendor image. Your official vendor image is
 kept as a backup. If a check fails, it says why and leaves everything as it was.
@@ -61,8 +69,8 @@ instead (the default is `VANILLA`, without them). On an existing install `-s` on
 run `sudo waydroid init -f -s GAPPS`, then `sudo waydroid-nvidia-setup` again (apps and data are kept).
 
 Run `sudo waydroid-nvidia-setup` again after every NVIDIA driver or package update; Waydroid refuses to start until
-you do. `sudo waydroid-nvidia-setup --restore-official-vendor` takes you back to stock Waydroid. Uninstalling is
-described in [docs/install-manual.md](docs/install-manual.md#uninstall).
+you do. `sudo waydroid-nvidia-setup --restore-official-vendor` takes you back to stock Waydroid;
+`sudo /usr/lib/waydroid-nvidia/install.sh --uninstall` removes everything ([details](docs/install-manual.md#uninstall)). To update, `git pull` and run `./install.sh` again.
 
 ## Driver modes
 
@@ -91,4 +99,4 @@ default mode.
 [how it works](docs/architecture.md) · [building](docs/building.md) · [developing](docs/dev-setup.md) ·
 [third-party sources](THIRD_PARTY.md)
 
-Our code is MIT licensed. Patches to other projects keep their upstream licenses; see [LICENSE](LICENSE).
+Based on Shiro836/waydroid-nvidia, Mesa, virglrenderer and Waydroid. Our code is MIT licensed. Patches to other projects keep their upstream licenses; see [LICENSE](LICENSE).

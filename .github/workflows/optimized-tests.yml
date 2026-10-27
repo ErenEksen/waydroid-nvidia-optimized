@@ -14,4 +14,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: python3 -m unittest discover -s tests/python -v
-      - run: bash -n install.sh dev/install-bundle
+      - run: bash -n install.sh packaging/install.sh dev/install-bundle

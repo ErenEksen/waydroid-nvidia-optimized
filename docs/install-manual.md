@@ -1,25 +1,28 @@
 # Installer options, installed files, uninstall
 
-`packaging/install.sh` installs the same files as the AUR package, on any systemd distro.
+`./install.sh` (which runs `packaging/install.sh` as root) installs the same files as the upstream AUR package plus
+this fork's optimized Venus components, on any systemd distro. No other waydroid-nvidia installation is needed.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
+git clone https://github.com/ErenEksen/waydroid-nvidia-optimized.git && cd waydroid-nvidia-optimized
+./install.sh
 sudo waydroid-nvidia-setup
 waydroid session start
 ```
 
-Pass options after `bash -s --`, for example `... | sudo bash -s -- --check`.
-
 | Option | Effect |
 |---|---|
-| `--tag vX.Y.Z[-rcN]` | install that release instead of the newest one |
-| `--check` | download and verify only |
-| `--from DIR` | use release assets you already downloaded into `DIR` |
+| `--check` | download and verify only (no root needed) |
+| `--from DIR` | use the pinned files you already downloaded into `DIR` |
 | `--no-deps` | do not install distro packages (the needed tools are still checked) |
 | `--uninstall` | restore the official vendor image, then remove every installed file |
 
-Before installing, the script checks each asset against `SHA256SUMS` and its build provenance (with `cosign`
-2.4.3 or newer, or a logged-in `gh`; without either it says provenance was not checked). It refuses to overwrite
+Every download is pinned in this tree: `packaging/releases/release.env` names the base release (upstream
+waydroid-nvidia `v0.2.0-rc12`: vendor image, native driver bundle, guest and host stack) and the fork's Venus overlay,
+`packaging/releases/SHA256SUMS` their hashes. The base files are fetched from this fork's mirror release, else from
+the upstream release (identical bytes; a file that does not match its pinned hash is never used). The script also
+checks the base assets' build provenance (with `cosign` 2.4.3 or newer, or a logged-in `gh`; without either it says
+provenance was not checked) and that the native bundle was built from the pinned commit. It refuses to overwrite
 files owned by a distro package. If `python3-gbinder` is missing, add the Waydroid repository first:
 `curl -fsSL https://repo.waydro.id | sudo bash`.
 
