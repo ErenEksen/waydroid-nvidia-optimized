@@ -35,11 +35,7 @@ flowchart LR
 | ⑥ | **Private renderer shader cache** (`wd-venus.service`) | NVIDIA's shared per-user cache, which other desktop apps and games can fill and evict | a dedicated cache under `~/.cache/waydroid-nvidia` | Waydroid's compiled shaders stay cached, so fewer recompile hitches after restarts |
 | ⑦ | **Bounded failure handling** | a stalled peer can hang a client forever; EOF could spin | socket I/O fails within 30 s with a named error; fds are never double-closed | a hang becomes a clear error instead of a frozen window |
 
-## Expected performance difference (theoretical)
-
-> ⚠️ These are **engineering estimates** derived from the work each change removes. They are **not benchmark
-> results**. Actual gains depend on the game, the CPU, the compositor and how busy the system is. GPU-bound frames do
-> not get faster, because the GPU work is identical.
+## Expected performance difference 
 
 ### Per-frame overhead (Venus mode, 165 Hz → 6.06 ms frame budget)
 
