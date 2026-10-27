@@ -24,7 +24,10 @@ fetch() {
         local p i=0
         for p in "$REPO/$patches/"*.patch; do
             i=$((i + 1))
-            if (( i <= committed )); then git -C "$dir" am "$p"; else git -C "$dir" apply --intent-to-add "$p"; fi
+            if (( i > committed )); then git -C "$dir" apply --intent-to-add "$p"
+            # hwcomposer's 0001 is a plain diff with a description, not a mail: commit it like hwcomposer/build.sh
+            elif head -1 "$p" | grep -q '^From '; then git -C "$dir" am "$p"
+            else git -C "$dir" apply --index "$p" && git -C "$dir" commit -qm "$(basename "$p")"; fi
         done
     fi
     printf '%s\n' "$sha" > "$dir/.nvwd-ready"
