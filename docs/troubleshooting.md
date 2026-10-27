@@ -1,73 +1,65 @@
 # Troubleshooting
 
-Most field failures so far have been environment/config issues that
-`waydroid-nvidia-setup` now detects or auto-fixes — **re-running
-`sudo waydroid-nvidia-setup` is the first move for almost everything.**
-It refuses loudly (with the fix in the message) on a missing NVIDIA node,
-`nvidia-drm.modeset=0`, or a pre-minigbm vendor image, and it auto-removes
-stale gralloc overrides left in `waydroid.cfg` by old installs.
+The first thing to try for almost any problem is `sudo waydroid-nvidia-setup`. It re-checks the host, re-tests
+the driver on your GPU and prints the reason and the fix when something is wrong.
 
-## Quick health check
+## Is it working?
 
 ```sh
 sudo waydroid shell dumpsys SurfaceFlinger | grep GLES
-# healthy: GLES: ... ANGLE (NVIDIA, Vulkan ... Venus (NVIDIA GeForce ...))
-sudo waydroid shell getprop ro.hardware.gralloc
-# healthy: minigbm_gbm_mesa
-sudo waydroid shell getprop ro.product.cpu.abilist
-# ARM32 translation needs x86 plus armeabi-v7a in this list
 ```
 
-## One-command debug capture
+This should name your NVIDIA GPU. With `--native-gl on` it shows `waydroid-nvidia-prolapse (nvrm)`.
 
-Restarts the stack, lets it run/crash for 12 s, and collects everything a bug
-report needs into one file:
+Two status reports list every check with PASS or FAIL:
 
 ```sh
-sudo -v; ( nvidia-smi -L; systemctl --user restart wd-venus; waydroid session stop; (waydroid session start &); sleep 12; echo "=== wd-venus journal:"; journalctl --user -u wd-venus --since "-1 min" --no-pager; echo "=== full logcat:"; sudo waydroid shell -- logcat -d ) > wdnv-debug.txt 2>&1
+sudo python3 /usr/lib/waydroid-nvidia/native/packaging/native/vendor_image.py status
+python3 /usr/lib/waydroid-nvidia/native/dev/driver-mode status
 ```
 
-Skim it for personal data (a fresh crash-looping boot normally contains
-none), then attach it to an issue.
+## Common problems
 
-## Known failure modes
-
-| Symptom | Cause | Fix |
+| What you see | Why | What to do |
 |---|---|---|
-| `waydroid session start` refuses: "Venus render server socket … not accepting connections" | wd-venus isn't running in *your* user session | `systemctl --user enable --now wd-venus.service` (no sudo — sudo targets root's user manager) |
-| SurfaceFlinger crash-loops with `Unable to generate SkSurface`, guest uses `allocator@2.0` / "Using fallback gralloc implementation" | Stale gralloc override in `waydroid.cfg` (e.g. the old software-rendering workaround `ro.hardware.gralloc=default`), or a pre-minigbm vendor image | Re-run `sudo waydroid-nvidia-setup` — it removes the override / refuses the old image and tells you |
-| Setup refuses: vendor image too old | Migrated install carrying an ancient `vendor.img`; **`waydroid init -f` does NOT re-download the vendor** (it trusts a stored timestamp even if the file is deleted) | `sudo sed -i 's/^vendor_datetime.*/vendor_datetime = 0/' /var/lib/waydroid/waydroid.cfg && sudo rm -f /var/lib/waydroid/images/vendor.img && sudo waydroid init -f` — then re-run setup. If you use gapps, `waydroid init -f -s GAPPS` (plain `-f` silently resets the channel to VANILLA) |
-| Setup refuses: `nvidia-drm.modeset` | modeset=0 disables **all** DMA-BUF support in the driver — nothing in this stack can work | Add `nvidia_drm.modeset=1` to kernel params or modprobe.d, reboot |
-| Cursor invisible / screenshots black, everything else fine | No `/dev/udmabuf` access (CPU-mappable buffer path); wd-venus journal says exactly this | The package's udev rule grants it to the seated user — re-log-in once after install. Headless: `setfacl -m u:USER:rw /dev/udmabuf` |
-| Images in `/etc/waydroid-extra/images` or `/usr/share/waydroid-extra/images` | waydroid silently prefers preinstalled images over downloads | Remove/move them if you want OTA images |
-| ARM32-only app runs on LLVM/Lavapipe while the desktop is accelerated | The 32-bit `vendor/lib/hw/vulkan.virtio.so` is missing or is a renamed `vulkan.lvp.so` | Install a dual-ABI release and re-run `sudo waydroid-nvidia-setup`; it requires ELF32/`EM_386` for every `vendor/lib` payload |
+| Waydroid refuses to start after an NVIDIA driver or package update | the installed vendor image was tested on the old driver | `sudo waydroid-nvidia-setup` |
+| Waydroid is not running after a reboot ("no /dev/nvidia<N> device node found") | 0.2.0-rc1 started the container before the NVIDIA driver finished loading | update, then `sudo waydroid-nvidia-setup` once; until then `sudo systemctl start waydroid-container` |
+| Waydroid fails at boot with "NVIDIA GPU not up at container start" | the NVIDIA driver did not load within 90 s | check `journalctl -b -k \| grep -iE 'NVRM\|nvidia-drm'`, fix the driver, then `sudo systemctl start waydroid-container` |
+| Waydroid refuses to start after `waydroid init` or `waydroid init -f` | init installs the official vendor image, not ours | `sudo waydroid-nvidia-setup` |
+| Setup says "hardware video decode: not available on ..." | the GPU is older than RTX 20 / GTX 16 (Turing), where our decoder starts, or its decoder class is one our decoder has not been verified on yet (the message names the class) | nothing: video plays through Android's software decoders. After a GPU change run `sudo waydroid-nvidia-setup` again |
+| Setup stops with "lxc-info cannot read the Waydroid container" | LXC rejects the container config (LXC's own message follows) | `sudo waydroid upgrade -o`, then the setup again; report it if LXC still refuses |
+| Setup stops at `nvidia-drm.modeset` | without modeset the driver cannot share buffers at all | add `nvidia_drm.modeset=1` to the kernel command line or modprobe.d, reboot |
+| Setup stops at a failing test case | the driver does not work on this GPU or driver version | the message names a log in `/var/lib/waydroid-nvidia/gate-*`; [report it](#reporting-a-problem) and use `sudo waydroid-nvidia-setup --mode venus` meanwhile |
+| The display freezes or stutters on a monitor above about 333 Hz | Android's stock SurfaceFlinger merges vsyncs closer than 3 ms | `sudo waydroid-nvidia-setup --refresh 240` (`--refresh auto` removes the cap) |
+| Black or missing window while the desktop runs on another GPU | the compositor cannot show buffers from the NVIDIA GPU | run the Wayland desktop on the NVIDIA GPU |
+| Waydroid keeps using old images after an update | Waydroid prefers images in `/etc/waydroid-extra/images` or `/usr/share/waydroid-extra/images` | move those images away |
+| An app misbehaves only with `--native-gl on` | bug in our GL driver | report it; `--native-gl off` goes back to ANGLE |
 
-For a translated app, confirm its process maps the 32-bit stack (replace the
-package name if needed):
+## Venus mode
 
-```sh
-sudo waydroid shell -- sh -c '
-  pid=$(pidof com.tencent.qqmusic | cut -d" " -f1)
-  grep -E "/vendor/lib/(egl|hw)/(libGLESv2_angle|vulkan\.virtio)\.so" /proc/$pid/maps'
-```
+| What you see | What to do |
+|---|---|
+| "Venus render server socket ... not accepting connections" | `systemctl --user enable --now wd-venus.service` (without sudo; it is a user service) |
+| Invisible cursor or black screenshots | log out and in once after installing (the udev rule grants `/dev/udmabuf` to the seated user) |
+| Setup says the vendor image is too old | `sudo sed -i 's/^vendor_datetime.*/vendor_datetime = 0/' /var/lib/waydroid/waydroid.cfg`, `sudo rm /var/lib/waydroid/images/vendor.img`, `sudo waydroid init -f` (add `-s GAPPS` if you use GApps), then re-run setup |
 
-While playing audio or animating the UI, `nvidia-smi pmon` should show work in
-the host renderer and logcat should not name `llvmpipe` or `Lavapipe`.
-
-## Is my GPU/driver combination OK?
-
-Requirements: NVIDIA **open kernel modules** (Turing or newer — the open KM
-does not support older GPUs), driver 595.71+, `nvidia-drm.modeset=1`. The
-stack is validated on Turing, Ampere, Ada and Blackwell.
-
-To test any machine in ~30 seconds without installing anything, build the
-probe from this repo and run it — it checks the exact buffer-sharing paths
-the stack depends on and names whatever is missing:
+Venus needs the open kernel module and an RTX 20 or newer GPU. To check a machine without installing anything:
 
 ```sh
-gcc -O1 -o nvimportprobe tests/nvimportprobe.c -ldl
-tests/run-probe.sh    # or ./nvimportprobe directly
+gcc -O1 -o nvimportprobe tests/nvimportprobe.c -ldl && ./nvimportprobe
 ```
 
-Exit 0 = this machine can run the stack. Exit 3 = it can't, and the output
-says why (closed kernel module, modeset off, …).
+Exit code 0 means Venus mode can work here; 3 means it cannot, and the output says why.
+
+## Reporting a problem
+
+Open an issue at https://github.com/Shiro836/waydroid-nvidia/issues with `[public-test]` in the title and include:
+
+- your GPU, `cat /proc/driver/nvidia/version`, open or closed kernel module, distro and desktop;
+- the mode and whether native GL is on, plus the output of both status commands above;
+- for a failed setup, the `/var/lib/waydroid-nvidia/gate-*` directory it printed;
+- the app and what happened, with `sudo waydroid logcat -d` and `sudo journalctl -k | grep -i xid` from around
+  that time;
+- whether the same app works with `--mode venus`.
+
+Skim the logs for personal data before attaching them.

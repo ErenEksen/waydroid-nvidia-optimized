@@ -69,9 +69,9 @@ class DevEnvironmentTests(unittest.TestCase):
     def test_build_still_selects_pinned_tools(self):
         # A fake build recipe records tool resolution without compiling anything.
         repo = self.root / 'fake repo'
-        (repo / 'packaging/ci').mkdir(parents=True)
-        for name in ('pins.env', 'hwc-pins.env'):
-            shutil.copyfile(REPO / 'packaging/ci' / name, repo / 'packaging/ci' / name)
+        for name in ('packaging/ci/pins.env', 'hwcomposer/pins.env'):
+            (repo / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(REPO / name, repo / name)
         recipe = repo / 'build/virglrenderer/build.sh'
         recipe.parent.mkdir(parents=True)
         self.write_script(recipe, 'command -v meson\ncommand -v python3\n')

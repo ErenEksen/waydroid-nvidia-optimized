@@ -1,0 +1,190 @@
+#!/usr/bin/env python3
+"""Unlock Minecraft Bedrock "Vibrant Visuals" on the running GPU (tiers.bin, name->tier format).
+
+Usage: dev/mc-vv [PKG]          default PKG = com.mojang.minecraftpe
+
+Minecraft >= 1.26.52 ships assets/assets/tiers.bin as base64 JSON {"gpu": {name: tier}} (no
+hashes). The baseline's vvpatch (mcpe-vv-module/ in this repo) only understands the older
+{name: {tier, hash}} format and is the tool for that; this script refuses it.
+
+Patch: every tier -> 5, plus the running GL_RENDERER and the same derived key set vvpatch uses
+(parenthesised substrings, driver, vendor, leading-word strip, trailing "(...)" strip and the
+"(%s)" template) at tier 5. The installed base.apk is pulled, repacked with only tiers.bin
+replaced (stored, like the original), zipaligned, and swapped in place keeping owner, mode and
+mtime, so PackageManager does not re-verify it. A game update replaces base.apk: run again.
+"""
+import base64
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import zipfile
+
+TIERS = "assets/assets/tiers.bin"
+LXC = ["sudo", "-n", "lxc-attach", "-P", "/var/lib/waydroid/lxc", "-n", "waydroid", "--clear-env", "--"]
+CACHE = os.path.expanduser("~/.cache/waydroid-nvidia-prolapse/mc/vv")
+SDK = os.path.expanduser("~/Android/Sdk/build-tools")
+
+
+def die(msg):
+    sys.exit(f"mc-vv: {msg}")
+
+
+def guest(cmd, stdin=None, binary=False):
+    # stderr goes through a pipe: lxc-attach chowns a redirected *file* to container root (gotchas.md)
+    p = subprocess.run(LXC + ["/system/bin/sh", "-c", "PATH=/system/bin:/system/xbin; " + cmd],
+                       input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p.returncode != 0:
+        die(f"guest command failed ({p.returncode}): {cmd}\n{p.stderr.decode(errors='replace')}")
+    return p.stdout if binary else p.stdout.decode().strip()
+
+
+def zipalign():
+    for v in sorted(os.listdir(SDK), reverse=True) if os.path.isdir(SDK) else []:
+        z = os.path.join(SDK, v, "zipalign")
+        if os.access(z, os.X_OK):
+            return z
+    die(f"zipalign not found under {SDK} (install Android build-tools)")
+
+
+def derive_keys(r):
+    """Port of vvpatch.c's candidate set, so both formats unlock the same lookups."""
+    keys = []
+
+    def add(s):
+        if s and len(s) < 511 and s not in keys:
+            keys.append(s)
+
+    add(r)
+    for i, c in enumerate(r):  # every parenthesised substring (nested)
+        if c == "(":
+            depth = 0
+            for j in range(i, len(r)):
+                depth += r[j] == "("
+                depth -= r[j] == ")"
+                if depth == 0:
+                    break
+            if r[j] == ")" and j > i + 1:
+                add(r[i + 1:j])
+    if ", " in r:  # driver: tail after the last ", "
+        add(r[r.rindex(", ") + 2:].rstrip(") "))
+    v = r[7:] if r.startswith("ANGLE (") else r  # vendor: first token
+    for k, ch in enumerate(v):
+        if ch in ", (":
+            v = v[:k]
+            break
+    add(v)
+    for _ in range(4):  # transforms until fixpoint
+        base = len(keys)
+        for s in keys[:base]:
+            if " " in s and s[s.index(" ") + 1:]:
+                add(s[s.index(" ") + 1:])
+            if len(s) >= 4 and s.endswith(")"):
+                depth, q = 0, -1
+                for i in range(len(s) - 1, -1, -1):
+                    depth += s[i] == ")"
+                    depth -= s[i] == "("
+                    if s[i] == "(" and depth == 0:
+                        q = i
+                        break
+                if q > 0 and s[q - 1] == " ":
+                    add(s[:q - 1])
+                    add(s[:q] + "(%s)")
+        if len(keys) == base:
+            break
+    return keys
+
+
+def main():
+    pkg = sys.argv[1] if len(sys.argv) > 1 else "com.mojang.minecraftpe"
+    apk = guest(f"pm path {pkg} | sed -n 's/^package://p' | head -1")
+    if not apk.endswith("/base.apk"):
+        die(f"{pkg} is not installed (pm path: {apk!r})")
+    ver = guest(f"dumpsys package {pkg} | grep -m1 versionName= | cut -d= -f2")
+    gles = guest("dumpsys SurfaceFlinger | grep -m1 'GLES:'")
+    # "GLES: <vendor>, <renderer>, OpenGL ES ..." -> renderer (same parse as the module's service.sh)
+    r = gles.split("GLES: ", 1)[-1].split(", ", 1)[-1].split(", OpenGL ES")[0]
+    # ANGLE (ro.hardware.egl = angle) or NVIDIA's own GLES (nvnative); the key set is per renderer string,
+    # existing keys are kept, so patching under each driver once unlocks VV under both
+    if not (r.startswith("ANGLE (") or r.startswith("NVIDIA ")):
+        die(f"unexpected GL_RENDERER {r!r} (SurfaceFlinger neither on ANGLE nor on NVIDIA's GLES?)")
+    print(f"{pkg} {ver}\n  apk      {apk}\n  renderer {r}")
+
+    os.makedirs(CACHE, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="mc-vv.", dir=CACHE)
+    try:
+        src = os.path.join(work, "in.apk")
+        guest(f"am force-stop {pkg}")
+        with open(src, "wb") as f:
+            f.write(guest(f"cat '{apk}'", binary=True))
+        with zipfile.ZipFile(src) as z:
+            info = z.getinfo(TIERS)
+            raw = z.read(TIERS)
+            names = z.namelist()
+        text = base64.b64decode(raw).decode()
+        nl = "\r\n" if "\r\n" in text else "\n"
+        table = json.loads(text)
+        gpu = table.get("gpu")
+        if not isinstance(gpu, dict) or not gpu:
+            die("tiers.bin has no 'gpu' object; format changed again, inspect it before patching")
+        if any(isinstance(v, dict) for v in gpu.values()):
+            die("tiers.bin is the old {tier,hash} format: use the baseline vvpatch "
+                "(mcpe-vv-module/ in this repo, service.sh) instead")
+        if not all(isinstance(v, int) for v in gpu.values()):
+            die("tiers.bin 'gpu' values are not all integers; unknown format")
+
+        keys = derive_keys(r)
+        if all(v == 5 for v in gpu.values()) and all(gpu.get(k) == 5 for k in keys):
+            print(f"  already patched ({len(gpu)} entries, all tier 5, {len(keys)} renderer keys)")
+            return
+        before = len(gpu)
+        new = {k: 5 for k in keys}
+        new.update({k: 5 for k in gpu})
+        table["gpu"] = new
+        out_text = json.dumps(table, indent=4, ensure_ascii=False).replace("\n", nl)
+        enc = base64.b64encode(out_text.encode())
+
+        # replace only tiers.bin; every other entry is copied byte for byte by zip(1)
+        stage = os.path.join(work, "stage")
+        os.makedirs(os.path.join(stage, os.path.dirname(TIERS)))
+        with open(os.path.join(stage, TIERS), "wb") as f:
+            f.write(enc)
+        rep = os.path.join(work, "rep.apk")
+        shutil.copyfile(src, rep)
+        subprocess.run(["zip", "-q", "-d", rep, TIERS], check=True)
+        level = "-0" if info.compress_type == zipfile.ZIP_STORED else "-9"
+        subprocess.run(["zip", "-q", "-X", level, rep, TIERS], cwd=stage, check=True)
+        out = os.path.join(work, "out.apk")
+        za = zipalign()
+        subprocess.run([za, "-f", "-P", "16", "4", rep, out], check=True)
+        subprocess.run([za, "-c", "-P", "16", "4", out], check=True, stdout=subprocess.DEVNULL)
+        with zipfile.ZipFile(out) as z:
+            if sorted(z.namelist()) != sorted(names):
+                die("repacked APK entry list differs from the original")
+            check = json.loads(base64.b64decode(z.read(TIERS)))["gpu"]
+            if not all(check.get(k) == 5 for k in keys) or z.testzip() is not None:
+                die("repacked APK failed read-back")
+        md5 = hashlib.md5(open(out, "rb").read()).hexdigest()
+
+        new_path = apk + ".vvnew"
+        with open(out, "rb") as f:
+            guest(f"cat > '{new_path}'", stdin=f.read())
+        guest(f"set -e; chown $(stat -c %u:%g '{apk}') '{new_path}'; chmod $(stat -c %a '{apk}') '{new_path}'; "
+              f"touch -r '{apk}' '{new_path}'; mv -f '{new_path}' '{apk}'")
+        got = guest(f"md5sum '{apk}' | cut -d' ' -f1")
+        if got != md5:
+            die(f"guest APK md5 {got} != patched {md5}")
+        keep = os.path.join(CACHE, f"{pkg}-{ver}.orig.apk")
+        if not os.path.exists(keep):
+            shutil.move(src, keep)
+        print(f"  patched: {before} entries -> tier 5, +{len(new) - before} renderer keys; "
+              f"installed in place (md5 {md5}); original kept at {keep}")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

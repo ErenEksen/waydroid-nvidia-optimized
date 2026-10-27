@@ -1,0 +1,36 @@
+# Build environment of the nvidia-prolapse native stack (packaging/native/build-native.sh re-runs itself in it).
+#
+# Why a container: the builder gets no system package changes, and a build must not depend on whatever the
+# runner host has installed. Why Arch: the host-side NVK build (mesa_clc) links the system LLVM/Clang and the
+# Arch packages of libclc + SPIRV-LLVM-Translator pinned in nvidia-prolapse/driver-source/native/mesa/
+# host-build-deps.json, so the toolchain has to be that LLVM release.
+#
+# Pinning: the base image by digest, every package from the Arch Linux Archive snapshot ARCH_SNAPSHOT (a fixed
+# repository state, so versions do not move), Rust through rustup at RUST_VERSION. NDK r29 (hwcomposer/provision.sh)
+# and NDK r30 (Vulkan HAL; build-native.sh) are downloaded and sha256-checked into the persistent build/ cache, not
+# baked in. build-native.sh records `pacman -Q`, rustc/cargo and both NDK revisions in BUILD-RECORD.json.
+FROM archlinux@sha256:fe6972d4dc1f660c0c10f4c41b2de8986bab89e7e2955378f8beadb8ebcd7433
+
+ARG ARCH_SNAPSHOT=2026/10/15
+ARG RUST_VERSION=1.95.0
+ENV LANG=C.UTF-8 LC_ALL=C.UTF-8
+RUN echo "Server = https://archive.archlinux.org/repos/${ARCH_SNAPSHOT}/\$repo/os/\$arch" > /etc/pacman.d/mirrorlist \
+    && printf '[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf \
+    && pacman -Syyuu --noconfirm \
+    && pacman -S --noconfirm --needed \
+        base-devel git curl unzip zip zstd xz libarchive e2fsprogs binutils which file rsync \
+        python python-mako python-packaging python-yaml python-pyelftools python-setuptools \
+        meson ninja cmake pkgconf bison flex gperf ccache \
+        clang llvm llvm-libs lld glslang spirv-tools spirv-headers vulkan-headers vulkan-icd-loader \
+        libdrm lib32-libdrm lib32-glibc lib32-gcc-libs expat zlib libelf libxml2 openssl jsoncpp \
+        mesa libglvnd \
+        rustup \
+    && pacman -Scc --noconfirm
+# Rust: one pinned toolchain (Arch's rustup proxies in /usr/bin), read-only for the build user; CARGO_HOME (crate
+# cache) is set per run, inside build/
+ENV RUSTUP_HOME=/opt/rustup
+RUN rustup toolchain install "$RUST_VERSION" --profile minimal --component rustfmt --target x86_64-linux-android --target i686-linux-android \
+    && rustup default "$RUST_VERSION" && chmod -R a+rX /opt/rustup && rustc --version && cargo --version
+# The Vulkan HAL build expects NDK r30 at /opt/android-ndk (nvidia-prolapse/hal, native/mesa/build-hal*.py);
+# build-native.sh mounts the cached, sha256-checked NDK at /cache/ndk-r30.
+RUN ln -s /cache/ndk-r30/android-ndk-r30 /opt/android-ndk

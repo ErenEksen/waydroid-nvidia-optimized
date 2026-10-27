@@ -39,8 +39,54 @@ by those upstreams' licenses:
     patches/mesa/           MIT           (Mesa)
     patches/virglrenderer/  MIT           (virglrenderer)
     patches/minigbm/        BSD-3-Clause  (minigbm)
-    patches/hwcomposer/     Apache-2.0    (android_hardware_waydroid)
     patches/waydroid/       GPL-3.0       (waydroid)
 
 When built and distributed (e.g. as an AUR package), the combined work must
 respect each upstream component's license.
+
+The pinned third-party sources and where each is used are listed in
+THIRD_PARTY.md.
+
+3. Native driver modes (public-test branch)
+-------------------------------------------
+Original work under the MIT license above, same copyright line:
+
+    nvidia-prolapse/      (shim, probe, hal, gralloc, libdrm, media, egl,
+                           driver-source/native)
+    dev/ additions        (driver-mode, source-native, native-deploy,
+                           build-waydroid, deploy-guest, mc-vv, tests)
+    hwcomposer/  angle/  tools/   (scripts and documentation)
+
+Exceptions (inherit the upstream or stated license):
+
+    waydroid/nvidia_native.py, waydroid/test_nvidia_native.py,
+    waydroid/0001-lxc-nvidia-native-mounts.patch
+                                      GPL-3.0-or-later (installed into Waydroid)
+    waydroid/patches/                 Apache-2.0    (AOSP frameworks/native)
+    hwcomposer/patches/               Apache-2.0    (android_hardware_waydroid)
+    hwcomposer/aidl-stubs/, nvidia-prolapse/hal/include/android/,
+    nvidia-prolapse/hal/include/host/, nvidia-prolapse/media/c2/,
+    nvidia-prolapse/media/odm/, nvidia-prolapse/media/vndk/patches/
+                                      Apache-2.0    (AOSP interfaces)
+    nvidia-prolapse/gralloc/include/  Apache-2.0    (minigbm gbm_mesa wrapper ABI)
+    nvidia-prolapse/gralloc/minigbm/  BSD-3-Clause  (minigbm)
+    angle/patches/                    BSD-3-Clause  (ANGLE)
+    nvidia-prolapse/driver-source/native/mesa/*.patch, gallium-nvrm/,
+    nvidia-prolapse/driver-source/native/compiler/ (Mesa adaptation)
+                                      MIT           (Mesa; see compiler/MESA-MIT.txt)
+    nvidia-prolapse/driver-source/native/vendor/nvidia/
+                                      MIT           (NVIDIA open headers, notice in file)
+    nvidia-prolapse/driver-source/native/licenses/
+                                      notices of ash (MIT/Apache-2.0), tinygrad (MIT)
+                                      and NVIDIA's public headers (MIT)
+    nvidia-prolapse/driver-source/native/src/vp9_tables.rs
+                                      values from libvpx (BSD-3-Clause, notice in file)
+    nvidia-prolapse/driver-source/native/src/video/av1/cdf_defaults.rs
+                                      values from Mesa (MIT, AMD; notice in file)
+    nvidia-prolapse/driver-source/native/src/video/av1/testdata/
+                                      Big Buck Bunny (c) 2008 Blender Foundation,
+                                      CC-BY 3.0, re-encoded (see README.md there)
+
+No NVIDIA binary is part of this repository. The native modes load the host's
+installed NVIDIA kernel module (and, in glibc-shim mode, the host's installed
+NVIDIA userspace) at runtime, unmodified.

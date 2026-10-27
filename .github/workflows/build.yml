@@ -12,17 +12,23 @@
 #   gh attestation verify <file> --repo <owner>/waydroid-nvidia
 #
 # Every component is CI-built: mesa/virgl/gralloc/hwcomposer on hosted
-# runners (hwcomposer via build/hwcomposer/provision.sh clean-room), ANGLE
+# runners (hwcomposer via hwcomposer/provision.sh clean-room), ANGLE
 # on tags/dispatch (~2 h), surfaceflinger on the maintainer's self-hosted
 # runner (label: lineage) holding the lineage-20 tree.
 name: build
 
+# CI runs only on release tags and on manual dispatch: no compute on ordinary branch pushes, and never on
+# pull_request (the self-hosted jobs must not run untrusted PR code). Run it by hand on any branch:
+#   gh workflow run build.yml --ref <branch>      (RELEASING.md, docs/dev-setup.md "CI")
 on:
   push:
-    branches: [main, ci-aur]
     tags: ['v*']
-  pull_request:
   workflow_dispatch:
+    inputs:
+      self_hosted:
+        description: also run the self-hosted jobs (ANGLE, SF, native, vendor image); off = hosted jobs only
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -173,49 +179,33 @@ jobs:
           if-no-files-found: error
 
   hwcomposer:
-    name: guest hwcomposer (clean-room, provision.sh)
+    name: guest hwcomposer (clean-room, hwcomposer/provision.sh)
     runs-on: ubuntu-latest
+    # a cold provision downloads the 1.2 GB OTA system image from SourceForge; mirrors range from fast to a trickle
+    # (one tag run waited 42 min on one): below 2 MiB/s over a minute tools/fetch.py gives the mirror up and the
+    # redirect picks another. Tag runs start cold: GitHub restores only caches saved on the run's own ref or the
+    # default branch (RELEASING.md), so the cache below helps dispatched branch runs only.
+    timeout-minutes: 45
+    env:
+      FETCH_MIN_KIBPS: 2048
     steps:
       - uses: actions/checkout@v4
-      - name: Load pins
-        run: |
-          cat packaging/ci/pins.env | grep -v '^#' >> "$GITHUB_ENV"
-          cat packaging/ci/hwc-pins.env | grep -v '^#' >> "$GITHUB_ENV"
-      - name: Cache NDK
-        id: ndk-cache
-        uses: actions/cache@v4
-        with:
-          path: ~/android-ndk
-          key: ndk-${{ env.NDK_VERSION }}
-      - name: Install NDK
-        if: steps.ndk-cache.outputs.cache-hit != 'true'
-        run: |
-          curl -sSfLo ndk.zip "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
-          if [ -n "$NDK_ZIP_SHA256" ]; then echo "$NDK_ZIP_SHA256  ndk.zip" | sha256sum -c; fi
-          unzip -q ndk.zip -d "$HOME"
-          mv "$HOME/android-ndk-${NDK_VERSION}" "$HOME/android-ndk"
       - name: Host deps
         run: |
           sudo apt-get update -q
           sudo apt-get install -yq cmake bison flex libssl-dev libjsoncpp-dev pkg-config \
-            meson ninja-build libexpat1-dev e2fsprogs unzip zstd xz-utils
-      - name: Cache provisioned tree
+            meson ninja-build libexpat1-dev e2fsprogs unzip zstd xz-utils curl
+      - name: Cache provisioned tree (NDK, AOSP headers, hidl-gen, static deps, image link stubs)
         uses: actions/cache@v4
         with:
-          path: ~/wnv
-          key: hwc-wnv-${{ hashFiles('packaging/ci/hwc-pins.env') }}
-      - name: Fetch hwcomposer source at pinned base
+          path: ~/hwc-work
+          key: hwc-work-${{ hashFiles('hwcomposer/pins.env', 'hwcomposer/provision.sh') }}
+      - name: Provision (every input pinned in hwcomposer/pins.env, sha256-checked)
+        run: HWC_WORK="$HOME/hwc-work" ./hwcomposer/provision.sh
+      - name: Build hwcomposer.waydroid.so (android_hardware_waydroid at HWC_SHA + hwcomposer/patches)
         run: |
-          git init -q hwc-src
-          git -C hwc-src fetch -q --depth 1 "$HWC_UPSTREAM" "$HWC_SHA"
-          git -C hwc-src checkout -q FETCH_HEAD
-          git -C hwc-src apply "$GITHUB_WORKSPACE"/patches/hwcomposer/0001-*.patch
-      - name: Provision (clones, hidl-gen, headers, static deps, image libs)
-        run: REPO="$GITHUB_WORKSPACE" NDK="$HOME/android-ndk" ./build/hwcomposer/provision.sh "$HOME/wnv" "$PWD/hwc-src"
-      - name: Build hwcomposer.waydroid.so
-        run: |
-          WNV="$HOME/wnv" ROOTFS="$HOME/wnv/image-rootfs" NDK="$HOME/android-ndk" \
-            ./build/hwcomposer/build.sh "$PWD/hwc-src/hwcomposer" "$PWD/hwc-out"
+          HWC_WORK="$HOME/hwc-work" ./hwcomposer/build.sh "$PWD/hwc-out"
+          cat hwc-out/PATCHES
           mkdir -p stage/vendor/lib64/hw
           cp hwc-out/hwcomposer.waydroid.stripped.so stage/vendor/lib64/hw/hwcomposer.waydroid.so
       - uses: actions/upload-artifact@v4
@@ -226,7 +216,7 @@ jobs:
 
   angle:
     name: guest ANGLE (self-hosted, persistent checkout)
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.self_hosted)
     runs-on: [self-hosted, lineage]
     steps:
       - uses: actions/checkout@v4
@@ -242,6 +232,7 @@ jobs:
             git init -q "$W/angle"
           fi
           git -C "$W/angle" fetch -q "$ANGLE_UPSTREAM" "$ANGLE_SHA"
+          git -C "$W/angle" reset -q --hard
           git -C "$W/angle" checkout -q FETCH_HEAD
           cd "$W/angle"
           [ -f .gclient ] || python3 scripts/bootstrap.py
@@ -251,6 +242,8 @@ jobs:
             echo "target_os = ['android']" >> .gclient
           fi
           gclient sync --no-history -j16
+          # one ANGLE for every driver mode: the pinned commit + angle/patches (ReBAR placement)
+          git -C "$W/angle" apply "$GITHUB_WORKSPACE"/angle/patches/*.patch
       - name: Build the x86 and x86_64 ANGLE libraries
         run: |
           W="$HOME/angle-ci"
@@ -285,17 +278,28 @@ jobs:
 
   surfaceflinger:
     name: guest surfaceflinger (self-hosted, lineage tree)
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.self_hosted)
     runs-on: [self-hosted, lineage]
+    env:
+      # empty = ~/repos/waydroid-nv/lineage-20, the tree vendor-image.yml uses too
+      LINEAGE_TREE: ${{ vars.LINEAGE_TREE }}
+      GIT_AUTHOR_NAME: waydroid-nvidia CI
+      GIT_AUTHOR_EMAIL: ci@waydroid-nvidia
+      GIT_COMMITTER_NAME: waydroid-nvidia CI
+      GIT_COMMITTER_EMAIL: ci@waydroid-nvidia
     steps:
       - uses: actions/checkout@v4
+      - name: Put the tree in the SF state (pinned manifest + Waydroid patches + patches/lineage-20)
+        # the runner host carries the synced tree (PREREQS.md), shared with vendor-image.yml's jobs; each job
+        # stamps its own state and re-establishes only what differs (vendor-image/build-vendor.sh, "Tree state")
+        run: VENDOR_PRODUCT=sf vendor-image/build-vendor.sh checkout
       - name: Build surfaceflinger from the lineage-20 tree
         run: |
-          # the runner host carries the synced tree (PREREQS.md); the script
-          # applies waydroid patches + patches/lineage-20 and builds just SF
           TREE="${LINEAGE_TREE:-$HOME/repos/waydroid-nv/lineage-20}"
-          [ -d "$TREE" ] || { echo "::error::lineage tree missing at $TREE"; exit 1; }
-          (cd "$TREE" && ./build.sh sf)
+          # a fresh shell without -e: AOSP envsetup and its functions are not set -e/-u clean
+          bash -c 'cd "$1" && export TERM=dumb && source build/envsetup.sh >/dev/null &&
+                   lunch lineage_waydroid_x86_64-userdebug >/dev/null && t0=$SECONDS && m surfaceflinger &&
+                   echo "build time: $(( SECONDS - t0 )) s"' _ "$TREE"
           mkdir -p stage/system/bin
           cp "$TREE/out/target/product/waydroid_x86_64/system/bin/surfaceflinger" stage/system/bin/
       - uses: actions/upload-artifact@v4
@@ -303,6 +307,64 @@ jobs:
           name: guest-surfaceflinger
           path: stage/
           if-no-files-found: error
+
+  native:
+    name: native stack (nvidia-prolapse mode; self-hosted, persistent build/)
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.self_hosted)
+    runs-on: [self-hosted, lineage]
+    env:
+      # the build runs in a checkout of its own outside the runner workspace: the other self-hosted jobs share the
+      # workspace and their checkout step `git clean -ffdx`es it, which deleted the git-ignored build/ (NDKs, Mesa
+      # object store and worktrees, crates, Meson/cargo build dirs, ccache) before every native build
+      NATIVE_CI_DIR: ${{ vars.NATIVE_CI_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Persistent checkout at this commit (tracked files reset, build/ kept)
+        run: |
+          W="${NATIVE_CI_DIR:-$HOME/native-ci/waydroid-nvidia}"
+          [ -d "$W/.git" ] || git init -q "$W"
+          # from the workspace clone (shallow): --update-shallow lets the new shallow root in
+          git -C "$W" fetch -q --no-tags --update-shallow "$GITHUB_WORKSPACE" "$GITHUB_SHA"
+          git -C "$W" checkout -q -f --detach "$GITHUB_SHA"
+          test "$(git -C "$W" rev-parse HEAD)" = "$GITHUB_SHA"
+          git -C "$W" status --short | head -20
+          echo "NATIVE_SRC=$W" >> "$GITHUB_ENV"
+      - name: Build NVK + Rust RM + nvrm (x86_64 + x86), HAL, gralloc, libdrm, Codec2 NVDEC, gate programs
+        env:
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || '' }}
+          NATIVE_LOG_DIR: ${{ runner.temp }}/native-logs
+        # runs in packaging/native/Containerfile's pinned build environment (docker, as the runner user, lowered
+        # CPU/IO priority); the runner host needs docker only, no build tools
+        run: |
+          rm -rf "$RUNNER_TEMP/native-release" "$RUNNER_TEMP/native-logs"
+          "$NATIVE_SRC/packaging/native/build-native.sh" "$RUNNER_TEMP/native-release"
+          mkdir -p stage
+          cp -a "$RUNNER_TEMP/native-release/payload" "$RUNNER_TEMP/native-release/gate" "$RUNNER_TEMP/native-release/glibc-shim" stage/
+          cp "$RUNNER_TEMP/native-release/BUILD-RECORD.json" stage/
+      - name: Per-target build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-build-logs
+          path: ${{ runner.temp }}/native-logs/
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-native
+          path: stage/
+          if-no-files-found: error
+
+  # our Waydroid vendor image (vendor-image.yml) built from THIS run's native bundle and ANGLE, for the release
+  vendor-image:
+    name: nvidia-prolapse vendor image
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.self_hosted)
+    needs: [native, angle]
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/vendor-image.yml
+    with:
+      prebuilts-from-this-run: true
 
   waydroid-patch-check:
     name: waydroid patch applies at pinned base
@@ -313,12 +375,17 @@ jobs:
         run: cat packaging/ci/pins.env | grep -v '^#' >> "$GITHUB_ENV"
       - name: Fetch waydroid, apply patch and validate the dual-ABI mounts
         run: |
-          git init -q waydroid
-          git -C waydroid fetch -q --depth 1 "$WAYDROID_UPSTREAM" "$WAYDROID_SHA"
-          git -C waydroid checkout -q FETCH_HEAD
-          git -C waydroid apply "$GITHUB_WORKSPACE"/patches/waydroid/0001-*.patch
-          python3 -m compileall -q waydroid/tools
-          lxc=waydroid/tools/helpers/lxc.py
+          # not ./waydroid: that is this repo's own directory (waydroid/README.md, the generator)
+          up="$RUNNER_TEMP/upstream-waydroid"
+          git init -q "$up"
+          git -C "$up" fetch -q --depth 1 "$WAYDROID_UPSTREAM" "$WAYDROID_SHA"
+          git -C "$up" checkout -q FETCH_HEAD
+          git -C "$up" apply "$GITHUB_WORKSPACE"/patches/waydroid/0001-*.patch
+          # driver modes + nvidia-prolapse generator on top (the package applies both)
+          git -C "$up" apply "$GITHUB_WORKSPACE"/waydroid/0001-lxc-nvidia-native-mounts.patch
+          cmp "$GITHUB_WORKSPACE"/waydroid/nvidia_native.py "$up"/tools/helpers/nvidia_native.py
+          python3 -m compileall -q "$up"/tools
+          lxc="$up"/tools/helpers/lxc.py
           for path in \
             vendor/lib/hw/vulkan.virtio.so \
             vendor/lib/egl/libEGL_angle.so \
@@ -339,16 +406,47 @@ jobs:
           fi
           echo "waydroid patch and dual-ABI mounts validated at $WAYDROID_SHA"
 
+  selinux-policy:
+    name: SELinux policy module (packaging/selinux)
+    # Built on the oldest Fedora still supported: a module from a newer checkpolicy carries a policydb version the
+    # older libsepol refuses ("policydb module version 24 does not match my version range 4-23", Fedora 44 build on
+    # Fedora 43), while a Fedora 43 build links into Fedora 43, 44, 45 and rawhide policy stores.
+    runs-on: ubuntu-latest
+    container: registry.fedoraproject.org/fedora:43
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build waydroid.pp and link it into this release's policy store
+        run: |
+          dnf install -y --setopt=install_weak_deps=False --disablerepo=fedora-cisco-openh264 \
+            selinux-policy-devel selinux-policy-targeted container-selinux make
+          mkdir -p out && cp packaging/selinux/waydroid.te packaging/selinux/waydroid.fc out/
+          make -C out -f /usr/share/selinux/devel/Makefile waydroid.pp
+          # full link, expand and neverallow check against the targeted policy, without a kernel (-n)
+          semodule -n -X 400 -i out/waydroid.pp
+          semodule -lfull | grep -E '^400 waydroid +pp'
+          rpm -q selinux-policy container-selinux checkpolicy > out/BUILD-ENV.txt
+          sha256sum out/waydroid.pp | tee -a out/BUILD-ENV.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: selinux-policy
+          path: |
+            out/waydroid.pp
+            out/BUILD-ENV.txt
+
   release:
     name: release (tarballs + SHA256SUMS + provenance)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [mesa, virglrenderer, gralloc, hwcomposer, angle, surfaceflinger, waydroid-patch-check]
+    needs: [mesa, virglrenderer, gralloc, hwcomposer, angle, surfaceflinger, native, vendor-image, waydroid-patch-check,
+            selinux-policy]
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
       attestations: write
     steps:
+      - uses: actions/checkout@v4      # packaging/vendor-ota.py
+        with:
+          path: src
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
@@ -395,25 +493,94 @@ jobs:
           verify_android_elf prebuilts/system/bin/surfaceflinger ELF64 'Advanced Micro Devices X86-64'
           chmod 0755 prebuilts/system/bin/surfaceflinger
           (cd prebuilts && find vendor system -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.prebuilts)
-          printf 'CI-built guest prebuilts: hwcomposer (provision.sh clean-room),\nANGLE (pinned %s), surfaceflinger (lineage-20 tree, self-hosted runner).\n' "${ANGLE_SHA:-see pins}" > prebuilts/README.txt
+          printf 'CI-built guest prebuilts: hwcomposer (hwcomposer/provision.sh clean-room, hwcomposer/patches),\nANGLE (pinned %s + angle/patches), surfaceflinger (lineage-20 tree, self-hosted runner).\n' "${ANGLE_SHA:-see pins}" > prebuilts/README.txt
           tar --zstd -C prebuilts -cf "out/waydroid-nvidia-guest-prebuilts-${TAG}.tar.zst" .
-          (cd out && sha256sum ./*.tar.zst > SHA256SUMS)
+          # native driver modes: nvidia-prolapse payload in the staged-root layout + build record
+          mkdir -p native && cp -a artifacts/guest-native/. native/
+          for abi in lib64:ELF64:'Advanced Micro Devices X86-64' lib:ELF32:'Intel 80386'; do
+            sub=${abi%%:*}; rest=${abi#*:}; cls=${rest%%:*}; mach=${rest#*:}
+            for lib in hw/vulkan.nvidia.so libvulkan_nouveau.so libnv_bionic_native.so libdrm.so.2 \
+                       libgbm_mesa_wrapper.so libminigbm_gralloc_gbm_mesa.so libgallium_dri_nvrm.so; do
+              verify_android_elf "native/payload/vendor_extra/$sub/$lib" "$cls" "$mach"
+            done
+          done
+          for target in android:ELF64:'Advanced Micro Devices X86-64' android32:ELF32:'Intel 80386'; do
+            t=${target%%:*}; rest=${target#*:}; cls=${rest%%:*}; mach=${rest#*:}
+            for prog in vk-compute vk-graphics vk-interop anb-roundtrip astc-roundtrip etc2-roundtrip gl-triangle gl-dmabuf gl-skia-shaders gl-yuv; do
+              f="native/gate/bin/$t/$prog"; test -f "$f"
+              LC_ALL=C readelf -h "$f" | grep -q "Class:.*$cls"; LC_ALL=C readelf -h "$f" | grep -q "Machine:.*$mach"
+            done
+          done
+          test -f native/gate/bin/android/nvc2-xmlgen && test -f native/gate/ref/ref-flat.rgba
+          # upload-artifact drops the exec bit: restore it on the service and the gate programs
+          chmod 0755 native/gate/bin/*/* native/payload/odm/bin/hw/*
+          python3 - native <<'PY'
+          import hashlib, json, pathlib, sys
+          b = pathlib.Path(sys.argv[1]); r = json.loads((b / 'BUILD-RECORD.json').read_text())
+          have = {str(p.relative_to(b)) for t in ('payload', 'gate') for p in (b / t).rglob('*') if p.is_file()}
+          assert r['format'] == 2 and have == set(r['files']), 'bundle differs from BUILD-RECORD.json'
+          assert all(hashlib.sha256((b / f).read_bytes()).hexdigest() == d for f, d in r['files'].items())
+          shim = r['glibc_shim_files']
+          assert shim and {str(p.relative_to(b)) for p in (b / 'glibc-shim').rglob('*') if p.is_file()} == set(shim), \
+              'glibc-shim tree differs from BUILD-RECORD.json'
+          assert all(hashlib.sha256((b / f).read_bytes()).hexdigest() == d for f, d in shim.items())
+          PY
+          (cd native && find payload gate glibc-shim -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS.native)
+          tar --zstd -C native -cf "out/waydroid-nvidia-native-x86_64-${TAG}.tar.zst" .
+          # nvidia-prolapse vendor image: built from THIS bundle (identity prop checked by vendor-ota.py), shipped as a
+          # Waydroid OTA zip + its one-image channel JSON (the setup points vendor_ota at it)
+          vimg=artifacts/vendor-image-lineage-20-nvidia-prolapse
+          cmp "$vimg/native-BUILD-RECORD.json" native/BUILD-RECORD.json
+          python3 src/packaging/vendor-ota.py "$vimg/vendor.img" native/BUILD-RECORD.json out --tag "$TAG" \
+            --repo "$GITHUB_REPOSITORY"
+          # the waydroid SELinux policy module (install.sh loads it where SELinux is enabled)
+          cp artifacts/selinux-policy/waydroid.pp "out/waydroid-nvidia-selinux-${TAG}.pp"
+          cat artifacts/selinux-policy/BUILD-ENV.txt
+          (cd out && sha256sum ./*.tar.zst ./*.zip ./*.json ./*.pp > SHA256SUMS)
           cat out/SHA256SUMS
       - name: Attest build provenance
+        id: attest
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: out/*.tar.zst
+          subject-path: |
+            out/*.tar.zst
+            out/*.zip
+            out/*.json
+            out/*.pp
+      - name: Attach the attestation as a Sigstore bundle per asset (verifiable without a GitHub login)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          # one attestation covers every asset (its subjects); each asset gets a copy named <asset>.sigstore.json,
+          # which `cosign verify-blob-attestation --bundle` (packaging/install.sh) and `gh attestation verify
+          # --bundle` accept offline from GitHub's API
+          test -s "$BUNDLE"
+          cd out
+          subjects=$(ls ./*.tar.zst ./*.zip ./*.json ./*.pp)
+          for f in $subjects; do
+            cp "$BUNDLE" "$f.sigstore.json"
+            gh attestation verify "$f" --bundle "$f.sigstore.json" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/build.yml" >/dev/null
+          done
+          sha256sum ./*.tar.zst ./*.zip ./*.json ./*.pp > SHA256SUMS
+          cat SHA256SUMS
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${GITHUB_REF_NAME}"
-          # rc tags publish as prereleases; plain version tags as full releases
+          # every tag starts as a DRAFT (invisible to users and install.sh) until it passed an install +
+          # reboot test; publish with `gh release edit <tag> --draft=false`. rc tags are prereleases.
           PRE=""; case "$TAG" in *-rc*) PRE="--prerelease" ;; esac
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" $PRE \
-            --title "waydroid-nvidia $TAG" \
-            --notes "Every asset is CI-built from pinned sources and carries a SLSA
-          provenance attestation (the surfaceflinger build runs on the maintainer's
-          registered self-hosted runner; its provenance says so). Verify with:
-          \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`" \
-            out/*.tar.zst out/SHA256SUMS
+          # human-written notes, one file per tag; a tag without one does not get a release
+          NOTES="src/release-notes/$TAG.md"   # this job checks the repo out into src/
+          [ -s "$NOTES" ] || { echo "::error::$NOTES missing: write the release notes before tagging"; exit 1; }
+          { cat "$NOTES"
+            printf '\n---\nEvery file is built by CI from source and signed. The installer checks this for you; '
+            printf 'to check a file by hand see [Verify a download](https://github.com/%s/blob/%s/docs/install-manual.md#verify-a-download).\n' \
+              "$GITHUB_REPOSITORY" "$TAG"
+          } > notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft $PRE \
+            --title "waydroid-nvidia $TAG" --notes-file notes.md \
+            out/*.tar.zst out/*.zip out/*.json out/*.pp out/SHA256SUMS

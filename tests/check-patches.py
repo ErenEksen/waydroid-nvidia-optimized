@@ -8,7 +8,8 @@ import tarfile
 import tempfile
 
 repo=Path(__file__).resolve().parent.parent
-for component, tree in [('mesa','mesa'), ('virglrenderer','virglrenderer'), ('hwcomposer','hwcomposer-src')]:
+# hwcomposer/patches is checked by hwcomposer/build.sh, which fails on a patch that does not apply
+for component, tree in [('mesa','mesa'), ('virglrenderer','virglrenderer')]:
     source=repo/'.work'/tree
     pin=re.search(r'^base-commit: ([0-9a-f]{40})', (repo/'patches'/component/'BASE').read_text(), re.M).group(1)
     with tempfile.TemporaryDirectory(prefix='nvwd-patch-check-') as directory:

@@ -1,0 +1,63 @@
+From 2f15a2da4c4538dbb6e636689a598874affba98e Mon Sep 17 00:00:00 2001
+From: nvidia-prolapse <nvidia-prolapse@localhost>
+Date: Sun, 18 Oct 2026 00:46:01 +0300
+Subject: [PATCH 6/6] gbm_mesa: YV12 for hardware decoders, carrier sized to the
+ whole YV12 layout
+
+Applies to https://github.com/waydroid/android_external_minigbm e5a7769 ("Fix YVU420
+format"), after 0001..0005.
+
+1. Register YVU420_ANDROID (HAL_PIXEL_FORMAT_YV12) for BO_USE_HW_VIDEO_DECODER, as
+   mediatek.c and virtgpu_virgl.c do: a hardware decoder whose Codec2 client reads its
+   output on the CPU (no Surface) fetches YV12 blocks (the system image's Codec2 client
+   maps YCbCr_420_888 and YV12 blocks with a computed YV12 layout). Without it the
+   allocation fails with "Unsupported combination".
+2. e5a7769 allocates a YVU420_ANDROID buffer as an R8 carrier of half the 4096-byte rows
+   plus height/2 rows. That holds bo->meta.total_size (Y + Cr + Cb) only for widths up to
+   about 1365 pixels: 1920x816 gets 2048 x 982 = 2011136 of its 2350080 bytes. Every CPU
+   importer maps total_size bytes of it, so a software decoder writing a 1920-wide YV12
+   picture (AOSP C2SoftAvcDec fetches YV12 output, ALIGN128 width) faults past the end of
+   the allocation (media.swcodec SIGSEGV SEGV_ACCERR in ih264d_format_convert), and a GPU
+   writer would fault the same way. Keep e5a7769's shape and add rows until the carrier
+   holds total_size.
+---
+ gbm_mesa_driver/gbm_mesa_internals.cpp | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/gbm_mesa_driver/gbm_mesa_internals.cpp b/gbm_mesa_driver/gbm_mesa_internals.cpp
+index 136f9e7..da78a78 100644
+--- a/gbm_mesa_driver/gbm_mesa_internals.cpp
++++ b/gbm_mesa_driver/gbm_mesa_internals.cpp
+@@ -145,6 +145,14 @@ int gbm_mesa_driver_init(struct driver *drv)
+ 	drv_modify_combination(drv, DRM_FORMAT_YVU420_ANDROID, &linear_metadata,
+ 			       BO_USE_CAMERA_READ | BO_USE_CAMERA_WRITE);
+ 
++	/*
++	 * HAL_PIXEL_FORMAT_YV12 as hardware decoder output (written by the GPU copy engine,
++	 * read on the CPU by a Codec2 client without a Surface), as mediatek.c and
++	 * virtgpu_virgl.c register it.
++	 */
++	drv_modify_combination(drv, DRM_FORMAT_YVU420_ANDROID, &linear_metadata,
++			       BO_USE_HW_VIDEO_DECODER);
++
+ 	return drv_modify_linear_combinations(drv);
+ }
+ 
+@@ -468,6 +476,14 @@ int gbm_mesa_bo_create(struct bo *bo, uint32_t width, uint32_t height, uint32_t
+ 		alloc_args.width /= 2;
+ 		alloc_args.height += height / 2;
+ 		alloc_args.width = ALIGN(alloc_args.width, 512);
++		/*
++		 * The carrier must hold the whole YV12 layout: every importer maps (and the
++		 * codec writes) bo->meta.total_size bytes of it. Half the 4096-byte rows plus
++		 * height / 2 more rows covers that only up to ~1365 pixels of width; 1920x816
++		 * would get 2048 x 982 = 2011136 of its 2350080 bytes.
++		 */
++		alloc_args.height = MAX(alloc_args.height,
++					DIV_ROUND_UP(bo->meta.total_size, alloc_args.width));
+ 		bo->meta.num_planes = drv_num_planes_from_format(DRM_FORMAT_R8);
+ 	}
+ 
+-- 
+2.56.0
+

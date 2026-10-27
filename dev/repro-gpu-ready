@@ -1,0 +1,125 @@
+#!/bin/bash
+# repro-gpu-ready — the container-start boot race without a reboot (root; touches neither the host's /dev nor the
+# running container).
+#
+#   sudo dev/repro-gpu-ready OLD_REPO [NEW_REPO]
+#
+# Part 1, device files: in a private mount namespace /dev is a fresh tmpfs holding only the basics and the real
+# /dev/dri, i.e. the boot state of 2026-10-17 15:11:57 (kernel modules up, render node there, no /dev/nvidia* file
+# created by anyone yet). There it runs OLD_REPO's `dev/driver-mode verify-active` (the waydroid-container
+# ExecStartPre; expected FAIL "no /dev/nvidia<N> device node found"), then NEW_REPO's (expected PASS: it creates
+# the files with the real nvidia-modprobe, which writes into the namespace's /dev), then OLD_REPO's again (PASS:
+# the files were the only difference). Reads the live waydroid.cfg/config_nodes/vendor.img, writes nothing there.
+#
+# Part 2, start ordering: the systemd mechanism the new drop-in uses (Wants= + After= on a device unit named by a
+# udev SYSTEMD_ALIAS rule), with a dummy network link standing in for the render node, since a real render node
+# cannot be made to appear late. Transient units and a rule in /run, all removed afterwards:
+#   wnrace-old.service  no ordering (the old drop-in)        -> starts at once, FAILS (device not there yet)
+#   wnrace-new.service  Wants=/After= the alias device unit  -> waits, PASSES once the link appears 3 s later
+#   wnrace-gone.service the same on a device that never comes, its JobRunningTimeoutSec cut to 4 s -> the wait
+#                       ends and the ExecStart reports the failure (the bounded, loud path)
+# Part 3: `udevadm test` of NEW_REPO's 70-waydroid-nvidia-gpu.rules against the real NVIDIA render node (dry run,
+# changes nothing): the node gets TAG systemd and the alias.
+set -uo pipefail
+OLD=${1:?usage: repro-gpu-ready OLD_REPO [NEW_REPO]}
+NEW=${2:-$(cd "$(dirname "$0")/.." && pwd)}
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 2; }
+PY=/usr/bin/python3
+STATE=$(mktemp -d /tmp/repro-gpu-ready.XXXXXX)
+trap 'rm -rf "$STATE"' EXIT
+rc=0
+
+echo "== part 1: device files (private mount namespace, tmpfs /dev)"
+ls -l --time-style=+%T /dev/nvidia* > "$STATE/host-before"
+unshare -m --propagation private bash -s "$OLD" "$NEW" "$PY" "$STATE" <<'NS' || rc=1
+set -u
+OLD=$1 NEW=$2 PY=$3 STATE=$4
+mkdir "$STATE/real"; mount --rbind /dev "$STATE/real"
+mount -t tmpfs -o mode=0755 repro-dev /dev
+for n in null zero full random urandom tty; do touch "/dev/$n"; mount --bind "$STATE/real/$n" "/dev/$n"; done
+mkdir /dev/dri /dev/char /dev/shm /dev/pts; mount --rbind "$STATE/real/dri" /dev/dri
+ln -s /proc/self/fd /dev/fd; ln -s fd/0 /dev/stdin; ln -s fd/1 /dev/stdout; ln -s fd/2 /dev/stderr
+umount -l "$STATE/real"
+echo "-- /dev in the namespace: $(ls /dev | tr '\n' ' ')"
+out=0
+echo "-- OLD verify-active ($OLD)"
+if "$PY" "$OLD/dev/driver-mode" verify-active; then echo "RESULT old: PASS (unexpected)"; out=1
+else echo "RESULT old: FAIL (expected: the boot failure)"; fi
+echo "-- NEW verify-active ($NEW)"
+if "$PY" "$NEW/dev/driver-mode" verify-active; then echo "RESULT new: PASS"
+else echo "RESULT new: FAIL"; out=1; fi
+ls -l /dev/nvidia*
+echo "-- OLD verify-active again, after the new step created the files"
+if "$PY" "$OLD/dev/driver-mode" verify-active >/dev/null; then echo "RESULT old after new: PASS (the files were the only difference)"
+else echo "RESULT old after new: FAIL"; out=1; fi
+exit $out
+NS
+ls -l --time-style=+%T /dev/nvidia* > "$STATE/host-after"
+if cmp -s "$STATE/host-before" "$STATE/host-after"; then echo "host /dev/nvidia* unchanged"; else echo "host /dev/nvidia* CHANGED"; rc=1; fi
+
+echo "== part 2: start ordering on a late device (systemd $(systemctl --version | head -1 | cut -d' ' -f2))"
+RULE=/run/udev/rules.d/70-wnrace-test.rules
+cleanup2() {
+    systemctl stop wnrace-old.service wnrace-new.service wnrace-gone.service 2>/dev/null
+    systemctl reset-failed wnrace-old.service wnrace-new.service wnrace-gone.service 2>/dev/null
+    rm -rf /run/systemd/system/wnrace-*.service '/run/systemd/system/sys-subsystem-wnrace_never-render.device.d' "$RULE"
+    ip link del wnrace0 2>/dev/null
+    udevadm control --reload; systemctl daemon-reload
+}
+cleanup2
+mkdir -p /run/udev/rules.d
+cat > "$RULE" <<'EOF'
+ACTION!="remove", SUBSYSTEM=="net", KERNEL=="wnrace0", TAG+="systemd", ENV{SYSTEMD_ALIAS}+="/sys/subsystem/wnrace/render"
+EOF
+cat > "$STATE/check.sh" <<'CHK'
+if test -e "/sys/class/net/$1"; then echo "$1 present at start"; else echo "$1 MISSING at start"; exit 1; fi
+CHK
+unit() {   # name, extra [Unit] lines, the link its ExecStart needs
+    printf '[Unit]\n%b\n[Service]\nType=oneshot\nExecStart=/bin/sh %s %s\n' "$2" "$STATE/check.sh" "$3" > "/run/systemd/system/$1.service"
+}
+unit wnrace-old '' wnrace0
+unit wnrace-new 'Wants=sys-subsystem-wnrace-render.device\nAfter=sys-subsystem-wnrace-render.device' wnrace0
+unit wnrace-gone 'Wants=sys-subsystem-wnrace_never-render.device\nAfter=sys-subsystem-wnrace_never-render.device' wnrace_never
+mkdir -p /run/systemd/system/sys-subsystem-wnrace_never-render.device.d
+printf '[Unit]\nJobRunningTimeoutSec=4\n' > /run/systemd/system/sys-subsystem-wnrace_never-render.device.d/t.conf
+udevadm control --reload; systemctl daemon-reload
+t0=$(date +%s.%N)
+systemctl start --no-block wnrace-old.service wnrace-new.service wnrace-gone.service
+# waydroid-nvidia-setup's render_unit_up: `systemctl start` of a device unit returns once the device is there
+( systemctl start sys-subsystem-wnrace-render.device; echo "systemctl start sys-subsystem-wnrace-render.device:" \
+  "exit $? at +$(awk -v a="$(date +%s.%N)" -v b="$t0" 'BEGIN{printf "%.2f", a-b}') s" > "$STATE/start-device" ) &
+sleep 3
+ip link add wnrace0 type dummy
+echo "dummy link wnrace0 added at +$(awk -v a="$(date +%s.%N)" -v b="$t0" 'BEGIN{printf "%.2f", a-b}') s"
+for _ in $(seq 60); do
+    systemctl list-jobs --no-legend 2>/dev/null | grep -q wnrace || break
+    sleep 0.25
+done
+wait; cat "$STATE/start-device"
+grep -q 'exit 0 at +3' "$STATE/start-device" || rc=1
+for u in wnrace-old wnrace-new wnrace-gone; do
+    r=$(systemctl show -p Result --value $u.service)
+    echo "RESULT $u: Result=$r ExecMainStatus=$(systemctl show -p ExecMainStatus --value $u.service)"
+    journalctl -q -o short-precise --since "@${t0%.*}" -u $u.service | grep -E 'device|Starting|Finished|Failed|exited' | sed 's/^/   /'
+done
+journalctl -q -o short-precise --since "@${t0%.*}" _PID=1 | grep -E 'wnrace' | grep -iE 'device' | sed 's/^/   pid1: /'
+[ "$(systemctl show -p Result --value wnrace-old.service)" != success ] || rc=1
+[ "$(systemctl show -p Result --value wnrace-new.service)" = success ] || rc=1
+[ "$(systemctl show -p Result --value wnrace-gone.service)" != success ] || rc=1
+cleanup2
+
+echo "== part 3: udevadm test of $NEW's rule on every render node (dry run)"
+mkdir "$STATE/rules"; cp "$NEW/packaging/aur/waydroid-nvidia-bin/waydroid-nvidia-gpu.rules" "$STATE/rules/70-waydroid-nvidia-gpu.rules"
+for sys in /sys/class/drm/renderD*; do
+    vendor=$(cat "$sys/device/vendor") driver=$(basename "$(readlink -f "$sys/device/driver")")
+    alias=$(udevadm test -a change -D "$STATE/rules" "$sys" 2>/dev/null | sed -n 's/^ *SYSTEMD_ALIAS=//p')
+    tags=$(udevadm test -a change -D "$STATE/rules" "$sys" 2>/dev/null | sed -n 's/^ *TAGS=//p')
+    echo "   ${sys##*/} vendor=$vendor driver=$driver: TAGS=${tags:-none} SYSTEMD_ALIAS=${alias:-none}"
+    if [ "$vendor" = 0x10de ] && [ "$driver" = nvidia ]; then
+        [ "$alias" = /sys/subsystem/waydroid_nvidia/render ] || rc=1
+    else
+        [ -z "$alias" ] || rc=1
+    fi
+done
+echo "== overall: $([ $rc = 0 ] && echo PASS || echo FAIL)"
+exit $rc

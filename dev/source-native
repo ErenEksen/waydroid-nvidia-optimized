@@ -1,0 +1,1619 @@
+#!/usr/bin/env python3
+"""Stage/adopt/check/activate the local source NVK + Rust RM stack for Waydroid.
+
+Build the native/mesa targets first. Staging runs the source-native
+regression gate on the exact build/ bytes it copies and stamps the manifest
+(format 2) with that gate and the NVIDIA kernel module it ran on; the LXC
+generator refuses any other module. No NVIDIA userspace enters the tree.
+Activation requires a stopped container and saves the old config.
+
+  stage-release BUNDLE DEST
+                          developer tool: gate a CI-built release BUNDLE into a dev-root (packaged installs get the
+                          vendor image instead: waydroid-nvidia-setup, packaging/native/vendor_image.py): hash-check
+                          the CI-built release BUNDLE
+                          (packaging/native/collect.py layout), run its install-time gate on this GPU and
+                          kernel module (packaging/native/release_gate.py: CI-built programs, bionic runtime
+                          from the user's system.img, logs in /var/lib/waydroid-nvidia), write format 3 to DEST
+  stage DEST [--no-media REASON] [--no-native-gl REASON] [--nvrm-suffix SFX]
+                          gate build/ (Vulkan regression gate + media gate + native GL gate), copy
+                          it to the new DEST, write format 3. Media (Codec2 NVDEC decoder) is staged
+                          unless explicitly opted out with a reason recorded in the manifest. Our
+                          own GLES driver nvrm is staged (debug-stripped) when build/nvrm-android{,32}<SFX>
+                          exist and pass the bionic smoke test on the staged bytes with NVK's
+                          libnv_bionic_native.so; not built -> recorded as not staged
+  adopt ROOT [--dry-run]  gate an existing format-1 ROOT whose artifacts equal build/
+  check [ROOT] [--active] generator + (with --active) live-config checks
+  status [ROOT]           health report, PASS/FAIL/UNKNOWN per line (normal user)
+  activate ROOT           point /var/lib/waydroid/nvidia-prolapse at ROOT, select nvidia-prolapse with
+                          nvidia_prolapse_install = dev-root in waydroid.cfg, systemd drop-in + pacman hook (root)
+  install-hook            (re)write the pacman hook override only (root)
+  hook                    pacman PostTransaction entry point; never fails
+  restore BACKUP          return to a configuration saved by activate (root)
+  invalidate-caches DIR   move obsolete HWUI/EGL shader caches into DIR (root)
+
+check/status default to the nvidia-prolapse root link (/var/lib/waydroid/nvidia-prolapse).
+
+A checkout runs the patched Waydroid it builds (build/waydroid, dev/build-waydroid). A packaged install
+(the file PACKAGED next to dev/, written by packaging/native/install-native.sh) runs the system Waydroid
+the package installed with the same patches, and refuses one whose generator differs from its own.
+"""
+import argparse
+import configparser
+import datetime
+import glob
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / 'tools'))
+import native_rust_profile as profiles
+
+CFG = Path('/var/lib/waydroid/waydroid.cfg')
+NODES = Path('/var/lib/waydroid/lxc/waydroid/config_nodes')
+OVERRIDE = Path('/etc/systemd/system/waydroid-container.service.d/source-native.conf')
+# alpm-hooks(5) "OVERRIDING HOOKS": a file of the same name in a higher-priority hook directory
+# (pacman.conf(5) HookDir, default /etc/pacman.d/hooks) replaces the packaged one.
+HOOK = Path('/etc/pacman.d/hooks/90-waydroid-nvidia-prolapse.hook')
+PACKAGED_HOOK = Path('/usr/share/libalpm/hooks/90-waydroid-nvidia-prolapse.hook')
+LEGACY_SETUP = '/usr/bin/waydroid-nvidia-prolapse-setup'
+PYTHON = '/usr/bin/python3'
+RUNNER = REPO / 'tools/native-vulkan-regression.py'
+RUNNER_ARGS = ('--run', '--target', 'all', '--suite', 'all')
+LXC_PATH = ('-P', '/var/lib/waydroid/lxc', '-n', 'waydroid')
+UNIT = 'waydroid-container.service'
+# == nvidia_native.RENDER_DEVICE_UNIT: the NVIDIA render node (SYSTEMD_ALIAS in 70-waydroid-nvidia-gpu.rules)
+RENDER_UNIT = 'sys-subsystem-waydroid_nvidia-render.device'
+BACKUPS = '/var/lib/waydroid/before-source-native-*'
+FORBIDDEN_MAPS = ('libnvidia-', 'libEGL_nvidia', 'libnvglibc')
+REQUIRED_MAPS = ('libvulkan_nouveau.so', 'libnv_bionic_native.so')
+NVRM_REQUIRED_MAPS = ('libgallium_dri_nvrm.so', 'libnv_bionic_native.so')
+MANIFEST = 'source-rm.json'   # == nvidia_native.SOURCE_RM_MANIFEST; the hook works without that module
+MEDIA = REPO / 'nvidia-prolapse/media'
+MEDIA_OUT = REPO / 'build/media-c2/out'
+MEDIA_SERVICE_BIN = MEDIA_OUT / 'bin/android.hardware.media.c2@1.2-service-nvprolapse'
+IMAGES = Path('/var/lib/waydroid/images')
+VNDK_APEX = '/system/apex/com.android.vndk.current/lib64'
+# LLNDK libraries the vendor namespace reaches in /system/lib64 (same list as media/vndk/build.sh verify)
+LLNDK = ('libc.so', 'libm.so', 'libdl.so', 'liblog.so', 'libnativewindow.so', 'libsync.so', 'libvndksupport.so',
+         'libandroid_net.so', 'libbinder_ndk.so', 'libmediandk.so', 'libvulkan.so', 'libEGL.so', 'libGLESv1_CM.so',
+         'libGLESv2.so', 'libGLESv3.so', 'libselinux.so')
+
+
+def _load(path, name):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+try:
+    native = _load(REPO / 'waydroid/nvidia_native.py', 'nvidia_native')
+except Exception as error:   # surfaced by main(); `hook` must still not fail a pacman transaction
+    native, NATIVE_ERROR = None, error
+
+
+def run(*cmd):
+    subprocess.run([str(x) for x in cmd], check=True)
+
+
+PACKAGED = (REPO / 'PACKAGED').is_file()
+SYSTEM_WAYDROID = Path('/usr/lib/waydroid')
+
+
+def waydroid_argv():
+    """How this installation runs Waydroid: the checkout's build/waydroid, or (packaged) the system Waydroid,
+    which must carry exactly our generator (tools/helpers/nvidia_native.py from the same release)."""
+    if not PACKAGED:
+        return [sys.executable, str(REPO / 'build/waydroid/waydroid.py')]
+    helper = SYSTEM_WAYDROID / 'tools/helpers/nvidia_native.py'
+    if not helper.is_file() or sha256(helper) != sha256(REPO / 'waydroid/nvidia_native.py'):
+        raise RuntimeError(f'{helper} is missing or differs from {REPO}/waydroid/nvidia_native.py: the installed '
+                           'waydroid is not the one this package patched. Reinstall waydroid-nvidia (AUR '
+                           'waydroid-nvidia-bin, or packaging/install.sh) so both come from one release')
+    return [PYTHON, str(SYSTEM_WAYDROID / 'waydroid.py')]
+
+
+def now():
+    return datetime.datetime.now().astimezone().isoformat(timespec='seconds')
+
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with open(path, 'rb') as f:
+        for block in iter(lambda: f.read(1 << 20), b''):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def write_atomic(path, text):
+    """tmp + fsync + rename in the target directory; readers see the old or the new file."""
+    path = Path(path)
+    tmp = path.with_name(f'.{path.name}.tmp-{os.getpid()}')
+    with open(tmp, 'w') as f:
+        f.write(text)
+        f.flush()
+        os.fsync(f.fileno())
+    tmp.chmod(0o644)
+    os.replace(tmp, path)
+    fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+# A checkpoint (before-source-native-*) records where the nvidia-prolapse root link pointed before the change.
+LINK_TARGET = 'nvidia-prolapse.target'
+LEGACY_LINK_TARGET = 'rust-driver.target'   # the same record in checkpoints taken before the mode rename
+
+
+def _link_record(backup):
+    """The checkpoint's link record file (current or pre-rename name), or the current name if none exists."""
+    backup = Path(backup)
+    legacy = backup / LEGACY_LINK_TARGET
+    return legacy if not (backup / LINK_TARGET).is_file() and legacy.is_file() else backup / LINK_TARGET
+
+
+def configured_root(cfg_path=CFG):
+    """The nvidia-prolapse root (real path) a cfg runs: for the live cfg the resolved link
+    nvidia_native.ROOT_LINKS['nvidia-prolapse']; for a checkpoint's cfg its recorded link target, or the
+    path key it was saved with (checkpoints from before the link convention; read-only use)."""
+    cfg = configparser.ConfigParser()
+    if not cfg.read(cfg_path):
+        raise RuntimeError(f'Cannot read {cfg_path}')
+    root = _cfg_rust_root(cfg)
+    if root:
+        return Path(root).resolve()
+    saved = _link_record(Path(cfg_path).parent)
+    if Path(cfg_path) != CFG and saved.is_file():
+        return Path(saved.read_text().strip()).resolve()
+    try:
+        return Path(native.root_link('nvidia-prolapse')[1])
+    except OSError as error:
+        raise RuntimeError(f'{error}; or give the root explicitly')
+
+
+def _cfg_rust_root(cfg):
+    """The retired path key of a parsed cfg (nvidia_rust_driver_root, or nvidia_native_root of configurations
+    from before nvidia_driver_mode): read-only use for old checkpoints (listing, hook decisions)."""
+    if not cfg.has_section('waydroid'):
+        return None
+    return cfg['waydroid'].get('nvidia_rust_driver_root') or cfg['waydroid'].get('nvidia_native_root')
+
+
+def _mode_root(mode):
+    """Resolved root link of a native mode, or None when it is unusable."""
+    try:
+        return Path(native.root_link(mode)[1])
+    except OSError:
+        return None
+
+
+def is_source_root(root):
+    return (Path(root) / MANIFEST).exists()
+
+
+def container_state():
+    proc = subprocess.run(['lxc-info', *LXC_PATH, '-sH'], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f'lxc-info cannot read the Waydroid container ({proc.stderr.strip() or "no message"}). '
+                           'Remedy: sudo waydroid upgrade -o (regenerates /var/lib/waydroid/lxc/waydroid/config for '
+                           'this LXC), then re-run; if LXC still rejects the config, report this message')
+    return proc.stdout.strip()
+
+
+# ---------------------------------------------------------------- rendering (pure)
+
+def render_override(root):
+    """The container unit drop-in. One for every driver mode: `dev/driver-mode verify-active` validates
+    whichever mode waydroid.cfg selects (for nvidia-prolapse it runs `check ROOT --active` on the configured
+    root), so the drop-in no longer pins a root. `root` is kept for the callers' messages.
+
+    [Unit]: the container starts after the NVIDIA render node's device unit (RENDER_UNIT, named by the package's
+    70-waydroid-nvidia-gpu.rules), so at boot it waits for the GPU instead of racing the NVIDIA modules' init.
+    Wants=, not Requires=: if the node never appears, systemd gives up after DefaultDeviceTimeoutSec and the
+    ExecStartPre still runs, failing with the reason and the remedy (nvidia_native.ensure_gpu_ready)."""
+    text = ('[Unit]\n'
+            f'Wants={RENDER_UNIT}\n'
+            f'After={RENDER_UNIT}\n'
+            '\n'
+            '[Service]\nExecStartPre=\n'
+            f'ExecStartPre={PYTHON} {REPO}/dev/driver-mode verify-active\n')
+    if PACKAGED:      # the unit's own ExecStart runs the packaged (patched) system Waydroid
+        return text
+    return text + ('ExecStart=\n'
+                   f'ExecStart={PYTHON} {REPO}/build/waydroid/waydroid.py container start\n')
+
+
+def render_hook(module_package):
+    """The packaged hook's triggers, plus the package that provides the loaded kernel module.
+
+    Exec runs `source-native hook`, which leaves a source deployment alone (the packaged
+    setup would restage and repoint waydroid.cfg at the legacy root) and execs the legacy
+    setup unchanged otherwise.
+    """
+    module_trigger = ''
+    if module_package != 'nvidia-utils':
+        module_trigger = ('[Trigger]\nOperation = Install\nOperation = Upgrade\nOperation = Remove\n'
+                          f'Type = Package\nTarget = {module_package}\n\n')
+    return (f'# Written by {REPO}/dev/source-native (activate / install-hook). It overrides\n'
+            f'# {PACKAGED_HOOK} (same file name, alpm-hooks(5)).\n'
+            '# For a source NVK + Rust RM root it does NOT run the legacy re-provisioning (that would\n'
+            '# replace the deployment); it warns about the kernel-module pin instead. For any other\n'
+            f'# root it runs {LEGACY_SETUP} --hook unchanged.\n'
+            '# The last trigger is the package owning the NVIDIA kernel module, found at install time.\n'
+            '[Trigger]\nOperation = Install\nOperation = Upgrade\nType = Package\nTarget = nvidia-utils\n\n'
+            '[Trigger]\nOperation = Upgrade\nType = Package\nTarget = waydroid-nvidia-prolapse\n\n'
+            f'{module_trigger}'
+            '[Action]\nDescription = Checking Waydroid NVIDIA-native mode (source stack aware)...\n'
+            'When = PostTransaction\n'
+            f'Exec = {PYTHON} {REPO}/dev/source-native hook\n')
+
+
+def hook_mode(cfg_path=CFG):
+    """('source', root) | ('legacy', None) | ('unknown', reason). Only 'legacy' may run the
+    packaged setup: when we cannot tell, re-provisioning could destroy a source deployment."""
+    if not Path(cfg_path).exists():
+        return 'legacy', None
+    cfg = configparser.ConfigParser()
+    try:
+        cfg.read(cfg_path)
+    except (OSError, configparser.Error) as error:
+        return 'unknown', f'cannot parse {cfg_path}: {error}'
+    mode = cfg['waydroid'].get('nvidia_driver_mode') if cfg.has_section('waydroid') else None
+    if mode == 'nvidia-prolapse' and cfg['waydroid'].get('nvidia_prolapse_install') == 'vendor-image':
+        return 'vendor-image', None
+    if mode == 'nvidia-prolapse':
+        root = _mode_root('nvidia-prolapse')
+        return ('source', root) if root and is_source_root(root) else (
+            'unknown', f'nvidia-prolapse mode, but {native.ROOT_LINKS["nvidia-prolapse"]} is not a usable source root link')
+    if mode == 'venus':
+        return 'venus', None
+    if mode == 'glibc-shim':
+        return 'glibc-shim', _mode_root('glibc-shim') or Path(native.ROOT_LINKS['glibc-shim'] + ' (unusable link)')
+    if mode is not None:
+        return 'unknown', f'{cfg_path} has unknown nvidia_driver_mode {mode!r}'
+    root = cfg['waydroid'].get('nvidia_native_root') if cfg.has_section('waydroid') else None
+    if mode is None and root and is_source_root(root):   # configuration from before nvidia_driver_mode
+        return 'source', Path(root)
+    return 'legacy', None
+
+
+def source_mismatches(manifest):
+    """Artifacts whose recorded source file no longer has the deployed bytes (adopt)."""
+    sources = manifest.get('sources')
+    if not isinstance(sources, dict):
+        return ['manifest has no sources map']
+    problems = []
+    for relative, digest in sorted(manifest['artifacts'].items()):
+        source = sources.get(relative)
+        if not source:
+            problems.append(f'{relative}: no source recorded')
+            continue
+        try:
+            actual = sha256(source)
+        except OSError as error:
+            problems.append(f'{relative}: {source}: {error.strerror}')
+            continue
+        if actual != digest:
+            problems.append(f'{relative}: {source} is {actual[:12]}, deployed {digest[:12]}')
+    return problems
+
+
+# ---------------------------------------------------------------- host facts
+
+def module_package():
+    """Package that provides the NVIDIA kernel module for the running kernel.
+
+    A prebuilt module is owned directly; a DKMS build (updates/dkms/, owned by nobody) belongs
+    to the package that installed its DKMS source tree (/var/lib/dkms/nvidia/<v>/source).
+    """
+    module = subprocess.check_output(['modinfo', '-n', 'nvidia'], text=True).strip()
+    owner = subprocess.run(['pacman', '-Qqo', module], capture_output=True, text=True)
+    if owner.returncode == 0:
+        return owner.stdout.strip()
+    if '/updates/dkms/' in module:
+        version = subprocess.check_output(['modinfo', '-F', 'version', 'nvidia'], text=True).strip()
+        source = os.path.realpath(f'/var/lib/dkms/nvidia/{version}/source')
+        owner = subprocess.run(['pacman', '-Qqo', source], capture_output=True, text=True)
+        if owner.returncode == 0:
+            return owner.stdout.strip()
+        raise RuntimeError(f'No package owns the DKMS source {source} of {module}: {owner.stderr.strip()}')
+    raise RuntimeError(f'No package owns the NVIDIA kernel module {module}: {owner.stderr.strip()}')
+
+
+def installed_module_version():
+    return subprocess.check_output(['modinfo', '-F', 'version', 'nvidia'], text=True,
+                                   stderr=subprocess.STDOUT).strip()
+
+
+def process_start(pid):
+    """Start time of a host process, seconds since the epoch (/proc/<pid>/stat field 22)."""
+    stat = Path(f'/proc/{pid}/stat').read_text()
+    ticks = int(stat.rsplit(')', 1)[1].split()[19])
+    btime = next(int(l.split()[1]) for l in Path('/proc/stat').read_text().splitlines() if l.startswith('btime '))
+    return btime + ticks / os.sysconf('SC_CLK_TCK')
+
+
+# ---------------------------------------------------------------- regression gate
+
+def stage_sources(rust_profile='dev'):
+    sources = {}
+    for sub, target, drm in (
+        ('lib64', 'android', 'x86_64'),
+        ('lib', 'android32', 'x86'),
+    ):
+        base = REPO / 'build/source-native-integration' / target
+        vendor = f'vendor_extra/{sub}'
+        sources[f'{vendor}/hw/vulkan.nvidia.so'] = base / 'vulkan.nvidia.so'
+        sources[f'{vendor}/libvulkan_nouveau.so'] = REPO / f'build/nvk-{target}/src/nouveau/vulkan/libvulkan_nouveau.so'
+        sources[f'{vendor}/libnv_bionic_native.so'] = profiles.rust_library(REPO, target, rust_profile)
+        sources[f'{vendor}/libgbm_mesa_wrapper.so'] = base / 'libgbm_mesa_wrapper.so'
+        sources[f'{vendor}/libdrm.so.2'] = REPO / f'build/libdrm/build-android33-{drm}/libdrm.so'
+        # minigbm core built from pinned source + nvidia-prolapse/gralloc/minigbm/000*.patch (0004: NV12/P010 layout)
+        sources[f'{vendor}/libminigbm_gralloc_gbm_mesa.so'] = REPO / 'nvidia-prolapse/gralloc/out' / target / 'libminigbm_gralloc_gbm_mesa.so'
+        for name in native.EGL_ANGLE:
+            rel = f'vendor/{sub}/egl/{name}'
+            sources[rel] = Path('/var/lib/waydroid/nv/guest') / rel
+    return sources
+
+
+_GATE = []
+
+
+def _release_gate():
+    if not _GATE:
+        _GATE.append(_load(REPO / 'packaging/native/release_gate.py', 'release_gate'))
+    return _GATE[0]
+
+
+def _needed(path):
+    """DT_NEEDED of an ELF object, parsed from the file (release_gate.needed), not from readelf's localised text."""
+    return _release_gate().needed(path)
+
+
+def _proprietary_needed(path):
+    """DT_NEEDED names of `path` that are not bionic: glibc, the glibc shim, NVIDIA's libraries."""
+    return [n for n in _needed(path) if any(m in n for m in ('libc.so.6', 'libnvglibc', 'libEGL_nvidia', 'libnvidia-'))]
+
+
+def gate_coverage(sources, rust_profile='dev'):
+    """(exercised, not_exercised) manifest paths: an artifact counts as exercised when the
+    runner passes it on a command line or it is a DT_NEEDED of one, resolved through that
+    case's LD_LIBRARY_PATH. dlopen()ed libraries are not followed (a lower bound)."""
+    runner = _load(RUNNER, 'native_vulkan_regression')
+    loaded = set()
+    for target in ('host', 'android', 'android32'):
+        profiles.verify_metadata(REPO, target, rust_profile)
+        if target != 'host':
+            sub = 'lib64' if target == 'android' else 'lib'
+            selected = profiles.rust_library(REPO, target, rust_profile)
+            recorded = sources.get(f'vendor_extra/{sub}/libnv_bionic_native.so')
+            if recorded is None or Path(recorded).resolve() != selected.resolve():
+                raise RuntimeError(f'Stage/gate Rust source differs from selected {rust_profile}: {recorded}; expected {selected}')
+        for _, command in runner.cases(target, 'all'):
+            env, argv = runner.launch(target, command, rust_profile)
+            dirs = env['LD_LIBRARY_PATH'].split(':')
+            todo = [a for a in argv if a.startswith('/')]
+            while todo:
+                path = os.path.realpath(todo.pop())
+                if path in loaded or native._elf_class(path) is None:
+                    continue
+                loaded.add(path)
+                for name in _needed(path):
+                    for directory in dirs:
+                        candidate = os.path.join(directory, name)
+                        if os.path.isfile(candidate):
+                            todo.append(candidate)
+                            break
+    exercised = sorted(r for r, s in sources.items() if os.path.realpath(s) in loaded)
+    return exercised, sorted(set(sources) - set(exercised))
+
+
+def _runner_user():
+    """Run the GPU gate as the owner of build/, never as root: the i686 cases enter a user
+    namespace (unshare --user) designed for an unprivileged caller, and the logs stay owned
+    by the user who rebuilds and re-runs them."""
+    owner = (REPO / 'build').stat().st_uid
+    if os.geteuid() != 0 or owner == 0:
+        return None
+    return pwd.getpwuid(owner)
+
+
+def run_gate(sources, rust_profile='dev'):
+    """Run tools/native-vulkan-regression.py --run on every target and suite; return the record."""
+    kernel = native.driver_version()
+    exercised, not_exercised = gate_coverage(sources, rust_profile)
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    logs = REPO / 'build/native-vulkan-regression' / f'gate-{stamp}'
+    cmd = [PYTHON, str(RUNNER), *RUNNER_ARGS, '--rust-profile', rust_profile, '--logs', str(logs)]
+    user = _runner_user()
+    env = dict(os.environ)
+    if user is not None:
+        cmd = ['runuser', '-u', user.pw_name, '--', *cmd]
+        env.update(HOME=user.pw_dir, USER=user.pw_name, LOGNAME=user.pw_name)
+    who = user.pw_name if user else pwd.getpwuid(os.geteuid()).pw_name
+    print(f'Regression gate as {who}: {" ".join(cmd)}', flush=True)
+    started, t0 = now(), time.monotonic()
+    cases, current = [], None
+    with subprocess.Popen(cmd, cwd=REPO, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True) as proc:
+        for line in proc.stdout:
+            print(line, end='', flush=True)
+            if m := re.fullmatch(r'\[(\w+/\w+)\]', line.strip()):
+                current = (m.group(1), time.monotonic())
+            elif (m := re.match(r'exit=(-?\d+) log=', line)) and current:
+                cases.append({'case': current[0], 'exit': int(m.group(1)),
+                              'seconds': round(time.monotonic() - current[1], 2)})
+                current = None
+    seconds = round(time.monotonic() - t0, 1)
+    if proc.returncode != 0 or not cases or any(c['exit'] for c in cases):
+        raise RuntimeError(f'Regression gate FAILED (exit {proc.returncode}, {len(cases)} cases ran); '
+                           f'logs in {logs}. Nothing was stamped.')
+    after = native.driver_version()
+    if after != kernel:
+        raise RuntimeError(f'NVIDIA kernel module changed during the gate ({kernel} -> {after})')
+    return {'runner': ' '.join(['tools/native-vulkan-regression.py', *RUNNER_ARGS, '--rust-profile', rust_profile]),
+            'rust_profile': rust_profile, 'runner_sha256': sha256(RUNNER), 'user': who, 'started': started, 'finished': now(),
+            'seconds': seconds, 'exit': 0, 'kernel_module': kernel, 'log_dir': str(logs),
+            'cases': cases, 'exercised': exercised, 'not_exercised': not_exercised}
+
+
+# ---------------------------------------------------------------- media gate (Codec2 NVDEC decoder)
+
+def media_sources():
+    """The vendor Codec2 runtime libraries built by nvidia-prolapse/media/vndk/build.sh."""
+    return {f'vendor_extra/lib64/{n}': MEDIA_OUT / 'lib64' / n for n in native.MEDIA_LIBS}
+
+
+def _mtime(path):
+    return Path(path).stat().st_mtime
+
+
+def media_staleness():
+    """Build outputs older than an input they are built from (the media builds keep no provenance
+    record of their own; this refuses the obvious stale case). Returns a list of problems."""
+    vndk_inputs = [MEDIA / 'vndk/build.sh', *sorted((MEDIA / 'vndk/patches').glob('*.patch'))]
+    service_inputs = vndk_inputs + sorted((MEDIA / 'core').glob('*')) + sorted((MEDIA / 'c2').glob('*')) + \
+        [REPO / 'nvidia-prolapse/driver-source/native/video/nv_video.h']
+    problems = []
+    for outputs, inputs, remedy in (
+            ([MEDIA_OUT / 'lib64' / n for n in native.MEDIA_LIBS], vndk_inputs, 'nvidia-prolapse/media/vndk/build.sh'),
+            ([MEDIA_SERVICE_BIN], service_inputs,
+             'NV_VIDEO_LIB_DIR=<dir of the staged x86_64 libnv_bionic_native.so> nvidia-prolapse/media/vndk/build.sh service')):
+        newest = max(inputs, key=_mtime)
+        for out in outputs:
+            if not out.is_file():
+                problems.append(f'{out} missing (build: {remedy})')
+            elif _mtime(out) < _mtime(newest):
+                problems.append(f'{out} is older than {newest.relative_to(REPO)} (rebuild: {remedy})')
+    return problems
+
+
+def _nm(path, *flags):
+    out = subprocess.check_output(['nm', '-D', *flags, str(path)], text=True)
+    return {l.split()[-1] for l in out.splitlines() if l.strip()}
+
+
+def media_closure(service, libs, android_rust, system_img, vendor_img):
+    """Resolve every DT_NEEDED of the service, the media libraries and the Rust backend the way the
+    guest's vendor namespace will: the root's vendor_extra/lib64, the image's VNDK apex, LLNDK in
+    /system/lib64, vendor.img /lib64. Refuses a staged library that an image library would shadow and
+    a backend that lacks an nv_video symbol the service imports. Returns {object: {needed: where}}."""
+    vndk = set(native.image_ls(system_img, VNDK_APEX))
+    system = set(native.image_ls(system_img, '/system/lib64'))
+    vendor = set(native.image_ls(vendor_img, '/lib64'))
+    staged = {p.name: p for p in libs}
+    staged['libnv_bionic_native.so'] = Path(android_rust)
+    shadowed = sorted(n for n in staged if n in vendor or n in vndk)
+    if shadowed:
+        raise RuntimeError(f'Media libraries {shadowed} also exist in vendor.img /lib64 or the VNDK apex; the guest '
+                           'would load those instead of the staged ones')
+    closure, missing = {}, []
+    for obj in [Path(service), *staged.values()]:
+        if native._elf_class(obj) != 64:
+            raise RuntimeError(f'Media artifact is not ELF64: {obj}')
+        if _proprietary_needed(obj):
+            raise RuntimeError(f'Non-bionic/proprietary dependency in media artifact: {obj}')
+        where = {}
+        for name in _needed(obj):
+            if name in staged:
+                where[name] = 'root vendor_extra/lib64'
+            elif name in vndk:
+                where[name] = 'vndk apex'
+            elif name in LLNDK and name in system:
+                where[name] = 'llndk /system/lib64'
+            elif name in vendor:
+                where[name] = 'vendor.img /lib64'
+            else:
+                missing.append(f'{obj.name} NEEDS {name}')
+        closure[obj.name] = where
+    if missing:
+        raise RuntimeError('Media ELF closure incomplete against the image + root: ' + ', '.join(missing))
+    want = {s for s in _nm(service, '--undefined-only') if s.startswith('nv_video_')}
+    have = {s for s in _nm(android_rust, '--defined-only') if s.startswith('nv_video_')}
+    if not want or want - have:
+        raise RuntimeError(f'Staged backend {android_rust} lacks nv_video symbols the Codec2 service imports: '
+                           f'{sorted(want - have) or "service imports none"}. Rebuild the Rust backend from a '
+                           'driver-source that includes native/video (native/mesa/build.py), then the service.')
+    return closure, sorted(want)
+
+
+def media_codecs(xml):
+    import xml.etree.ElementTree as ET
+    return sorted(mc.get('name') for mc in ET.parse(xml).getroot().iter('MediaCodec'))
+
+
+def media_codec_types(xml):
+    """The MIME types the generated media_codecs_c2.xml advertises on this GPU."""
+    import xml.etree.ElementTree as ET
+    return sorted({mc.get('type') for mc in ET.parse(xml).getroot().iter('MediaCodec')})
+
+
+# Advertised MIME -> nvc2 decoder core codec name (test/real_codec_test.cpp), for the decode smoke.
+SMOKE_CODECS = {'video/avc': 'h264', 'video/hevc': 'hevc', 'video/x-vnd.on2.vp9': 'vp9', 'video/av01': 'av1'}
+
+
+def run_media_gate(rust_profile, android_rust, images=IMAGES):
+    """Offline gate of the Codec2 decoder against the backend being staged. Returns (record, odm sources).
+
+    1. build outputs not older than their inputs; 2. host unit tests (make -C nvidia-prolapse/media test);
+    3. nvc2-xmlgen relinked against the host build of the SAME Rust profile and source snapshot as the
+       staged Android backend; 4. stage-odm.sh builds the /odm tree (vendor.img originals, rc, VINTF,
+       seccomp, media_codecs_c2.xml generated from this GPU, the service); 5. nvc2-xmlgen --check of that
+       xml against the live caps; 6. a decode smoke of every advertised codec (real GPU, tiny committed
+       streams with pinned hashes); 7. ELF closure + nv_video symbols; 8. device node access for mediacodec.
+    """
+    problems = media_staleness()
+    if problems:
+        raise RuntimeError('Media build outputs stale or missing; nothing staged:\n  ' + '\n  '.join(problems))
+    system_img, vendor_img = images / 'system.img', images / 'vendor.img'
+    kernel = native.driver_version()
+    host_rust = profiles.rust_library(REPO, 'host', rust_profile)
+    profiles.verify_metadata(REPO, 'host', rust_profile)
+    user = _runner_user()
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    workdir = REPO / 'build/media-c2' / f'gate-{stamp}'
+    workdir.mkdir(parents=True)
+    log = workdir / 'gate.log'
+    log.touch()
+    if user is not None:
+        for p in (workdir, log):
+            os.chown(p, user.pw_uid, user.pw_gid)
+    record = {'exit': None, 'kernel_module': kernel, 'rust_profile': rust_profile, 'started': now(),
+              'log': str(log), 'steps': [],
+              'host_backend': profiles.identity(host_rust), 'android_backend': profiles.identity(android_rust)}
+
+    def step(name, *cmd, as_root=False):
+        argv, env = list(map(str, cmd)), dict(os.environ)
+        if user is not None and not as_root:
+            argv = ['runuser', '-u', user.pw_name, '--', *argv]
+            env.update(HOME=user.pw_dir, USER=user.pw_name, LOGNAME=user.pw_name)
+        print(f'Media gate [{name}]: {" ".join(argv)}', flush=True)
+        t0 = time.monotonic()
+        proc = subprocess.run(argv, cwd=REPO, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        with open(log, 'a') as f:
+            f.write(f'$ {" ".join(argv)}\n{proc.stdout}exit={proc.returncode}\n\n')
+        record['steps'].append({'step': name, 'exit': proc.returncode, 'seconds': round(time.monotonic() - t0, 2)})
+        if proc.returncode != 0:
+            raise RuntimeError(f'Media gate FAILED at {name} (exit {proc.returncode}); log {log}. Nothing was staged.\n'
+                               + proc.stdout[-3000:])
+        return proc.stdout
+
+    step('host-tests', 'make', '-C', MEDIA, 'test')
+    libdir = host_rust.parent
+    step('xmlgen-link', 'make', '-B', '-C', MEDIA, 'xmlgen',
+         f'NV_VIDEO_LIB=-L{libdir} -lnv_bionic_native -Wl,-rpath,{libdir}')
+    xmlgen = MEDIA / 'out/host/nvc2-xmlgen'
+    runpath = _release_gate().elf_dynamic(xmlgen)['runpath']
+    if runpath != [str(libdir)]:
+        raise RuntimeError(f'{xmlgen} resolves the backend through {runpath}, not {libdir}')
+    odm = workdir / 'odm'
+    step('stage-odm', 'bash', MEDIA / 'stage-odm.sh', odm, vendor_img, MEDIA_SERVICE_BIN, xmlgen)
+    xml = workdir / native.MEDIA_XML
+    step('xmlgen-check', xmlgen, '--check', xml)
+    # Decode every advertised codec on the real GPU: /dev/dma_heap/system is root-only, so this
+    # step runs as root (the gate itself is root); the build outputs it creates are given back.
+    smoke = [SMOKE_CODECS[t] for t in media_codec_types(xml) if t in SMOKE_CODECS]
+    if not smoke:
+        raise RuntimeError(f'{xml} advertises no codec the decode smoke can drive '
+                           f'({media_codec_types(xml)}): the generated caps and the decoder disagree')
+    step('decode-smoke', 'make', '-B', '-C', MEDIA, 'smoke',
+         f'NV_VIDEO_LIB=-L{libdir} -lnv_bionic_native -Wl,-rpath,{libdir}', 'CODECS=' + ' '.join(smoke),
+         as_root=True)
+    if user is not None:
+        for root, dirs, files in os.walk(MEDIA / 'out'):
+            for name in dirs + files:
+                os.chown(os.path.join(root, name), user.pw_uid, user.pw_gid)
+    want = set(native.MEDIA_ODM_FILES) | {'odm/etc/' + n for n in native.ODM_ORIGINALS}
+    have = {str(p.relative_to(workdir)) for p in odm.rglob('*') if p.is_file() or p.is_symlink()}
+    if have != want:
+        raise RuntimeError(f'stage-odm.sh produced {sorted(have)}, expected {sorted(want)}')
+    if sha256(workdir / native.MEDIA_SERVICE) != sha256(MEDIA_SERVICE_BIN):
+        raise RuntimeError('stage-odm.sh installed a service binary that differs from ' + str(MEDIA_SERVICE_BIN))
+    if (workdir / native.MEDIA_SERVICE).stat().st_mode & 0o777 != 0o755:
+        raise RuntimeError(f'{workdir / native.MEDIA_SERVICE} is not mode 755')
+    closure, symbols = media_closure(MEDIA_SERVICE_BIN, [MEDIA_OUT / 'lib64' / n for n in native.MEDIA_LIBS],
+                                     android_rust, system_img, vendor_img)
+    native.check_media_device_access([native.DEV_DIR + '/nvidiactl'] +
+                                     sorted(glob.glob(native.DEV_DIR + '/nvidia[0-9]*')) + [native.nvidia_render_node()])
+    if native.driver_version() != kernel:
+        raise RuntimeError(f'NVIDIA kernel module changed during the media gate ({kernel} -> {native.driver_version()})')
+    record.update(exit=0, finished=now(), closure=closure, nv_video_symbols=symbols,
+                  xmlgen={'path': str(xmlgen), 'runpath': runpath[0]})
+    media = {'enabled': True, 'component': 'nvidia-prolapse/media Codec2 NVDEC decoder',
+             'vendor_img': str(vendor_img), 'system_img': str(system_img),
+             'codecs': media_codecs(xml), 'gate': record}
+    return media, {str(p.relative_to(workdir)): p for p in sorted(odm.rglob('*')) if p.is_file()}
+
+
+# ---------------------------------------------------------------- native GL (our own GLES driver nvrm)
+
+NVRM_SOURCE = REPO / 'nvidia-prolapse/driver-source'
+NVRM_SMOKE = NVRM_SOURCE / 'native/mesa/tests/gl-android-smoke.py'
+NDK_BIN = REPO / 'build/hwcomposer-work/ndk/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin'
+# build.py --gl --target android|android32 output paths (native/mesa/build.py GL_ANDROID_ARTIFACTS)
+NVRM_BUILD_ARTIFACTS = {'libEGL_nvrm.so': 'src/egl', 'libGLESv1_CM_nvrm.so': 'src/mesa/glapi/es1api',
+                        'libGLESv2_nvrm.so': 'src/mesa/glapi/es2api', 'libgallium_dri_nvrm.so': 'src/gallium/targets/dri'}
+NVRM_TARGETS = (('android', 'lib64', 'x86_64', 'x86_64-linux-android'), ('android32', 'lib', 'x86', 'i686-linux-android'))
+
+
+def nvrm_build_dirs(suffix=''):
+    return {target: REPO / f'build/nvrm-{target}{suffix}' for target, *_ in NVRM_TARGETS}
+
+
+def nvrm_staged_path(name, sub):
+    return f'vendor_extra/{sub}/{name}' if name == native.NVRM_GALLIUM else f'vendor/{sub}/egl/{name}'
+
+
+def _rebuild_hint(suffix, rust_profile):
+    sfx = f'NVRM_GL_DIR_SUFFIX={suffix} ' if suffix else ''
+    return (f'rebuild nvrm and NVK from ONE driver-source checkout so both link the same libnv_bionic_native.so '
+            f'(python3 nvidia-prolapse/driver-source/native/mesa/build.py --target both --rust-profile {rust_profile}; '
+            f'PROLAPSE_ROOT={REPO} {sfx}python3 nvidia-prolapse/driver-source/native/mesa/build.py --gl --target both '
+            f'--rust-profile {rust_profile}), or stage with --no-native-gl REASON')
+
+
+def run_native_gl_gate(sources, rust_profile='dev', suffix=''):
+    """Gate our own GLES driver nvrm (both ABIs) on the bytes that will be staged.
+
+    Returns (record, {staged relative path: stripped file}). No nvrm build at all -> an explicit
+    {'enabled': False, 'reason': ...}; a partial/stale build, a Rust RM library other than the one
+    staged for NVK, or a failing smoke test raises (nothing staged). The staged copies are the
+    build's libraries with debug info stripped (llvm-strip --strip-debug); the bionic smoke test
+    (driver-source native/mesa/tests/gl-android-smoke.py) runs against exactly those copies plus the
+    staged libnv_bionic_native.so/libdrm.so.2, through a private PROLAPSE_ROOT whose build/nvrm-* and
+    build/nv-rm-rust dirs (NVK's Rust output layout, which nvrm links) hold them (LD_LIBRARY_PATH precedes the libraries' build-tree RUNPATHs)."""
+    builds = nvrm_build_dirs(suffix)
+    records = {t: d / 'nvrm-build.json' for t, d in builds.items()}
+    present = [t for t, r in records.items() if r.is_file()]
+    if not present:
+        return {'enabled': False, 'reason': 'GL driver not built: no ' + ', '.join(map(str, records.values())) +
+                f' ({native.NATIVE_GL_BUILD})'}, {}
+    if len(present) != len(records):
+        raise RuntimeError(f'nvrm built for {present} only; both ABIs are staged. Build: {native.NATIVE_GL_BUILD}')
+    strip = NDK_BIN / 'llvm-strip'
+    for tool in (strip, NVRM_SMOKE):
+        if not tool.is_file():
+            raise RuntimeError(f'native GL gate needs {tool}')
+    stamp = time.strftime('%Y%m%d-%H%M%S')
+    work = REPO / 'build/nvrm-gl-gate' / f'gate-{stamp}'
+    fake = work / 'root'
+    staged, build_info, rust_sha = {}, {}, {}
+    for target, sub, abi, triple in NVRM_TARGETS:
+        record = json.loads(records[target].read_text())
+        if record.get('target') != target or record.get('egl_suffix') != '_' + native.NVRM_EGL:
+            raise RuntimeError(f'{records[target]} is not an nvrm {target} build record')
+        rust = sources[f'vendor_extra/{sub}/libnv_bionic_native.so']
+        if record['rust']['sha256'] != sha256(rust):
+            raise RuntimeError(f'nvrm {target} was linked against libnv_bionic_native.so {record["rust"]["sha256"]} '
+                               f'({record["rust"]["path"]}), but the stage carries {sha256(rust)} ({rust}) for NVK; '
+                               + _rebuild_hint(suffix, rust_profile))
+        rust_sha[abi] = record['rust']['sha256']
+        out_rust = fake / 'build/nv-rm-rust' / triple / 'release'   # profiles.rust_library(): nvrm links NVK's copy
+        out_rust.mkdir(parents=True)
+        shutil.copyfile(rust, out_rust / 'libnv_bionic_native.so')
+        shutil.copyfile(sources[f'vendor_extra/{sub}/{native.LIBDRM}'], out_rust / native.LIBDRM)
+        for name, subdir in NVRM_BUILD_ARTIFACTS.items():
+            built = builds[target] / subdir / name
+            if record['artifacts'].get(name, {}).get('sha256') != sha256(built):
+                raise RuntimeError(f'{built} differs from its build record {records[target]} (stale or partial '
+                                   f'build); {native.NATIVE_GL_BUILD}')
+            if _proprietary_needed(built):
+                raise RuntimeError(f'Non-bionic/proprietary dependency in nvrm artifact: {built}')
+            if name == native.NVRM_GALLIUM and 'libnv_bionic_native.so' not in _needed(built):
+                raise RuntimeError(f'{built} does not link the Rust RM library')
+            out = fake / f'build/nvrm-{target}' / subdir / name
+            out.parent.mkdir(parents=True, exist_ok=True)
+            run(strip, '--strip-debug', '-o', out, built)
+            if native._elf_class(out) != (64 if sub == 'lib64' else 32):
+                raise RuntimeError(f'Expected ELF{64 if sub == "lib64" else 32}: {out}')
+            staged[nvrm_staged_path(name, sub)] = out
+        build_info[abi] = {k: record.get(k) for k in ('driver_source_head', 'driver_source_dirty', 'mesa_pin',
+                                                      'rust_profile')}
+        build_info[abi]['build_record'] = str(records[target])
+    # Everything else the runner reaches (NDK, bionic runtimes, image libs, the test source) is the real tree.
+    for rel in ('build/hwcomposer-work', 'build/nvk-android', 'build/nvk-android32', 'nvidia-prolapse', 'tools'):
+        (fake / rel).parent.mkdir(parents=True, exist_ok=True)
+        (fake / rel).symlink_to(REPO / rel)
+    # headers the capability test (gl-dmabuf.c) compiles against: the pinned Mesa tree nvrm was built from
+    (fake / 'build/mesa-gl-source').symlink_to(REPO / f'build/mesa-gl-source{suffix}')
+    hashes = {rel: sha256(p) for rel, p in staged.items()}
+    user = _runner_user()
+    if user is not None:
+        for directory, dirs, files in os.walk(work):
+            for name in [directory, *(os.path.join(directory, n) for n in dirs + files)]:
+                os.lchown(name, user.pw_uid, user.pw_gid)
+    kernel = native.driver_version()
+    logs = work / 'smoke'
+    cmd = [PYTHON, str(NVRM_SMOKE), '--target', 'both', str(logs)]
+    env = {k: v for k, v in os.environ.items() if k != 'NVRM_GL_DIR_SUFFIX'}
+    env['PROLAPSE_ROOT'] = str(fake)
+    if user is not None:
+        cmd = ['runuser', '-u', user.pw_name, '--', 'env', f'PROLAPSE_ROOT={fake}', *cmd]
+        env.update(HOME=user.pw_dir, USER=user.pw_name, LOGNAME=user.pw_name)
+    print(f'Native GL gate: {" ".join(cmd)}', flush=True)
+    started = now()
+    result = subprocess.run(cmd, cwd=REPO, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    print(result.stdout, end='', flush=True)
+    (work / 'smoke.log').write_text(result.stdout)
+    if result.returncode != 0 or 'ANDROID SMOKE PASS' not in result.stdout:
+        raise RuntimeError(f'Native GL smoke test FAILED (exit {result.returncode}); log {work / "smoke.log"}. '
+                           'Nothing staged; or stage with --no-native-gl REASON')
+    if native.driver_version() != kernel:
+        raise RuntimeError(f'NVIDIA kernel module changed during the native GL gate ({kernel} -> {native.driver_version()})')
+    changed = [str(p) for rel, p in staged.items() if sha256(p) != hashes[rel]]
+    if changed:
+        raise RuntimeError('nvrm files changed while the native GL gate ran: ' + ', '.join(changed))
+    record = {'enabled': True, 'egl': native.NVRM_EGL, 'files': hashes, 'builds': build_info,
+              'gate': {'runner': 'nvidia-prolapse/driver-source/native/mesa/tests/gl-android-smoke.py --target both',
+                       'runner_sha256': sha256(NVRM_SMOKE), 'started': started, 'finished': now(), 'exit': 0,
+                       'kernel_module': kernel, 'log_dir': str(work), 'stripped': 'llvm-strip --strip-debug',
+                       'rust_sha256': rust_sha}}
+    return record, staged
+
+
+# ---------------------------------------------------------------- commands
+
+def stage(dest, rust_profile='dev', no_media=None, no_native_gl=None, nvrm_suffix=''):
+    """no_media: None stages the media component (default); a non-empty reason opts out explicitly.
+    no_native_gl: None stages nvrm when it is built (gated; else an explicit not-built record), a
+    non-empty reason opts out. nvrm_suffix: build.py's NVRM_GL_DIR_SUFFIX of the nvrm build dirs."""
+    if no_media is not None and not no_media.strip():
+        raise RuntimeError('--no-media needs a non-empty reason (recorded in the manifest)')
+    if no_native_gl is not None and not no_native_gl.strip():
+        raise RuntimeError('--no-native-gl needs a non-empty reason (recorded in the manifest)')
+    if dest.exists():
+        raise RuntimeError(f'{dest} exists; use a new staging directory')
+    sources = stage_sources(rust_profile)
+    builds = {target: profiles.verify_metadata(REPO, target, rust_profile)
+              for target in profiles.TARGETS}
+    for rel, source in sources.items():
+        bits = 64 if '/lib64/' in rel else 32
+        if native._elf_class(source) != bits:
+            raise RuntimeError(f'Expected source ELF{bits}: {source}')
+        if _proprietary_needed(source):
+            raise RuntimeError(f'Non-bionic/proprietary dependency in source artifact: {source}')
+        if source.name == 'libvulkan_nouveau.so' and 'libnv_bionic_native.so' not in _needed(source):
+            raise RuntimeError(f'NVK is missing its Rust RM dependency: {source}')
+    graphics = dict(sources)
+    if no_media is None:
+        sources.update(media_sources())
+        for rel, source in media_sources().items():
+            if native._elf_class(source) != 64:
+                raise RuntimeError(f'Expected media ELF64: {source}')
+    gated = {rel: sha256(source) for rel, source in sources.items()}
+    service_hash = sha256(MEDIA_SERVICE_BIN) if no_media is None else None
+    if no_media is None:
+        media, odm = run_media_gate(rust_profile, sources['vendor_extra/lib64/libnv_bionic_native.so'])
+        if service_hash != sha256(MEDIA_SERVICE_BIN):
+            raise RuntimeError(f'{MEDIA_SERVICE_BIN} changed while the media gate ran; nothing staged')
+        sources.update(odm)
+        gated.update({rel: sha256(source) for rel, source in odm.items()})
+    else:
+        media = {'enabled': False, 'reason': no_media.strip()}
+    if no_native_gl is None:
+        native_gl, gl_files = run_native_gl_gate(sources, rust_profile, nvrm_suffix)
+        sources.update(gl_files)
+        gated.update(native_gl.get('files', {}))
+    else:
+        native_gl = {'enabled': False, 'reason': no_native_gl.strip()}
+    gate = run_gate(graphics, rust_profile)
+    changed = [str(s) for r, s in sources.items() if sha256(s) != gated[r]]
+    if changed:
+        raise RuntimeError('Source files changed while the gate ran; nothing staged: ' + ', '.join(changed))
+    if no_media is None and media['gate']['kernel_module'] != gate['kernel_module']:
+        raise RuntimeError('Media and regression gates ran on different kernel modules; nothing staged')
+    if native_gl['enabled'] and native_gl['gate']['kernel_module'] != gate['kernel_module']:
+        raise RuntimeError('Native GL and regression gates ran on different kernel modules; nothing staged')
+    try:
+        for rel, source in sources.items():
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, out)
+            # odm/ keeps the mode stage-odm.sh gave it (service 0755, vendor.img's own modes for the
+            # three originals); everything else is a 0644 library or data file.
+            out.chmod(source.stat().st_mode & 0o777 if rel.startswith('odm/') else 0o644)
+            if sha256(out) != gated[rel]:
+                raise RuntimeError(f'{out} differs from the gated {source}')
+        for target, expected in builds.items():
+            if profiles.verify_metadata(REPO, target, rust_profile) != expected:
+                raise RuntimeError(f'{target}: Rust build metadata changed while gating/staging; nothing stamped')
+        manifest = {'format': native.SOURCE_RM_FORMAT, 'driver': 'mesa-nvk-rust-rm',
+                    'mesa_commit': 'ddaf85e353442d9d7f192fdcf1823e652e3f2ee3',
+                    'graphics_abis': ['x86_64', 'x86'], 'artifacts': gated,
+                    'rust_profile': rust_profile, 'rust_builds': builds,
+                    'sources': {k: str(v) for k, v in sources.items()},
+                    'kernel_module': gate['kernel_module'], 'gate': gate, 'media': media, 'native_gl': native_gl}
+        write_atomic(dest / native.SOURCE_RM_MANIFEST, json.dumps(manifest, indent=2) + '\n')
+        native._source_rm_nodes(str(dest))
+        if native_gl['enabled']:
+            native.check_native_gl(str(dest), manifest)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    print(f'Staged {len(gated)} gated artifacts (kernel module {gate["kernel_module"]}): {dest}')
+    print('Media: ' + (f'Codec2 NVDEC decoder staged ({", ".join(media["codecs"])})' if media['enabled']
+                       else f'explicitly NOT staged: {media["reason"]}'))
+    print('Native GL: ' + ('nvrm staged (ro.hardware.egl=nvrm with nvidia_native_gl = on)' if native_gl['enabled']
+                           else f'NOT staged: {native_gl["reason"]}'))
+
+
+def stage_release(bundle, dest):
+    """The packaged stage: gate the CI-built release bundle on this machine (packaging/native/release_gate.py)
+    and write it to the new root `dest` with a format-3 manifest, like stage() does for build/."""
+    if os.geteuid() != 0:
+        raise RuntimeError('stage-release reads the Waydroid images and writes under /var/lib/waydroid: run it as root '
+                           '(sudo waydroid-nvidia-setup)')
+    if dest.exists():
+        raise RuntimeError(f'{dest} exists; use a new staging directory')
+    gate_module = _load(REPO / 'packaging/native/release_gate.py', 'release_gate')
+    angle = {f'vendor/{sub}/egl/{name}': Path('/var/lib/waydroid/nv/guest') / f'vendor/{sub}/egl/{name}'
+             for sub in ('lib64', 'lib') for name in native.EGL_ANGLE}
+    for rel, path in angle.items():
+        if native._elf_class(str(path)) != (64 if '/lib64/' in rel else 32):
+            raise RuntimeError(f'ANGLE {path} missing or wrong ELF class: waydroid-nvidia-setup installs the guest '
+                               'prebuilts there first')
+    record, gate, media, native_gl, sources = gate_module.run(sys.modules[__name__], native, bundle)
+    sources.update(angle)
+    gated = {rel: sha256(p) for rel, p in sources.items()}
+    try:
+        for rel, source in sources.items():
+            out = dest / rel
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, out)
+            out.chmod(source.stat().st_mode & 0o777 if rel.startswith('odm/') else 0o644)
+            if sha256(out) != gated[rel]:
+                raise RuntimeError(f'{out} differs from the gated {source}')
+        manifest = {'format': native.SOURCE_RM_FORMAT, 'driver': 'mesa-nvk-rust-rm',
+                    'mesa_commit': record['mesa_commit'], 'graphics_abis': ['x86_64', 'x86'], 'artifacts': gated,
+                    'rust_profile': 'release', 'rust_builds': record['rust_builds'],
+                    'sources': {k: str(v) for k, v in sources.items()},
+                    'release': {'bundle': str(bundle), 'commit': record['commit'], 'tag': record.get('release'),
+                                'build_record_sha256': sha256(Path(bundle) / gate_module.RECORD)},
+                    'kernel_module': gate['kernel_module'], 'gate': gate, 'media': media, 'native_gl': native_gl}
+        write_atomic(dest / native.SOURCE_RM_MANIFEST, json.dumps(manifest, indent=2) + '\n')
+        native._source_rm_nodes(str(dest))
+        if native_gl['enabled']:
+            native.check_native_gl(str(dest), manifest)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+    print(f'Staged {len(gated)} gated artifacts (kernel module {gate["kernel_module"]}): {dest}')
+    print(f'Media: Codec2 NVDEC decoder staged ({", ".join(media["codecs"])})')
+    print('Native GL: ' + ('nvrm staged (opt-in: nvidia_native_gl = on)' if native_gl['enabled']
+                           else f'NOT staged: {native_gl["reason"]}'))
+
+
+def adopt(root, dry_run=False, rust_profile='dev'):
+    """Upgrade a format-1 deployment to format 2 after gating the identical build/ bytes."""
+    if not dry_run and os.geteuid() != 0:
+        raise RuntimeError(f'adopt writes the root-owned manifest: sudo {PYTHON} {REPO}/dev/source-native adopt {root}')
+    manifest = native.verify_source_rm(str(root), formats=(1, *native.SOURCE_RM_FORMATS))
+    if manifest['format'] != 1:
+        raise RuntimeError(f'{root} is already format {manifest["format"]}; nothing to adopt')
+    problems = source_mismatches(manifest)
+    if problems:
+        raise RuntimeError('Deployed artifacts differ from their recorded build sources, so a gate on build/ '
+                           'would not test them. Restage instead (stage NEWROOT + activate):\n  '
+                           + '\n  '.join(problems))
+    sources = {rel: Path(src) for rel, src in manifest['sources'].items()}
+    print(f'{root}: {len(manifest["artifacts"])} deployed artifacts hash-verified, '
+          'every one identical to its recorded source')
+    if dry_run:
+        exercised, not_exercised = gate_coverage(sources, rust_profile)
+        print(f'Gate would exercise {len(exercised)}: ' + ', '.join(exercised))
+        print(f'Gate would not exercise {len(not_exercised)}: ' + ', '.join(not_exercised))
+        print(f'Loaded NVIDIA kernel module (would be pinned): {native.driver_version()}')
+        print('Dry run: no gate run, nothing written.')
+        return
+    gate = run_gate(sources, rust_profile)
+    problems = source_mismatches(manifest)
+    if problems:
+        raise RuntimeError('Sources changed while the gate ran; nothing written:\n  ' + '\n  '.join(problems))
+    native.verify_source_rm(str(root), formats=(1,))
+    path = root / native.SOURCE_RM_MANIFEST
+    keep = root / f'{native.SOURCE_RM_MANIFEST}.format1-{time.strftime("%Y%m%d-%H%M%S")}'
+    if keep.exists():
+        raise RuntimeError(f'{keep} exists')
+    shutil.copy2(path, keep)
+    updated = dict(manifest, format=native.SOURCE_RM_FORMAT, kernel_module=gate['kernel_module'],
+                   gate=gate, rust_profile=rust_profile, adopted={'from_format': 1, 'at': now(), 'previous_manifest': str(keep)},
+                   media={'enabled': False, 'reason': 'adopted from format 1, which predates the media component'})
+    write_atomic(path, json.dumps(updated, indent=2) + '\n')
+    native._source_rm_nodes(str(root))
+    print(f'Adopted {root} as format {native.SOURCE_RM_FORMAT}, pinned to kernel module '
+          f'{gate["kernel_module"]}; previous manifest kept at {keep}')
+
+
+def check(root, active=False):
+    expected = native.lxc_nodes(str(root))
+    if active:
+        cfg = configparser.ConfigParser()
+        cfg.read(CFG)
+        driver = native.driver_mode(cfg['waydroid'])
+        if driver is None or driver.mode != 'nvidia-prolapse' or driver.root != os.path.realpath(root):
+            raise RuntimeError(f'{CFG} does not select nvidia_driver_mode = nvidia-prolapse with '
+                               f'{native.ROOT_LINKS["nvidia-prolapse"]} -> {root} ({driver!r})')
+        native.check_properties(cfg['properties'], driver)
+        if driver.egl not in ('angle', native.NVRM_EGL):
+            raise RuntimeError(f'Source RM serves GLES through ANGLE or nvrm, not {driver.egl}')
+        manifest = json.loads((Path(root) / MANIFEST).read_text())
+        if native.media_enabled(manifest):
+            images = Path(cfg['waydroid'].get('images_path') or IMAGES)
+            if str(images / 'vendor.img') != manifest['media']['vendor_img']:
+                raise RuntimeError(f'Media /odm tree was staged from {manifest["media"]["vendor_img"]}, but Waydroid '
+                                   f'boots {images / "vendor.img"}; restage')
+        nodes = NODES.read_text().splitlines()
+        for line in expected:
+            if ' /dev/dri/' not in line and line not in nodes:
+                raise RuntimeError(f'Missing source mount: {line}')
+        for line in nodes:
+            if 'libEGL_nvidia' in line or 'libnvidia-' in line or 'libnvglibc' in line:
+                raise RuntimeError(f'Proprietary/shim mount in source configuration: {line}')
+    return expected
+
+
+def invalidate_caches(backup, session=Path('/var/lib/waydroid/lxc/waydroid/config_session')):
+    """Preserve obsolete HWUI/EGL disk caches before changing driver identity.
+
+    Android13 BlobCache::clear forgets mTotalSize when ShaderCache invalidates a
+    loaded cache. A later eviction divides by an empty entry count. Start the
+    new driver with fresh cache files; never remove application data.
+    """
+    if os.geteuid() != 0:
+        raise RuntimeError('Shader-cache migration requires root')
+    if container_state() != 'STOPPED':
+        raise RuntimeError('Stop the container before shader-cache migration')
+    # a session start writes this file (lxc.py generate_session_lxc_config); `waydroid init` and `upgrade` only create
+    # it empty (set_lxc_config). Missing or empty: no session ever ran on this install, so no guest caches exist.
+    if not session.exists() or not session.read_text().strip():
+        print('No previous user session; no shader caches to migrate')
+        return
+    data = None
+    for line in session.read_text().splitlines():
+        parts = line.split()
+        if len(parts) >= 6 and parts[:2] == ['lxc.mount.entry', '='] and parts[3] == 'data':
+            data = Path(parts[2])
+    if data is None:
+        raise RuntimeError('Cannot identify the previous guest data mount')
+    count = 0
+    seen = set()
+    for pattern in ('data/*/code_cache', 'user/*/*/code_cache', 'user_de/*/*/code_cache'):
+        for directory in data.glob(pattern):
+            for name in ('com.android.skia.shaders_cache', 'com.android.opengl.shaders_cache'):
+                path = directory / name
+                if not path.is_file() or path.resolve() in seen:
+                    continue
+                seen.add(path.resolve())
+                out = backup / 'shader-caches' / path.relative_to(data)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                if out.exists():
+                    raise RuntimeError(f'Cache backup already exists: {out}')
+                shutil.move(path, out)
+                count += 1
+    print(f'Preserved {count} obsolete shader caches under {backup}/shader-caches')
+
+
+def install_hook(text=None):
+    """Write the pacman hook override. Independent of the container: safe while it runs."""
+    if os.geteuid() != 0:
+        raise RuntimeError(f'Installing {HOOK} requires root: sudo {PYTHON} {REPO}/dev/source-native install-hook')
+    text = text or render_hook(module_package())
+    HOOK.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(HOOK, text)
+    print(f'Installed pacman hook override {HOOK} (overrides {PACKAGED_HOOK})')
+
+
+def activate(root):
+    if os.geteuid() != 0:
+        raise RuntimeError('Activation requires root: sudo -n dev/source-native activate ROOT')
+    if container_state() != 'STOPPED':
+        raise RuntimeError('Stop the entire Waydroid session/container before activation')
+    check(root)   # the generator: format 2, gate record, kernel pin, hashes
+    waydroid = waydroid_argv()                   # packaged: the system Waydroid carries our generator
+    # the developer pacman hook guards a checkout deployment; a package ships its own hook
+    hook_text = None if PACKAGED else render_hook(module_package())   # fails before anything changes
+    backup = Path('/var/lib/waydroid') / ('before-source-native-' + time.strftime('%Y%m%d-%H%M%S'))
+    backup.mkdir()
+    shutil.copy2(CFG, backup / 'waydroid.cfg')
+    if OVERRIDE.exists():
+        shutil.copy2(OVERRIDE, backup / 'source-native.conf')
+    if HOOK.exists():
+        shutil.copy2(HOOK, backup / 'pacman.hook')
+    link = native.ROOT_LINKS['nvidia-prolapse']
+    if os.path.islink(link):
+        (backup / LINK_TARGET).write_text(os.readlink(link) + '\n')
+    invalidate_caches(backup)
+    cfg = configparser.ConfigParser()
+    cfg.optionxform = str
+    cfg.read(CFG)
+    for key in native.RETIRED_KEYS:                          # paths are conventions: refused by the generator
+        cfg['waydroid'].pop(key, None)
+    cfg['waydroid']['nvidia_driver_mode'] = 'nvidia-prolapse'
+    cfg['waydroid'][native.INSTALL_KEY] = 'dev-root'        # a staged root bound over the official vendor image
+    # keep an explicit choice; default (unset) is off = ANGLE. `on` with a root that stages no nvrm fails
+    # the active check below and rolls the activation back, naming the remedy.
+    gl = cfg['waydroid'].get('nvidia_native_gl')
+    cfg['waydroid']['nvidia_native_gl'] = gl if gl in ('on', 'off') else 'off'
+    print(f"nvidia_native_gl = {cfg['waydroid']['nvidia_native_gl']}" + ('' if gl in ('on', 'off') else ' (default)'))
+    for key in native.derived_properties():                  # derived from the mode (make_base_props)
+        cfg['properties'].pop(key, None)
+    with CFG.open('w') as f:
+        cfg.write(f)
+    try:
+        native.repoint_link(link, str(Path(root).resolve()))
+        print(f'{link} -> {Path(root).resolve()}')
+        run(*waydroid, 'upgrade', '-o')
+        check(root, active=True)
+        OVERRIDE.parent.mkdir(parents=True, exist_ok=True)
+        OVERRIDE.write_text(render_override(root))
+        if hook_text is not None:
+            install_hook(hook_text)
+        run('systemctl', 'daemon-reload')
+    except Exception:
+        shutil.copy2(backup / 'waydroid.cfg', CFG)
+        _restore_link(backup)
+        for saved, live in ((backup / 'source-native.conf', OVERRIDE), (backup / 'pacman.hook', HOOK)):
+            if saved.exists():
+                shutil.copy2(saved, live)
+            elif live.exists():
+                live.unlink()
+        run('systemctl', 'daemon-reload')
+        run(*waydroid_argv(), 'upgrade', '-o')
+        raise
+    print(f'Activated source driver. Previous configuration saved at {backup}')
+    if not PACKAGED:
+        print('Next: dev/desktop up.')
+
+
+def _restore_link(backup):
+    """Put the nvidia-prolapse root link back where a checkpoint recorded it; no record: no link existed."""
+    link = native.ROOT_LINKS['nvidia-prolapse']
+    saved = _link_record(backup)
+    if saved.is_file():
+        native.repoint_link(link, saved.read_text().strip())
+    elif os.path.islink(link):
+        os.unlink(link)
+
+
+def restored_cfg_text(saved):
+    """(text, links) to restore from a saved waydroid.cfg. Checkpoints taken before the path conventions carry
+    nvidia_native_root, nvidia_rust_driver_root/nvidia_glibc_shim_root or nvidia_venus_socket (refused by the
+    generator now): they are converted through dev/driver-mode's switched() (mode from nvidia_driver_mode, else
+    the saved root's manifest, venus when only the socket is set), and links = {mode: root} names the root
+    links that must point where the saved keys did. The conversion is printed. Configurations without
+    NVIDIA keys, or already in the convention, are restored verbatim."""
+    cp = configparser.ConfigParser()
+    cp.optionxform = str
+    cp.read(saved)
+    w = cp['waydroid'] if cp.has_section('waydroid') else {}
+    renamed = w.get(native.MODE_KEY) in native.RENAMED_MODES
+    if not renamed and not any(k in w for k in native.RETIRED_KEYS):
+        return saved.read_text(), {}
+    legacy = w.get(native.LEGACY_ROOT_KEY)
+    links = {}
+    if legacy:
+        links['nvidia-prolapse' if (Path(legacy) / native.SOURCE_RM_MANIFEST).exists() else 'glibc-shim'] = legacy
+    for mode, key in (('nvidia-prolapse', 'nvidia_rust_driver_root'), ('glibc-shim', 'nvidia_glibc_shim_root')):
+        if w.get(key):
+            links[mode] = w[key]
+    mode = w.get(native.MODE_KEY)
+    if renamed:
+        print(f'{saved} uses the old mode name {native.MODE_KEY} = {mode}: restoring it as '
+              f'{native.RENAMED_MODES[mode][0]}')
+        mode = native.RENAMED_MODES[mode][0]
+    if not mode:
+        mode = next(iter(links), None) or ('venus' if w.get('nvidia_venus_socket') else None)
+    if not mode:
+        return saved.read_text(), {}
+    print(f'{saved} predates the path conventions: converting it to {native.MODE_KEY} = {mode}' +
+          ''.join(f'; {native.ROOT_LINKS[m]} -> {r}' for m, r in links.items()))
+    loader = importlib.machinery.SourceFileLoader('driver_mode', str(REPO / 'dev/driver-mode'))
+    spec = importlib.util.spec_from_loader('driver_mode', loader)
+    dm = importlib.util.module_from_spec(spec)
+    loader.exec_module(dm)
+    return dm.render(dm.switched(cp, mode, say=lambda text: None)), links
+
+
+def restore(backup):
+    """Restore a configuration saved by activate; leave both artifact trees intact."""
+    if os.geteuid() != 0:
+        raise RuntimeError('Restore requires root')
+    if not (backup / 'waydroid.cfg').is_file():
+        raise RuntimeError(f'No saved waydroid.cfg in {backup}')
+    if container_state() != 'STOPPED':
+        raise RuntimeError('Stop the entire Waydroid session/container before restoring')
+    restored, links = restored_cfg_text(backup / 'waydroid.cfg')
+    if _link_record(backup).is_file():                  # recorded by activate: where the root link pointed
+        links.setdefault('nvidia-prolapse', _link_record(backup).read_text().strip())
+    for mode, target in links.items():
+        if not Path(target).is_dir():
+            raise RuntimeError(f'{backup} ran {mode} root {target}, which no longer exists')
+    invalidate_caches(backup / ('before-restore-' + time.strftime('%Y%m%d-%H%M%S')))
+    previous_cfg = CFG.read_bytes() if CFG.exists() else None
+    previous_override = OVERRIDE.read_bytes() if OVERRIDE.exists() else None
+    previous_links = {}
+    for mode, target in links.items():
+        previous_links[mode] = native.repoint_link(native.ROOT_LINKS[mode], target)
+        print(f'{native.ROOT_LINKS[mode]} -> {target} (was {previous_links[mode] or "absent"})')
+    shutil.copy2(backup / 'waydroid.cfg', CFG)       # owner/mode of the saved file
+    CFG.write_text(restored)
+    if (backup / 'source-native.conf').exists():
+        shutil.copy2(backup / 'source-native.conf', OVERRIDE)
+    elif OVERRIDE.exists():
+        OVERRIDE.unlink()
+    try:
+        run(*waydroid_argv(), 'upgrade', '-o')
+    except Exception:
+        # never leave a configuration the container cannot start with: put the previous one back
+        if previous_cfg is not None:
+            CFG.write_bytes(previous_cfg)
+        if previous_override is not None:
+            OVERRIDE.write_bytes(previous_override)
+        elif OVERRIDE.exists():
+            OVERRIDE.unlink()
+        for mode, target in previous_links.items():
+            if target:
+                native.repoint_link(native.ROOT_LINKS[mode], target)
+            else:
+                os.unlink(native.ROOT_LINKS[mode])
+        print(f'Restore of {backup} failed; previous waydroid.cfg, service override and root links put back',
+              file=sys.stderr)
+        raise
+    run('systemctl', 'daemon-reload')
+    mode, root = hook_mode()
+    if mode == 'source':
+        install_hook()
+    elif HOOK.exists():
+        HOOK.unlink()
+        print(f'Removed {HOOK}: the restored root is not a source root, {PACKAGED_HOOK} applies again')
+    print(f'Restored configuration from {backup}')
+
+
+def hook():
+    """pacman PostTransaction entry point. Must never fail the transaction."""
+    mode, detail = hook_mode()
+    if mode == 'legacy':
+        sys.stdout.flush()
+        os.execv(LEGACY_SETUP, [LEGACY_SETUP, '--hook'])
+        return   # not reached: execv replaces this process
+    tool = f'sudo {PYTHON} {REPO}/dev/source-native'
+    say = lambda text: print(f'==> WARNING: {text}', flush=True)
+    if mode == 'vendor-image':
+        say('Waydroid runs the nvidia-prolapse vendor image, gated on the NVIDIA kernel module it ran on. After '
+            'this driver update and a reboot the container refuses to start until you run sudo waydroid-nvidia-setup '
+            '(it re-gates the image on the new module and regenerates the codec list).')
+        return
+    if mode == 'venus':
+        # Venus runs the host's own glibc driver behind the socket; nothing in the guest pins the driver.
+        print('==> waydroid-nvidia-prolapse: nvidia_driver_mode = venus; nothing to re-provision '
+              f'({LEGACY_SETUP} --hook not run: it would switch the container to the native blob root).', flush=True)
+        return
+    if mode == 'glibc-shim':
+        say(f'Waydroid runs NVIDIA\'s own userspace through the glibc shims from {detail} (nvidia_driver_mode = '
+            'glibc-shim). It binds the host driver at the kernel module\'s exact version, so after this driver '
+            'update the container refuses to start until the staging tree is rebuilt.')
+        say(f'{LEGACY_SETUP} --hook was NOT run (it would re-provision /var/lib/waydroid/nv/guest from the package).')
+        say(f'Remedy once the new module is loaded: rebuild the shims/HAL/EGL front (make -C nvidia-prolapse/shim, '
+            f'hal, egl), then dev/native-deploy, then sudo python3 {REPO}/build/waydroid/waydroid.py upgrade -o; '
+            f'or switch mode: {REPO}/dev/driver-mode set nvidia-prolapse')
+        return
+    if mode == 'unknown':
+        say(f'waydroid-nvidia-prolapse: {detail}.')
+        say(f'Not running {LEGACY_SETUP} --hook: it could replace a source NVK deployment.')
+        say(f'Check the configuration, then run {tool} status.')
+        return
+    root = detail
+
+    def fact(function):
+        try:
+            return function()
+        except Exception as error:   # report, never fail the transaction
+            return f'unknown ({error})'
+
+    def pinned():
+        manifest = json.loads((root / MANIFEST).read_text())
+        return manifest.get('kernel_module') or f'nothing (format {manifest.get("format")} manifest, unpinned)'
+
+    pin, loaded, installed = fact(pinned), fact(native.driver_version), fact(installed_module_version)
+    backups = sorted(glob.glob(BACKUPS))
+    say(f'Waydroid runs the source NVK + Rust RM stack from {root}.')
+    say(f'It is verified on NVIDIA kernel module {pin}; the loaded module is {loaded}, '
+        f'the module installed for {os.uname().release} is {installed}.')
+    say(f'{LEGACY_SETUP} --hook was NOT run: it would restage and repoint Waydroid at the legacy root.')
+    say('After a reboot into a different kernel module the container will refuse to start '
+        '(the LXC generator enforces the pin).')
+    say('Remedy once the new module is loaded: verify and rebuild the source stack on it, then')
+    say(f'  {tool} stage /var/lib/waydroid/nvidia-source-native-<version>')
+    say(f'  {tool} activate /var/lib/waydroid/nvidia-source-native-<version>')
+    say('or return to a saved configuration (a legacy blob root then needs '
+        f'{LEGACY_SETUP} for the new driver):')
+    def saved_root(backup):
+        root = configured_root(Path(backup) / 'waydroid.cfg')
+        return f'{"source" if is_source_root(root) else "legacy"} root {root}'
+
+    for backup in backups:
+        say(f'  {tool} restore {backup}    # {fact(lambda: saved_root(backup))}')
+    if not backups:
+        say(f'  (no saved configuration matches {BACKUPS})')
+
+
+def status(root):
+    """Health report; PASS/FAIL/UNKNOWN per line with the reason. Returns the exit code."""
+    results = []
+
+    def item(state, what, detail):
+        results.append(state)
+        print(f'{state:<8}{what}: {detail}', flush=True)
+
+    def attach(script):
+        return subprocess.run(['sudo', '-n', 'lxc-attach', *LXC_PATH, '--', '/system/bin/sh', '-c',
+                               'export PATH=/system/bin; ' + script], capture_output=True, text=True, timeout=60)
+
+    cfg = configparser.ConfigParser()
+    cfg.read(CFG)
+    problems, egl = [], None
+    try:
+        driver = native.driver_mode(cfg['waydroid']) if cfg.has_section('waydroid') else None
+        egl = driver.egl if driver else None
+        if driver is None or driver.mode != 'nvidia-prolapse':
+            problems.append(f'waydroid.cfg nvidia_driver_mode is {driver.mode if driver else None}, not nvidia-prolapse')
+        elif driver.root != os.path.realpath(root):
+            problems.append(f'{driver.link} points at {driver.root}')
+    except OSError as error:
+        problems.append(str(error))
+    if not is_source_root(root):
+        problems.append(f'no {native.SOURCE_RM_MANIFEST} (not a source root; legacy roots: dev/desktop status)')
+    item('FAIL' if problems else 'PASS', 'configured root',
+         f'{root}, ro.hardware.egl={egl}' + ('; ' + '; '.join(problems) if problems else ''))
+
+    expected, manifest = None, None
+    try:
+        expected = native.lxc_nodes(str(root))
+        manifest = json.loads((root / native.SOURCE_RM_MANIFEST).read_text())
+        gate = manifest['gate']
+        item('PASS', 'manifest', f'format {manifest["format"]}, {len(manifest["artifacts"])} artifacts hash-verified, '
+             f'gate exit 0 at {gate["finished"]} ({len(gate.get("cases", []))} cases, '
+             f'{len(gate["exercised"])} artifacts exercised), {len(expected)} mount entries')
+    except PermissionError as error:
+        # staged roots hold root-only files (odm/etc/build.prop is 0600 like vendor.img): for the configured
+        # root, ask the root helper to hash-verify everything instead of reporting a check we could not run
+        verified = None
+        if os.geteuid() != 0 and str(root) == str(configured_root()):
+            proc = subprocess.run(['sudo', '-n', native.wd_native_helper(), 'verify'], capture_output=True, text=True)
+            if proc.returncode == 0:
+                verified = [line for line in proc.stdout.splitlines() if line.startswith('lxc.')]
+            else:
+                item('FAIL', 'manifest', f'{error}; root verify (sudo -n wd-native verify) failed: '
+                     f'{proc.stderr.strip()[-400:]}')
+        else:
+            item('FAIL', 'manifest', str(error))
+        if verified is not None:
+            try:
+                manifest = json.loads((root / native.SOURCE_RM_MANIFEST).read_text())
+                expected = verified
+                item('PASS', 'manifest', f'format {manifest["format"]}, {len(manifest["artifacts"])} artifacts '
+                     f'hash-verified as root (wd-native verify; {error.filename} is root-only), gate exit 0 at '
+                     f'{manifest["gate"]["finished"]}, {len(expected)} mount entries')
+            except (OSError, ValueError, KeyError) as error2:
+                item('FAIL', 'manifest', str(error2))
+    except (OSError, ValueError, KeyError) as error:
+        item('FAIL', 'manifest', str(error))
+
+    try:
+        loaded = native.driver_version()
+        pin = json.loads((root / native.SOURCE_RM_MANIFEST).read_text()).get('kernel_module')
+        if pin is None:
+            item('FAIL', 'kernel module', f'loaded {loaded}; manifest has no kernel_module pin (format 1)')
+        else:
+            item('PASS' if pin == loaded else 'FAIL', 'kernel module', f'loaded {loaded}, manifest pin {pin}')
+        installed = installed_module_version()
+        if pin is None:
+            item('UNKNOWN', 'kernel module after reboot', f'installed {installed}; no pin to compare with')
+        else:
+            item('PASS' if installed == pin else 'FAIL', 'kernel module after reboot',
+                 f'installed for {os.uname().release}: {installed}, manifest pin {pin}'
+                 + ('' if installed == pin else '; the container will refuse to start after a reboot'))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        item('FAIL', 'kernel module', str(error))
+
+    if expected is None:
+        item('UNKNOWN', 'lxc config', 'generator failed (manifest line), nothing to compare config_nodes with')
+    else:
+        try:
+            check(root, active=True)
+            item('PASS', 'lxc config', f'{NODES} has every generator entry and no proprietary/shim mount')
+        except PermissionError as error:
+            # root-only staged file: the root helper runs the same active-configuration check
+            proc = subprocess.run(['sudo', '-n', native.wd_native_helper(), 'driver-mode', 'verify-active'],
+                                  capture_output=True, text=True)
+            if proc.returncode == 0 and str(root) == str(configured_root()):
+                item('PASS', 'lxc config', f'{NODES} has every generator entry and no proprietary/shim mount '
+                     f'(checked as root: wd-native driver-mode verify-active; {error.filename} is root-only)')
+            else:
+                item('FAIL', 'lxc config', f'{error}; root check: {(proc.stderr or proc.stdout).strip()[-400:]}')
+        except (OSError, RuntimeError, KeyError) as error:
+            item('FAIL', 'lxc config', str(error))
+
+    want = render_override(root)
+    if not OVERRIDE.exists():
+        item('FAIL', 'systemd override', f'{OVERRIDE} missing; the container starts without the source check')
+    elif OVERRIDE.read_text() != want:
+        item('FAIL', 'systemd override', f'{OVERRIDE} differs from what activate writes for {root}')
+    else:
+        reload = subprocess.run(['systemctl', 'show', '-p', 'NeedDaemonReload', '--value', UNIT],
+                                capture_output=True, text=True).stdout.strip()
+        if reload != 'no':
+            item('FAIL', 'systemd override', f'{OVERRIDE} matches, but NeedDaemonReload={reload or "?"}: '
+                 'run sudo systemctl daemon-reload')
+        else:
+            item('PASS', 'systemd override', f'{OVERRIDE} runs dev/driver-mode verify-active (checks {root}) before every container start')
+
+    if not HOOK.exists():
+        item('FAIL', 'pacman hook override', f'{HOOK} missing: {PACKAGED_HOOK} would run {LEGACY_SETUP} --hook '
+             'on the next nvidia-utils upgrade and repoint Waydroid at the legacy root. '
+             f'Fix: sudo {PYTHON} {REPO}/dev/source-native install-hook')
+    else:
+        try:
+            if HOOK.read_text() == render_hook(module_package()):
+                item('PASS', 'pacman hook override', f'{HOOK} identical to what activate writes')
+            else:
+                item('FAIL', 'pacman hook override', f'{HOOK} differs from what activate writes now '
+                     f'(fix: sudo {PYTHON} {REPO}/dev/source-native install-hook)')
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+            item('UNKNOWN', 'pacman hook override', f'{HOOK} exists; cannot render the expected file: {error}')
+
+    started = None
+    unit = subprocess.run(['systemctl', 'is-active', UNIT], capture_output=True, text=True).stdout.strip()
+    lxc = [subprocess.run(['sudo', '-n', 'lxc-info', *LXC_PATH, flag], capture_output=True, text=True)
+           for flag in ('-sH', '-pH')]
+    if lxc[0].returncode != 0:
+        item('UNKNOWN', 'container', f'{UNIT} {unit}; sudo -n lxc-info failed: {lxc[0].stderr.strip()}')
+    else:
+        fields = lxc[0].stdout.split() + lxc[1].stdout.split()
+        if fields and fields[0] == 'RUNNING' and len(fields) > 1:
+            started = process_start(int(fields[1]))
+            item('PASS', 'container', f'RUNNING since {time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started))} '
+                 f'(init pid {fields[1]}), {UNIT} {unit}')
+        else:
+            item('FAIL', 'container', f'{" ".join(fields) or "?"}, {UNIT} {unit}')
+
+    if started is None:
+        item('UNKNOWN', 'surfaceflinger maps', 'container not running')
+        item('UNKNOWN', 'tombstones', 'container not running')
+    else:
+        sf = attach('pid=$(pidof surfaceflinger) || exit 3; echo "pid $pid"; cat /proc/$pid/maps')
+        if sf.returncode != 0:
+            item('FAIL' if sf.returncode == 3 else 'UNKNOWN', 'surfaceflinger maps',
+                 'no surfaceflinger process' if sf.returncode == 3 else f'lxc-attach failed: {sf.stderr.strip()}')
+        else:
+            paths = {l.split(None, 5)[5] for l in sf.stdout.splitlines()[1:] if len(l.split(None, 5)) == 6}
+            # SurfaceFlinger's GL: ANGLE runs on NVK (Vulkan); native GL (egl nvrm) is our gallium driver; both on the Rust RM
+            required = NVRM_REQUIRED_MAPS if egl == native.NVRM_EGL else REQUIRED_MAPS
+            missing = [n for n in required if not any(p.endswith('/' + n) for p in paths)]
+            forbidden = sorted(p for p in paths if any(f in p for f in FORBIDDEN_MAPS))
+            deleted = sorted(p for p in paths if p.endswith(' (deleted)') and '/vendor' in p)
+            bad = ([f'missing {", ".join(missing)}'] if missing else []) + \
+                  ([f'maps {", ".join(forbidden)}'] if forbidden else []) + \
+                  ([f'maps replaced files {", ".join(deleted)} (restart the container)'] if deleted else [])
+            mapped = sorted(p for p in paths if any(p.endswith('/' + n) for n in required))
+            item('FAIL' if bad else 'PASS', 'surfaceflinger maps',
+                 f'{sf.stdout.splitlines()[0]}: ' + ('; '.join(bad) if bad else
+                 f'{", ".join(mapped)}; no libnvidia-/libEGL_nvidia/libnvglibc'))
+        tomb = attach('for f in /data/tombstones/tombstone_*; do [ -e "$f" ] && stat -c "%Y %n" "$f"; done; true')
+        if tomb.returncode != 0:
+            item('UNKNOWN', 'tombstones', f'lxc-attach failed: {tomb.stderr.strip()}')
+        else:
+            new = sorted({Path(n).name.removesuffix('.pb') for t, n in
+                          (l.split(None, 1) for l in tomb.stdout.splitlines() if l.strip())
+                          if int(t) >= started})
+            item('FAIL' if new else 'PASS', 'tombstones',
+                 f'{len(new)} since container start' + (f': {", ".join(new)}' if new else ''))
+
+    media_status(root, started, item, attach)
+
+    if started is None:
+        item('UNKNOWN', 'kernel Xid', 'container not running (no start time to count from)')
+    else:
+        probe = subprocess.run(['journalctl', '-k', '-b', '-n', '1', '-q', '--no-pager'], capture_output=True, text=True)
+        if probe.returncode != 0 or not probe.stdout.strip():
+            item('UNKNOWN', 'kernel Xid', 'kernel log not readable as this user (journalctl -k returned nothing: '
+                 f'{probe.stderr.strip() or "no entries"}); needs the systemd-journal/wheel/adm group')
+        else:
+            log = subprocess.run(['journalctl', '-k', '--since', f'@{int(started)}', '-q', '--no-pager',
+                                  '-o', 'short-iso'], capture_output=True, text=True)
+            xids = [l for l in log.stdout.splitlines() if 'NVRM: Xid' in l]
+            if log.returncode != 0:
+                item('UNKNOWN', 'kernel Xid', f'journalctl failed: {log.stderr.strip()}')
+            else:
+                item('FAIL' if xids else 'PASS', 'kernel Xid',
+                     f'{len(xids)} since container start' + (f'; first: {xids[0]}' if xids else ''))
+    return 1 if 'FAIL' in results else 0
+
+
+def media_status(root, started, item, attach):
+    """Codec2 NVDEC decoder: manifest, SELinux mode, init service + hwservicemanager registration,
+    the store's component list (lshal debug) and the framework's view (logcat)."""
+    try:
+        manifest = json.loads((Path(root) / MANIFEST).read_text())
+    except (OSError, ValueError) as error:
+        item('UNKNOWN', 'media', f'manifest unreadable: {error}')
+        return
+    media = manifest.get('media')
+    enabled = native.media_enabled(manifest)
+    if enabled:
+        item('PASS', 'media manifest', f'Codec2 NVDEC decoder staged: {", ".join(media["codecs"])}; '
+             f'media gate exit 0 at {media["gate"].get("finished")} on {media["gate"]["kernel_module"]}')
+    elif isinstance(media, dict):
+        item('PASS', 'media manifest', f'not staged, explicitly: {media.get("reason")}')
+    else:
+        item('PASS', 'media manifest', f'not staged (format {manifest.get("format")} root predates the media component)')
+    if started is None:
+        for what in ('guest SELinux', 'c2 service', 'c2 store components', 'Codec2 framework list'):
+            item('UNKNOWN', what, 'container not running')
+        return
+    fq = 'android.hardware.media.c2@1.2::IComponentStore/default'
+    probe = attach(f'echo "selinux=$(getenforce 2>&1)"; echo "state=$(getprop init.svc.{native.MEDIA_INIT_SERVICE})"; '
+                   f'echo "pid=$(pidof {native.MEDIA_SERVICE_NAME})"; '
+                   f'lshal 2>/dev/null | grep -qF "{fq}" && echo lshal=listed || echo lshal=absent')
+    if probe.returncode != 0:
+        for what in ('guest SELinux', 'c2 service', 'c2 store components', 'Codec2 framework list'):
+            item('UNKNOWN', what, f'lxc-attach failed: {probe.stderr.strip()}')
+        return
+    facts = dict(l.split('=', 1) for l in probe.stdout.splitlines() if '=' in l)
+    selinux = facts.get('selinux', '?')
+    if selinux in ('Disabled', 'Permissive'):
+        item('PASS', 'guest SELinux', f'{selinux}: the unlabelled /odm service runs without a policy domain')
+    elif selinux == 'Enforcing':
+        item('FAIL' if enabled else 'PASS', 'guest SELinux',
+             'Enforcing' + (': init cannot give the unlabelled /odm service a domain (no policy for it)' if enabled else ''))
+    else:
+        item('UNKNOWN', 'guest SELinux', f'getenforce said {selinux!r}')
+    state, pid, listed = facts.get('state', ''), facts.get('pid', ''), facts.get('lshal') == 'listed'
+    detail = f'init.svc.{native.MEDIA_INIT_SERVICE}={state or "unset"}, pid={pid or "none"}, {fq} {"registered" if listed else "not registered"}'
+    if enabled:
+        item('PASS' if state == 'running' and pid and listed else 'FAIL', 'c2 service', detail)
+    else:
+        item('FAIL' if state or pid else 'PASS', 'c2 service', detail + ('' if not (state or pid) else
+             '; a root without media must not run it'))
+    if not enabled:
+        item('PASS', 'c2 store components', 'media not staged')
+        item('PASS', 'Codec2 framework list', 'media not staged')
+        return
+    if not listed:
+        item('FAIL', 'c2 store components', f'{fq} not registered')
+    else:
+        dump = attach(f'lshal debug {fq} 2>&1')
+        names = set(re.findall(r'c2\.nvprolapse\.[a-z0-9]+\.decoder', dump.stdout))
+        want = set(media['codecs'])
+        if dump.returncode != 0 or 'C2ComponentStore: nvprolapse' not in dump.stdout:
+            item('UNKNOWN', 'c2 store components', f'lshal debug gave no nvprolapse store dump (exit {dump.returncode})')
+        else:
+            item('PASS' if names == want else 'FAIL', 'c2 store components',
+                 f'store lists {", ".join(sorted(names)) or "none"}; manifest {", ".join(sorted(want))}')
+    log = attach('logcat -d -b main -b system 2>/dev/null | grep -F c2.nvprolapse | tail -n 3')
+    lines = [l for l in log.stdout.splitlines() if l.strip()]
+    if lines:
+        item('PASS', 'Codec2 framework list', f'logcat mentions c2.nvprolapse ({len(lines)} recent lines; last: {lines[-1][-160:]})')
+    else:
+        item('UNKNOWN', 'Codec2 framework list', 'no c2.nvprolapse line in logcat (rotated, or no app has listed '
+             'codecs yet); open chrome://media-internals during playback: decoder c2.nvprolapse.*, hardware yes')
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('command', choices=['stage', 'stage-release', 'adopt', 'check', 'status', 'activate', 'install-hook',
+                                            'hook', 'restore', 'invalidate-caches'])
+    parser.add_argument('root', nargs='?', type=Path)
+    parser.add_argument('dest', nargs='?', type=Path, help='stage-release: the new root (root is the BUNDLE)')
+    parser.add_argument('--rust-profile', choices=profiles.PROFILES, default='dev',
+                        help='stage/adopt: explicitly select Rust dev (default) or release artifacts')
+    parser.add_argument('--active', action='store_true', help='check: also the live config (systemd ExecStartPre)')
+    parser.add_argument('--dry-run', action='store_true', help='adopt: verify and report only; no gate, no write')
+    parser.add_argument('--no-native-gl', metavar='REASON',
+                        help='stage: do not stage our own GLES driver nvrm even if built (reason recorded)')
+    parser.add_argument('--nvrm-suffix', default=None,
+                        help='stage: NVRM_GL_DIR_SUFFIX of the nvrm build dirs (build/nvrm-android<SFX>; default: that env var)')
+    parser.add_argument('--no-media', metavar='REASON',
+                        help='stage: explicitly leave out the Codec2 NVDEC decoder; REASON goes into the manifest')
+    args = parser.parse_args()
+    if native is None and args.command != 'hook':
+        raise RuntimeError(f'cannot load {REPO}/waydroid/nvidia_native.py: {NATIVE_ERROR!r}')
+    if args.rust_profile != 'dev' and args.command not in ('stage', 'adopt'):
+        parser.error('--rust-profile belongs to stage/adopt')
+    if args.active and args.command != 'check':
+        parser.error('--active belongs to check')
+    if args.dry_run and args.command != 'adopt':
+        parser.error('--dry-run belongs to adopt')
+    if args.no_media is not None and args.command != 'stage':
+        parser.error('--no-media belongs to stage')
+    if (args.no_native_gl is not None or args.nvrm_suffix is not None) and args.command != 'stage':
+        parser.error('--no-native-gl/--nvrm-suffix belong to stage')
+    if (args.dest is not None) != (args.command == 'stage-release'):
+        parser.error('stage-release takes BUNDLE DEST; other commands take one path')
+    if args.command == 'stage-release':
+        dest = args.dest.resolve()
+        if any(c.isspace() for c in str(dest)):
+            parser.error('LXC/systemd deployment paths must not contain whitespace')
+        stage_release(args.root.resolve(), dest)
+        return 0
+    if args.command in ('hook', 'install-hook'):
+        if args.root:
+            parser.error(f'{args.command} takes no root; it acts on waydroid.cfg')
+        if args.command == 'hook':
+            return hook()
+        return install_hook()
+    if args.root is None:
+        if args.command not in ('check', 'status'):
+            parser.error(f'{args.command} needs an explicit path')
+        args.root = configured_root()
+    root = args.root.resolve()
+    if any(c.isspace() for c in str(root)):
+        parser.error('LXC/systemd deployment paths must not contain whitespace')
+    if args.command == 'stage':
+        stage(root, args.rust_profile, args.no_media, args.no_native_gl,
+              args.nvrm_suffix if args.nvrm_suffix is not None else os.environ.get('NVRM_GL_DIR_SUFFIX', ''))
+    elif args.command == 'adopt':
+        adopt(root, args.dry_run, args.rust_profile)
+    elif args.command == 'check':
+        check(root, args.active)
+        print(f'Source RM checks passed: {root}')
+    elif args.command == 'status':
+        return status(root)
+    elif args.command == 'activate':
+        activate(root)
+    elif args.command == 'restore':
+        restore(root)
+    else:
+        invalidate_caches(root)
+    return 0
+
+
+if __name__ == '__main__':
+    # tools whose output is parsed (lxc-info, debugfs, nm, modinfo, systemctl) print C-locale text, here and in
+    # every child process (waydroid upgrade, the gate)
+    os.environ['LC_ALL'] = 'C'
+    os.environ.pop('LANGUAGE', None)
+    if sys.argv[1:2] == ['hook']:
+        try:
+            sys.exit(main() or 0)
+        except BaseException as error:   # pacman PostTransaction: report, never fail the transaction
+            if isinstance(error, SystemExit) and not error.code:
+                sys.exit(0)
+            print(f'==> WARNING: source-native hook: {error!r}', flush=True)
+            sys.exit(0)
+    try:
+        sys.exit(main())
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        sys.exit(f'source-native: {error}')

@@ -30,14 +30,13 @@ fmt "$VIRGL_TREE" "$VIRGL_BASE" "$REPO/patches/virglrenderer"
 # src/ is canonical: never replace it with a stale build-tree copy.
 diffto "$VIRGL_TREE" "$REPO/patches/virglrenderer/0004-wip-gpu-alloc-and-global-priority.patch"
 
-say "hwcomposer: 0001-wip-nvidia-fixes (all uncommitted)"
-diffto "$HWC_TREE" "$REPO/patches/hwcomposer/0001-wip-nvidia-fixes.patch"
+# hwcomposer: the series lives in hwcomposer/patches/ (git format-patch from a hwcomposer/build.sh tree)
 
 if [[ -n "$WAYDROID_SRC" && -d "$WAYDROID_SRC/.git" ]]; then
-say "waydroid: 0001-nvidia-integration (uncommitted gpu.py + lxc.py + hardware_manager.py + session_manager.py)"
+say "waydroid: 0001-nvidia-integration (uncommitted gpu.py + lxc.py + hardware_manager.py + session_manager.py + mount.py + waydroid-net.sh)"
 diffto "$WAYDROID_SRC" "$REPO/patches/waydroid/0001-nvidia-integration.patch" \
     tools/helpers/gpu.py tools/helpers/lxc.py tools/services/hardware_manager.py \
-    tools/actions/session_manager.py
+    tools/actions/session_manager.py tools/helpers/mount.py data/scripts/waydroid-net.sh
 fi
 
 echo

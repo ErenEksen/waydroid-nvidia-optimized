@@ -1,0 +1,442 @@
+#!/usr/bin/env python3
+"""Show or switch the NVIDIA driver mode of the Waydroid container (waydroid.cfg [waydroid]).
+
+  status                              mode, GL, each mode's root link -> target, and what is staged/valid
+  set MODE [--native-gl on|off] [--install vendor-image|dev-root]
+                                      the whole switch, as your user: check (root helper), dev/desktop stop,
+                                      apply (root helper), dev/desktop up
+  check MODE [--native-gl on|off] [--install ...] [--cfg PATH]
+                                      build the switched cfg in memory and run the generator on it; changes
+                                      nothing (run as root for a source root: staged odm/etc/build.prop is 0600)
+  apply MODE [--native-gl on|off] [--install ...]
+                                      (root, container stopped) back up waydroid.cfg + service override into
+                                      /var/lib/waydroid/before-source-native-<time>, preserve obsolete shader caches
+                                      there when the driver changes, write the cfg atomically, upgrade -o, point the
+                                      service's ExecStartPre at verify-active; any failure restores the backup
+  verify-active                       (root; waydroid-container.service ExecStartPre) the NVIDIA GPU is up (render
+                                      node; native modes: /dev/nvidia* files, missing ones created with nvidia-modprobe),
+                                      the configured mode's generator entries are in config_nodes and
+                                      waydroid_base.prop carries its properties
+  link MODE ROOT                      (root) check ROOT with the generator as MODE's root, then atomically point
+                                      MODE's root link at it (nvidia-prolapse/glibc-shim; activate and native-deploy
+                                      do this themselves)
+
+MODE is nvidia-prolapse, glibc-shim or venus. --native-gl defaults to the cfg's current value (off when unset).
+--install (nvidia-prolapse only; default the cfg's nvidia_prolapse_install) picks the install shape: vendor-image
+(our vendor.img, installed and gated by `sudo waydroid-nvidia-setup`; this tool never installs images) or dev-root
+(the staged root behind /var/lib/waydroid/nvidia-prolapse, bound over the official vendor image). Paths are fixed conventions, never cfg keys: the roots are the symlinks
+/var/lib/waydroid/nvidia-prolapse and /var/lib/waydroid/nvidia-glibc-shim (set by dev/source-native activate,
+dev/native-deploy or `link`), the Venus socket /run/waydroid-venus/venus.sock. `set`/`apply` strip the retired
+path keys (nvidia_native_root, nvidia_rust_driver_root, nvidia_glibc_shim_root, nvidia_venus_socket). The privileged
+steps of `set` go through `sudo -n wd-native driver-mode ...` (packaging/native/wd-native); without that rule run
+`sudo python3 dev/driver-mode apply MODE ...` yourself with the Waydroid session and container stopped.
+"""
+import argparse
+import configparser
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+REPO = Path(__file__).resolve().parents[1]
+CFG = Path('/var/lib/waydroid/waydroid.cfg')
+WORK = Path('/var/lib/waydroid')
+NODES = WORK / 'lxc/waydroid/config_nodes'
+BASE_PROP = WORK / 'waydroid_base.prop'
+VENUS_GUEST = Path('/var/lib/waydroid/nv/guest')
+
+
+def _load(path, name):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+native = _load(REPO / 'waydroid/nvidia_native.py', 'nvidia_native')
+HELPER = native.wd_native_helper()
+
+
+def source_native():
+    """dev/source-native as a module (shader-cache migration, container state, atomic write)."""
+    return _load(REPO / 'dev/source-native', 'source_native')
+
+
+def read_cfg(path):
+    cp = configparser.ConfigParser()
+    cp.optionxform = str                       # property names are case-sensitive
+    if not cp.read(path):
+        raise RuntimeError(f'cannot read {path}')
+    for section in ('waydroid', 'properties'):
+        if not cp.has_section(section):
+            cp.add_section(section)
+    return cp
+
+
+def render(cp):
+    out = io.StringIO()
+    cp.write(out)
+    return out.getvalue()
+
+
+OLD_ROOT_KEYS = {'nvidia-prolapse': 'nvidia_rust_driver_root', 'glibc-shim': 'nvidia_glibc_shim_root'}
+
+
+def _link_state(mode):
+    """'<link> -> <target>' or why it is unusable (never raises)."""
+    try:
+        link, target = native.root_link(mode)
+        return f'{link} -> {target}'
+    except OSError as error:
+        return f'unusable: {error}'
+
+
+def switched(cp, mode, native_gl=None, say=print, install=None):
+    """A copy of `cp` switched to `mode`: mode key set, nvidia_native_gl explicit, nvidia_prolapse_install
+    explicit for nvidia-prolapse (`install`, else the cfg's; configurations from before the install shapes that
+    name a root become dev-root, said aloud) and removed for the other modes, the retired path keys stripped
+    (each said aloud, with a note when it named another root than the link), mode-derived [properties]
+    removed (said aloud), venus: drm_device = the NVIDIA render node. Links are not touched."""
+    if mode not in native.MODES:
+        raise RuntimeError(f'mode must be one of {", ".join(native.MODES)}, not {mode!r}')
+    new = configparser.ConfigParser()
+    new.optionxform = str
+    new.read_string(render(cp))
+    w, props = new['waydroid'], new['properties']
+    if mode == 'nvidia-prolapse':
+        shape = install or w.get(native.INSTALL_KEY)
+        if not shape and (any(k in w for k in native.RETIRED_KEYS) or w.get(native.MODE_KEY) in
+                          ('nvidia-prolapse', *native.RENAMED_MODES)):
+            shape = 'dev-root'
+            say(f'cfg: {native.INSTALL_KEY} = dev-root (this configuration predates the install shapes and runs a '
+                'staged root)')
+        if shape not in native.INSTALLS:
+            raise RuntimeError(f'nvidia-prolapse needs --install vendor-image (the packaged install: sudo '
+                               f'waydroid-nvidia-setup) or --install dev-root (a staged root); {native.INSTALL_KEY} '
+                               f'is {shape or "unset"}')
+        w[native.INSTALL_KEY] = shape
+    elif native.INSTALL_KEY in w:
+        say(f'cfg: dropping {native.INSTALL_KEY} = {w[native.INSTALL_KEY]} (nvidia-prolapse only)')
+        del w[native.INSTALL_KEY]
+    for key in native.RETIRED_KEYS:
+        if key not in w:
+            continue
+        value = w[key]
+        del w[key]
+        kinds = [m for m, k in OLD_ROOT_KEYS.items() if k == key]
+        if key == native.LEGACY_ROOT_KEY:
+            kinds = ['nvidia-prolapse' if (Path(value) / native.SOURCE_RM_MANIFEST).exists() else 'glibc-shim']
+        if not kinds:
+            say(f'cfg: dropping {key} = {value} (fixed convention: {native.VENUS_SOCKET})')
+            continue
+        link = native.ROOT_LINKS[kinds[0]]
+        say(f'cfg: dropping {key} = {value} ({kinds[0]} root is the link {_link_state(kinds[0])})')
+        if os.path.realpath(link) != os.path.realpath(value):
+            say(f'NOTE: {link} does not point at {value}; to keep running that root: '
+                f'sudo -n {HELPER} driver-mode link {kinds[0]} {value}')
+    if w.get(native.MODE_KEY) in native.RENAMED_MODES:
+        say(f'cfg: {native.MODE_KEY} = {w[native.MODE_KEY]} is the old name of '
+            f'{native.RENAMED_MODES[w[native.MODE_KEY]][0]}; its root link is now {native.ROOT_LINKS["nvidia-prolapse"]}')
+    w[native.MODE_KEY] = mode
+    if native_gl is not None:
+        w[native.GL_KEY] = native_gl
+    elif not w.get(native.GL_KEY):
+        w[native.GL_KEY] = 'off'
+    if mode == 'venus':
+        # gralloc allocates on drm_device; Venus needs the NVIDIA node, chosen by PCI vendor (never a fixed
+        # renderD number: on hybrid hosts renderD128 is the other GPU, as old saved Venus configs have it)
+        node = native.nvidia_render_node()
+        if w.get('drm_device') != node:
+            say(f'cfg: drm_device = {w.get("drm_device") or "(unset)"} -> {node} (NVIDIA render node)')
+            w['drm_device'] = node
+    for key in native.derived_properties():
+        if key in props:
+            say(f'cfg: [properties] {key} = {props[key]} removed (derived from the mode now)')
+            del props[key]
+    return new
+
+
+def check_text(text, nodes=True):
+    """native.check_cfg on cfg text (through a private temp file). Returns (dm, entries)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / 'waydroid.cfg'
+        path.write_text(text)
+        return native.check_cfg(str(path), nodes=nodes)
+
+
+def identity(text):
+    """What the guest's shader caches are keyed on: (mode, real root, EGL driver). Reads current and earlier
+    cfg shapes (retired path keys, nvidia_native_root without a mode) without validating them, so migrating
+    a cfg to the conventions while the link points at the same root is not a driver change."""
+    cp = configparser.ConfigParser()
+    cp.optionxform = str
+    cp.read_string(text)
+    w = cp['waydroid'] if cp.has_section('waydroid') else {}
+    props = cp['properties'] if cp.has_section('properties') else {}
+    mode, legacy = w.get(native.MODE_KEY), w.get(native.LEGACY_ROOT_KEY)
+    if not mode:
+        if legacy:
+            mode = 'nvidia-prolapse' if (Path(legacy) / native.SOURCE_RM_MANIFEST).exists() else 'glibc-shim'
+        elif w.get('nvidia_venus_socket'):
+            mode = 'venus'
+        else:
+            return ('none', None, None)
+    old_link = None
+    if mode in native.RENAMED_MODES:      # pre-rename cfg: same driver, its root was the old link
+        mode, old_link = native.RENAMED_MODES[mode]
+    if mode == 'venus':
+        return ('venus', None, 'angle')
+    if mode == 'nvidia-prolapse' and w.get(native.INSTALL_KEY) == 'vendor-image':
+        return (mode, 'vendor-image', native.NVRM_EGL if w.get(native.GL_KEY) == 'on' else 'angle')
+    if mode not in native.ROOT_LINKS:
+        return ('unknown', mode, None)
+    root = w.get(OLD_ROOT_KEYS[mode]) or legacy or old_link or native.ROOT_LINKS[mode]
+    if native.GL_KEY in w:
+        egl = {'glibc-shim': 'nvnative', 'nvidia-prolapse': native.NVRM_EGL}[mode] if w[native.GL_KEY] == 'on' else 'angle'
+    else:
+        egl = props.get('ro.hardware.egl', 'angle')
+    return (mode, os.path.realpath(root), egl)
+
+
+def cmd_check(args):
+    new = switched(read_cfg(args.cfg), args.mode, args.native_gl, install=args.install)
+    dm, entries = check_text(render(new))
+    print(native.announce(dm))
+    print(f'check passed: {len(entries)} generator entries, properties ' +
+          ', '.join(f'{k}={v if v is not None else "(absent)"}' for k, v in native.mode_properties(dm)))
+
+
+def override_text():
+    """The container unit drop-in: one for every mode (dev/source-native render_override; packaged installs keep
+    the unit's own ExecStart, the patched system Waydroid)."""
+    return source_native().render_override(None)
+
+
+def cmd_apply(args):
+    sn = source_native()
+    if os.geteuid() != 0:
+        raise RuntimeError(f'apply needs root: sudo python3 {REPO}/dev/driver-mode apply MODE ... '
+                           f'(or sudo -n {HELPER} driver-mode apply MODE ... where that helper is installed)')
+    if sn.container_state() != 'STOPPED':
+        raise RuntimeError('stop the session and the container first (waydroid session stop; '
+                           'sudo waydroid container stop)')
+    old_text = CFG.read_text()
+    new_text = render(switched(read_cfg(CFG), args.mode, args.native_gl, install=args.install))
+    dm, _ = check_text(new_text)                       # fails before anything changes
+    waydroid = sn.waydroid_argv()
+    backup = WORK / ('before-source-native-' + time.strftime('%Y%m%d-%H%M%S'))
+    backup.mkdir()
+    shutil.copy2(CFG, backup / 'waydroid.cfg')
+    if sn.OVERRIDE.exists():
+        shutil.copy2(sn.OVERRIDE, backup / 'source-native.conf')
+    if sn.HOOK.exists():
+        shutil.copy2(sn.HOOK, backup / 'pacman.hook')
+    if identity(old_text) != identity(new_text):
+        sn.invalidate_caches(backup)                   # the driver changes: fresh HWUI/EGL caches
+    else:
+        print('driver identity unchanged; shader caches kept')
+    try:
+        sn.write_atomic(CFG, new_text)
+        subprocess.run([*waydroid, 'upgrade', '-o'], check=True)
+        sn.OVERRIDE.parent.mkdir(parents=True, exist_ok=True)
+        sn.write_atomic(sn.OVERRIDE, override_text())
+        subprocess.run(['systemctl', 'daemon-reload'], check=True)
+        verify_active()
+    except BaseException:
+        shutil.copy2(backup / 'waydroid.cfg', CFG)
+        if (backup / 'source-native.conf').exists():
+            shutil.copy2(backup / 'source-native.conf', sn.OVERRIDE)
+        elif sn.OVERRIDE.exists():
+            sn.OVERRIDE.unlink()
+        subprocess.run(['systemctl', 'daemon-reload'])
+        subprocess.run([*waydroid, 'upgrade', '-o'])
+        print(f'driver-mode: switch failed; previous waydroid.cfg/override restored from {backup}', file=sys.stderr)
+        raise
+    print(native.announce(dm))
+    print(f'Switched. Previous configuration saved at {backup} (wd-native restore {backup})')
+
+
+def verify_active():
+    # The GPU first: the generator below binds the device files, and at boot this runs right after the NVIDIA
+    # render node's device unit came up (render_override), when nothing may have created /dev/nvidia* yet.
+    selected = native.driver_mode(native.load_cfg(str(CFG))[0])
+    created = native.ensure_gpu_ready(native=selected is not None and selected.native)
+    if created:
+        print(f'verify-active: created {", ".join(created)} ({native.NVIDIA_MODPROBE})', flush=True)
+    dm, entries = native.check_cfg(str(CFG))
+    print(native.announce(dm), flush=True)
+    nodes = NODES.read_text().splitlines()
+    want = [e for e in entries if ' /dev/dri/renderD' not in e]
+    if dm.mode == 'venus':
+        want = [f'lxc.mount.entry = {os.path.dirname(dm.venus_socket)} dev/venus none rbind,create=dir 0 0']
+    missing = [e for e in want if e not in nodes]
+    if missing:
+        raise RuntimeError(f'{NODES} lacks {len(missing)} entries of mode {dm.mode} (first: {missing[0]}); '
+                           f'run sudo {" ".join(source_native().waydroid_argv())} upgrade -o')
+    if [e for e in nodes if e in want] != want:
+        raise RuntimeError(f'{NODES} has the generator entries in another order; regenerate with upgrade -o')
+    if dm.mode == 'venus':
+        stale = [e for e in nodes if 'vendor_extra' in e]
+    else:
+        stale = [e for e in nodes if ' dev/venus ' in e or 'vulkan.virtio.so' in e]
+    if dm.mode == 'nvidia-prolapse':
+        stale += [e for e in nodes if 'libEGL_nvidia' in e or 'libnvidia-' in e or 'libnvglibc' in e]
+    if dm.vendor_image:   # everything is in the image: no staged root, no guest-layout file
+        stale += [e for e in nodes if 'vendor_extra' in e or str(VENUS_GUEST) in e or 'nvidia-source-native' in e]
+    if stale:
+        raise RuntimeError(f'{NODES} still has entries of another mode ({stale[0]}); regenerate with upgrade -o')
+    native.check_base_prop(str(BASE_PROP), dm)
+    if dm.mode == 'nvidia-prolapse' and not dm.vendor_image:
+        source_native().check(Path(dm.root), active=True)
+    print(f'verify-active: {dm.mode} configuration consistent', flush=True)
+
+
+def cmd_link(args):
+    if os.geteuid() != 0:
+        raise RuntimeError(f'link needs root: sudo -n {HELPER} driver-mode link MODE ROOT')
+    if args.mode not in native.ROOT_LINKS:
+        raise RuntimeError('venus has no root (its socket is the fixed ' + native.VENUS_SOCKET + ')')
+    root = Path(args.root).resolve()
+    source = (root / native.SOURCE_RM_MANIFEST).exists()
+    if source != (args.mode == 'nvidia-prolapse'):
+        raise RuntimeError(f'{root} is {"a source NVK + Rust RM root" if source else "not a source root"}; '
+                           f'it cannot be the {args.mode} root')
+    entries = native.lxc_nodes(str(root))              # the generator first: nothing changes on failure
+    link = native.ROOT_LINKS[args.mode]
+    previous = native.repoint_link(link, str(root))
+    print(f'{link} -> {root} (was {previous or "absent"}; generator: {len(entries)} entries)')
+    print('The running container keeps its mounts; run `waydroid upgrade -o` (dev/driver-mode set MODE) to use it')
+
+
+def _sudo_helper(*argv):
+    proc = subprocess.run(['sudo', '-n', HELPER, 'driver-mode', *argv])
+    if proc.returncode != 0:
+        raise RuntimeError(f'sudo -n {HELPER} driver-mode {" ".join(argv)} failed (exit {proc.returncode}). If the '
+                           f'helper has no driver-mode subcommand yet, install the updated wd-native, or run '
+                           f'`sudo python3 {REPO}/dev/driver-mode apply {" ".join(argv[1:])}` with the '
+                           f'Waydroid session and container stopped')
+
+
+def cmd_set(args):
+    extra = (['--native-gl', args.native_gl] if args.native_gl else []) + \
+        (['--install', args.install] if args.install else [])
+    print(f'== checking {args.mode} (root helper; nothing changes yet)', flush=True)
+    _sudo_helper('check', args.mode, *extra)
+    print('== stopping session and container', flush=True)
+    subprocess.run([str(REPO / 'dev/desktop'), 'stop'], check=True)
+    print('== switching', flush=True)
+    _sudo_helper('apply', args.mode, *extra)
+    print('== starting', flush=True)
+    subprocess.run([str(REPO / 'dev/desktop'), 'up'], check=True)
+
+
+def rust_native_gl_line(root):
+    """Status line: is our own GLES driver nvrm staged in the nvidia-prolapse root (native_gl record)?"""
+    try:
+        native._prolapse_gl(root)
+        return f'PASS    nvidia-prolapse + native GL (nvrm): staged and hash-verified in {root}'
+    except OSError as error:
+        try:
+            manifest = json.loads((Path(root) / native.SOURCE_RM_MANIFEST).read_text())
+        except (OSError, ValueError):
+            return f'FAIL    nvidia-prolapse + native GL (nvrm): {error}'
+        record = manifest.get('native_gl')
+        if not native.native_gl_enabled(manifest):
+            why = f'not staged ({record.get("reason")})' if isinstance(record, dict) else 'not staged (no native_gl record)'
+            return f'INFO    nvidia-prolapse + native GL (nvrm): {why}; nvidia_native_gl = on is refused'
+        return f'FAIL    nvidia-prolapse + native GL (nvrm): {error}'
+
+
+def cmd_status(args):
+    cp = read_cfg(args.cfg)
+    w = cp['waydroid']
+    try:
+        dm = native.driver_mode(w)
+        print(native.announce(dm) if dm else f'no {native.MODE_KEY}: stock Waydroid')
+    except OSError as error:
+        dm = None
+        print(f'FAIL    current configuration: {error}')
+    gl = w.get(native.GL_KEY) or 'off (unset)'
+    print(f'        {native.GL_KEY} = {gl}; on = glibc-shim: NVIDIA GLES (nvnative), nvidia-prolapse: our nvrm when '
+          'its root stages it')
+    for mode, link in native.ROOT_LINKS.items():
+        print(f'        {mode} root: {_link_state(mode)}')
+    print(f'        venus socket: {native.VENUS_SOCKET} ({"present" if Path(native.VENUS_SOCKET).is_socket() else "absent: systemctl --user start wd-venus.service"})')
+    shapes = [('nvidia-prolapse', 'vendor-image'), ('nvidia-prolapse', 'dev-root'), ('glibc-shim', None), ('venus', None)]
+    for mode, install in shapes:
+        name = f'{mode} ({install})' if install else mode
+        try:
+            new = switched(cp, mode, 'off', say=lambda _: None, install=install)
+            result = check_text(render(new))
+            state, detail = 'PASS', native.announce(result[0])
+        except OSError as error:
+            text = str(error)
+            state = 'UNKNOWN' if isinstance(error, PermissionError) or 'Permission denied' in text else 'FAIL'
+            detail = text + ('  (root-only file: sudo -n wd-native driver-mode check ' + mode +
+                             (f' --install {install}' if install else '') + ')' if state == 'UNKNOWN' else '')
+        current = ' (current)' if dm is not None and dm.mode == mode and dm.install == install else ''
+        print(f'{state:<8}{name}{current}: {detail}')
+        if install == 'dev-root':
+            try:
+                print(rust_native_gl_line(native.root_link(mode)[1]))
+            except OSError:
+                pass                     # the link problem is the line above
+        if mode == 'glibc-shim' and state == 'PASS':
+            try:
+                check_text(render(switched(cp, mode, 'on', say=lambda _: None)))
+                print('PASS    glibc-shim + native GL (nvnative): staged')
+            except OSError as error:
+                print(f'FAIL    glibc-shim + native GL (nvnative): {error}')
+    if dm is not None:
+        try:
+            native.check_base_prop(str(BASE_PROP), dm)
+            print(f'PASS    {BASE_PROP}: carries the {dm.mode} properties')
+        except OSError as error:
+            print(f'FAIL    {error}')
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('command', choices=['status', 'set', 'check', 'apply', 'verify-active', 'link'])
+    parser.add_argument('mode', nargs='?', choices=native.MODES)
+    parser.add_argument('root', nargs='?', help='link: the staged root to point the mode\'s link at')
+    parser.add_argument('--native-gl', choices=['on', 'off'])
+    parser.add_argument('--install', choices=list(native.INSTALLS),
+                        help='nvidia-prolapse install shape (default: the cfg\'s nvidia_prolapse_install)')
+    parser.add_argument('--cfg', type=Path, default=CFG, help='status/check: read this waydroid.cfg (default the live one)')
+    args = parser.parse_args()
+    needs_mode = args.command in ('set', 'check', 'apply', 'link')
+    if (args.command == 'link') != (args.root is not None):
+        parser.error('ROOT belongs to link (link MODE ROOT)')
+    if needs_mode != (args.mode is not None):
+        parser.error(f'{args.command} {"needs" if needs_mode else "takes no"} MODE')
+    if args.native_gl and args.command not in ('set', 'check', 'apply'):
+        parser.error('--native-gl belongs to set/check/apply')
+    if args.install and (args.command not in ('set', 'check', 'apply') or args.mode != 'nvidia-prolapse'):
+        parser.error('--install belongs to set/check/apply nvidia-prolapse')
+    if args.cfg != CFG and args.command not in ('status', 'check'):
+        parser.error('--cfg belongs to status/check (apply/set/verify-active act on the live cfg only)')
+    if args.command == 'verify-active':
+        return verify_active() or 0
+    return {'status': cmd_status, 'set': cmd_set, 'check': cmd_check, 'apply': cmd_apply,
+            'link': cmd_link}[args.command](args) or 0
+
+
+if __name__ == '__main__':
+    # tools whose output is parsed (lxc-info, debugfs, nm, modinfo, systemctl) print C-locale text, here and in
+    # every child process (waydroid upgrade, the gate)
+    os.environ['LC_ALL'] = 'C'
+    os.environ.pop('LANGUAGE', None)
+    try:
+        sys.exit(main())
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
+        sys.exit(f'driver-mode: {error}')

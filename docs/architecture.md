@@ -1,85 +1,64 @@
-# Architecture
+# How it works
 
-## Overview
+Waydroid runs Android in an LXC container that shares the host kernel. Each driver mode gives Android a
+different way to reach the NVIDIA GPU. All modes share the same display path: our hwcomposer hands each frame as
+a dma-buf to your Wayland compositor, which shows it without a copy.
 
-Run Waydroid GPU-accelerated on the host's proprietary NVIDIA driver, while
-staying container-native (no VM) and keeping the host's proprietary NVIDIA
-userspace intact. Android renders Vulkan through Mesa Venus; the calls are
-proxied over a unix socket to a host renderer that replays them on the real
-NVIDIA driver; the NVIDIA-driven KWin compositor displays the result.
-
-## Buffer allocation: why host-side
-
-On a machine whose displays are on the NVIDIA GPU, KWin composites on NVIDIA, so
-every buffer it shows must be NVIDIA-native:
-
-- NVIDIA EGL binds a foreign LINEAR dmabuf **only** as `GL_TEXTURE_EXTERNAL_OES`;
-  a compositor using `GL_TEXTURE_2D` for RGB cannot bind it. Cross-vendor
-  buffers are therefore undisplayable.
-- NVIDIA **exports** dma_buf from `VkDeviceMemory` (optimal and linear).
-
-So the guest allocates its buffers **through the host NVIDIA driver** over the
-socket, and never lets guest Mesa pick modifiers blindly. NVIDIA LINEAR is
-external-only (undisplayable); **block-linear** binds as `GL_TEXTURE_2D`, so GPU
-buffers use block-linear DRM modifiers.
-
-## The pipeline
+## nvidia-prolapse (default)
 
 ```
-Android app ── Vulkan ──▶ guest Mesa Venus (bionic, vulkan.virtio.so)
-                              │ Venus protocol over vtest unix socket
-                              ▼
-                     virglrenderer render server (host)
-                              │ real Vulkan
-                              ▼
-                     NVIDIA proprietary driver ──▶ GPU
-                              │ VkImage (block-linear) ─exported▶ dmabuf
-                              ▼
-       guest gralloc (minigbm vtest backend) imports the dmabuf
-                              │
-                     hwcomposer.waydroid ──▶ Wayland ──▶ KWin
+app ── GLES ──▶ ANGLE ──▶ Mesa NVK (Vulkan) ──▶ our Rust RM backend ──▶ /dev/nvidia* ──▶ GPU
+app ── GLES ──▶ nvrm (with --native-gl on) ──┘
+video ── Codec2 ──▶ our NVDEC decoder ──────────┘
 ```
 
-## Rendering backends in the guest
+- Mesa's NVK and its NAK shader compiler are built for Android (bionic). Instead of the nouveau kernel driver,
+  NVK talks to NVIDIA's kernel module through our backend, which uses the module's public RM interface (the same
+  headers as NVIDIA's open-gpu-kernel-modules).
+- `nvrm` is our own gallium GLES 3.1 driver on the same backend. It is optional; by default GLES goes through
+  ANGLE on NVK.
+- gralloc, hwcomposer, ANGLE, the Codec2 decoder and the drivers are vendor modules of our own Waydroid vendor
+  image, built from source on Waydroid's LineageOS 20 tree. The system image stays the official one.
+- No NVIDIA userspace library runs in the container. The host provides only the device nodes.
 
-All end up on NVIDIA via Venus:
+Code: `nvidia-prolapse/driver-source/native/`, `nvidia-prolapse/gralloc/`, `nvidia-prolapse/media/`,
+`vendor-image/`.
 
-- HWUI: `debug.hwui.renderer=skiavk` (Skia Vulkan).
-- SurfaceFlinger RenderEngine: `skiaglthreaded` on **ANGLE**
-  (`ro.hardware.egl=angle`) — GL-on-Vulkan-on-Venus, composition on a
-  dedicated RenderEngine thread (the old prebuilt-ANGLE crash that forced
-  unthreaded `skiagl` is gone on the source ANGLE build). In steady state
-  SF composites nothing: `persist.waydroid.use_subsurface=true` puts hwc
-  in compositing mode — layers are marked DEVICE and their dmabufs attach
-  directly to wayland (sub)surfaces, so a fullscreen game's buffer goes
-  straight to KWin with no SF GLES pass in between.
-- GL apps: ANGLE.
-- `ro.hardware.vulkan=virtio` selects Venus; `mesa.vn.debug=vtest` +
-  `mesa.vtest.socket.name=/dev/venus.sock` select the socket transport.
+## glibc-shim
 
-App-facing ANGLE and Venus are installed for both Android ABIs:
-`vendor/lib` contains ELF32/`EM_386`, while `vendor/lib64` contains
-ELF64/`EM_X86_64`. An ARM32-only app therefore follows
-`ARM32 -> Houdini -> x86 ANGLE -> x86 Venus -> vtest`. The socket protocol is
-architecture-neutral and the host renderer remains a single 64-bit process;
-host `lib32-nvidia-utils` is not part of this path. Gralloc, hwcomposer and
-SurfaceFlinger also remain 64-bit because they are system services rather
-than libraries loaded into an app process.
+```
+app ──▶ ANGLE or NVIDIA GLES ──▶ Android Vulkan HAL ──▶ host's NVIDIA libraries (glibc) via our shims ──▶ GPU
+```
 
-## Display: native high refresh
+NVIDIA's userspace driver is built for glibc, Android uses bionic. Our shim libraries carry the glibc names and
+translate the calls the NVIDIA libraries make. The host's own driver files are bind-mounted into the container
+unmodified, found where the system's dynamic loader finds them (any distribution layout) at the exact version of the
+loaded kernel module. One shim build covers driver 535 to 615 (glibc-shim runs on 550 to 615): it exports every glibc function those branches import
+(the import lists in `nvidia-prolapse/shim/imports/`), and the setup checks the installed driver's own imports
+against it before switching. Drivers 470 and older are refused: their Vulkan driver cannot share buffers with
+Android's compositor (no `VK_EXT_external_memory_dma_buf` / `VK_EXT_image_drm_format_modifier`). Driver 535 is
+refused too: its Vulkan driver cannot import or export a fence as a sync_file, which Android's buffer queue hands
+every buffer over with. Two driver defects with imported sync_files make the Vulkan HAL's `vkAcquireImageANDROID`
+wait for the buffer's fence on the CPU and import "already signalled" instead: on 550 to 560 when the app asks
+for a fence (waiting on a fence whose sync_file has not signalled yet crashes the driver), on 580 when it asks
+for a semaphore (the driver keeps an already signalled sync_file open forever). `make -C nvidia-prolapse/hal
+syncfd-check` measures both on the installed driver.
 
-The guest display runs at the monitor's real refresh rate (tested at 500 Hz):
+Code: `nvidia-prolapse/shim/`, `hal/`, `egl/`, `gralloc/`, `libdrm/`.
 
-- hwcomposer reports the rate from `persist.waydroid.refresh_rate` (up to
-  1000 Hz).
-- Stock SurfaceFlinger parks its vsync timer forever at periods ≤ 3 ms
-  (`kSnapToSameVsyncWithin` collapses all timeslots). The patched
-  SurfaceFlinger (`patches/lineage-20/`) makes the window tunable via
-  `debug.sf.snap_to_same_vsync_within_ns`; the config sets 1 ms, enabling
-  any refresh rate the display offers. Default behavior is unchanged when
-  the prop is unset.
+## venus
 
-## Frame synchronization: explicit fences with safe fallbacks
+```
+app ──▶ ANGLE ──▶ Mesa Venus (guest) ── Vulkan over a unix socket ──▶ virglrenderer (host) ──▶ NVIDIA driver
+```
+
+The guest Vulkan driver serializes calls and the host replays them on the real NVIDIA driver. gralloc allocates
+buffers through the host as well, so the compositor gets block-linear buffers it can display (NVIDIA's EGL only
+imports LINEAR buffers as external textures). Fences are shared through a DRM timeline syncobj, so a frame needs
+no socket round trip for them. ASTC textures, which desktop NVIDIA GPUs lack, are decoded on the GPU by a compute
+shader. Details: [transport-design.md](transport-design.md), [fence-timeline-design.md](fence-timeline-design.md).
+
+Frame synchronization in this fork:
 
 - **Fences**: a per-context DRM timeline syncobj is shared between guest and
   host once (the container shares the host kernel), so per-frame fence
@@ -91,42 +70,15 @@ The guest display runs at the monitor's real refresh rate (tested at 500 Hz):
   fences) are forwarded to the host driver as real semaphore imports instead
   of being CPU-waited before submit.
 
-## ASTC texture emulation (Vulkan-native games)
+## Display refresh
 
-Android mandates `textureCompressionASTC_LDR`; desktop NVIDIA GPUs don't
-have it, so Vulkan-native games would sample garbage. The guest Venus driver
-emulates it: ASTC images are backed by RGBA host images, and
-`vkCmdCopyBufferToImage` uploads are transparently decoded by a compute
-shader (mesa's common `vk_texcompress_astc` decoder) recorded inline into
-the app's command buffer. Sampling, mips, arrays and sRGB all behave as
-native. Opt-out with `VN_NO_ASTC_EMU=1`. ETC2 is not yet emulated.
+hwcomposer reports the fastest refresh rate among your monitors when the container starts, so Android renders at
+that rate. Android's stock SurfaceFlinger treats vsyncs closer than 3 ms as one, which can stall above about
+333 Hz. The default mode uses the official system image's SurfaceFlinger, so `--refresh` caps the rate there.
+The `venus` and `glibc-shim` modes bind in a patched SurfaceFlinger whose window shrinks with the refresh rate.
 
-## Component map
+## Waydroid integration
 
-| Component | Repo (upstream) | Change |
-|---|---|---|
-| Guest Vulkan driver | Mesa `src/virtio/vulkan/` | vtest sync_fd + dma_buf transport; timeline-fence path; semaphore sync_fd import; ASTC LDR emulation; AHB memory steering; UMA memory flags |
-| Host renderer | virglrenderer `vtest/`, `src/venus/` | sync_file export, dmabuf-import blob, gpu-alloc command, global-priority strip/retry |
-| gralloc | minigbm `gbm_mesa_driver/` | net-new `vtest_wrapper.c` allocating via `VCMD_RESOURCE_ALLOC_GPU` |
-| Display | android_hardware_waydroid (hwcomposer) | refresh override; direct (subsurface) composition with compositor-compatibility gate; opaque-layer alpha handling; fence lifecycle fixes; single-window layer selection |
-| Guest SurfaceFlinger | LineageOS 20 `frameworks/native` | prop-tunable vsync snap window (enables >333 Hz) |
-| Integration | waydroid `lxc.py`, `hardware_manager.py` | emit mounts/props in generators; `suspend_action=none` |
-
-## Waydroid integration points (`patches/waydroid`)
-
-- `tools/helpers/gpu.py` blacklists `nvidia`, so Waydroid auto-picks the other
-  render node. The translator sidesteps this: it uses no DRM render node, it
-  talks to the host daemon over a socket.
-- `tools/helpers/lxc.py` `generate_nodes_lxc_config` emits the config_nodes
-  bind-mounts (venus socket + guest `.so`s) so they survive `waydroid upgrade`;
-  props live in `waydroid.cfg [properties]`.
-- `tools/services/hardware_manager.py` honors `suspend_action = none` so the
-  container isn't `lxc-freeze`d when the Android screen blanks.
-
-## Host capabilities relied upon
-
-- `nvidia-drm.modeset=1` ⇒ `VK_EXTERNAL_*_HANDLE_TYPE_SYNC_FD` (fence + semaphore,
-  export + import).
-- dmabuf export/import + `VK_EXT_image_drm_format_modifier`,
-  `external_memory_dma_buf`, `queue_family_foreign`.
-- NVIDIA dma_bufs are mmap-able from every memory type on the current driver.
+`waydroid/nvidia_native.py` generates the container's mounts and Android properties for the chosen mode. It
+refuses to start with a clear message when something is missing; no mode falls back to another silently. See
+[waydroid/README.md](../waydroid/README.md).

@@ -3,7 +3,7 @@
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 source "$REPO/packaging/ci/pins.env"
-source "$REPO/packaging/ci/hwc-pins.env"
+source "$REPO/hwcomposer/pins.env"
 WNV="${WNV:-$REPO/.work}"
 mkdir -p "$WNV"
 fetch() {
@@ -22,7 +22,7 @@ fetch() {
     git -C "$dir" config user.email 'build@localhost'
     if [[ -n "$patches" ]]; then
         local p i=0
-        for p in "$REPO/patches/$patches/"*.patch; do
+        for p in "$REPO/$patches/"*.patch; do
             i=$((i + 1))
             if (( i <= committed )); then git -C "$dir" am "$p"; else git -C "$dir" apply --intent-to-add "$p"; fi
         done
@@ -31,9 +31,9 @@ fetch() {
 }
 case "${1:-sources}" in
  sources)
-    fetch mesa "$MESA_UPSTREAM" "$MESA_SHA" mesa 2
-    fetch virglrenderer "$VIRGL_UPSTREAM" "$VIRGL_SHA" virglrenderer 3
-    fetch hwcomposer-src "$HWC_UPSTREAM" "$HWC_SHA" hwcomposer
+    fetch mesa "$MESA_UPSTREAM" "$MESA_SHA" patches/mesa 2
+    fetch virglrenderer "$VIRGL_UPSTREAM" "$VIRGL_SHA" patches/virglrenderer 3
+    fetch hwcomposer-src "$HWC_UPSTREAM" "$HWC_SHA" hwcomposer/patches 999
     fetch minigbm "$MINIGBM_UPSTREAM" "$MINIGBM_SHA"
     printf '%s\n' "$MINIGBM_SHA" > "$WNV/minigbm/.provisioned"
     ;;

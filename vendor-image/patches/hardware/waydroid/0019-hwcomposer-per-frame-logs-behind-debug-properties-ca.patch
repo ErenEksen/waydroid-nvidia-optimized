@@ -1,0 +1,165 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Eren Eksen <ereneksen27@gmail.com>
+Date: Tue, 27 Oct 2026 16:07:52 +0200
+Subject: [PATCH] hwcomposer: per-frame logs behind debug properties; cache
+ each surface's opaque region
+
+attach-dmabuf and hwc_set logs only with debug.waydroid.hwc_buffers / debug.waydroid.hwc_frames.
+wl_surface_set_opaque_region is sent only when the layer's opacity or size changes.
+---
+ hwcomposer/gralloc_handler.cpp |  6 ++++--
+ hwcomposer/hwcomposer.cpp      | 21 ++++++---------------
+ hwcomposer/wayland-hwc.cpp     | 30 +++++++++++++++++++++++++++++-
+ hwcomposer/wayland-hwc.h       |  9 +++++++--
+ 4 files changed, 46 insertions(+), 20 deletions(-)
+
+diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
+index 15804f4..275e4db 100644
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -36,6 +36,7 @@
+ #include <wayland-client.h>
+ 
+ #include <log/log.h>
++#include <cutils/properties.h>
+ #include <ui/Rect.h>
+ #include <ui/GraphicBufferMapper.h>
+ #include <gralloc_handle.h>
+@@ -393,13 +394,14 @@ std::unique_ptr<buffer> create_buffer_cros(display *display, const buffer_metada
+     dmabuf_plane planes[DRV_MAX_PLANES];
+     for (unsigned i = 0; i < n; i++)
+         planes[i] = { cros_handle->fds[i], cros_handle->offsets[i], cros_handle->strides[i] };
+-    if (n == 1)
++    static const bool debug_buffers = property_get_bool("debug.waydroid.hwc_buffers", false);
++    if (debug_buffers && n == 1)
+         ALOGI("attach dmabuf: %ux%u fmt 0x%x stride %u mod 0x%llx usage 0x%x",
+               metadata.width, metadata.height, cros_handle->format,
+               cros_handle->strides[0],
+               (unsigned long long)cros_handle->format_modifier,
+               cros_handle->usage);
+-    else
++    else if (debug_buffers)
+         ALOGI("attach dmabuf: %ux%u fmt 0x%x planes %u (offset/stride %u/%u, %u/%u, %u/%u) "
+               "mod 0x%llx usage 0x%x",
+               metadata.width, metadata.height, cros_handle->format, n,
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index ade5a3c..dba3bc2 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -469,20 +469,10 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+      * Without an opaque region the compositor premult-blends the subsurface
+      * and "transparent" content shows the black window behind it — while
+      * SF-side screenshots look correct. */
+-    {
+-        struct wl_region *opaque = nullptr;
+-        if (hwc_layer->blending == HWC_BLENDING_NONE) {
+-            opaque = wl_compositor_create_region(pdev->display->compositor);
+-            /* finite surface-local rect: INT32_MAX regions overflow region
+-             * math in some compositors and get silently dropped */
+-            wl_region_add(opaque, 0, 0,
+-                          (int32_t)ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
+-                          (int32_t)ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
+-        }
+-        wl_surface_set_opaque_region(surface_context.surface, opaque);
+-        if (opaque)
+-            wl_region_destroy(opaque);
+-    }
++    surface_context.set_opacity(pdev->display->compositor,
++        hwc_layer->blending == HWC_BLENDING_NONE,
++        (int32_t)ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
++        (int32_t)ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
+     // Scaling can only be supported correctly with wp_viewport
+     if (surface_context.viewport) {
+         /* the viewport source is in post-buffer_transform space, like the transformed crop */
+@@ -609,7 +599,8 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+ 
+     auto& mode = pdev->selected_mode;
+     static int set_count = 0;
+-    if ((set_count++ % 2000) == 0) {
++    static const bool debug_frames = property_get_bool("debug.waydroid.hwc_frames", false);
++    if (debug_frames && (set_count++ % 2000) == 0) {
+         char aa[PROPERTY_VALUE_MAX];
+         property_get("waydroid.active_apps", aa, "none");
+         ALOGI("hwc_set #%d: active_apps=%s layers=%zu windows=%zu compose=%d",
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index 2343369..b62843c 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -781,6 +781,27 @@ BufferTransform hwc_transform_to_buffer_transform(uint32_t hwc_transform) {
+     }
+ }
+ 
++void surface_context::set_opacity(wl_compositor *compositor, bool opaque, int32_t width, int32_t height) {
++    if (!opaque)
++        width = height = 0;
++    if (opacity_valid && opaque_cached == opaque && opaque_width == width && opaque_height == height)
++        return;
++    wl_region *region = nullptr;
++    if (opaque) {
++        region = wl_compositor_create_region(compositor);
++        if (!region)
++            return; // leave cache invalid/unchanged so the next frame retries
++        wl_region_add(region, 0, 0, width, height);
++    }
++    wl_surface_set_opaque_region(surface, region);
++    if (region)
++        wl_region_destroy(region);
++    opacity_valid = true;
++    opaque_cached = opaque;
++    opaque_width = width;
++    opaque_height = height;
++}
++
+ void surface_context::attach_buffer(buffer& buf) {
+     wl_surface_attach(surface, buf.wl_buffer, 0, 0);
+ }
+@@ -1141,11 +1162,14 @@ surface_context::~surface_context() {
+     if (surface)
+         wl_surface_destroy(surface);
+ }
+-surface_context::surface_context(surface_context&& other) : surface(other.surface), viewport(other.viewport) {
++surface_context::surface_context(surface_context&& other) : surface(other.surface), viewport(other.viewport),
++    opacity_valid(other.opacity_valid), opaque_cached(other.opaque_cached),
++    opaque_width(other.opaque_width), opaque_height(other.opaque_height) {
+     other.surface = nullptr;
+     other.viewport = nullptr;
+ }
+ surface_context& surface_context::operator=(surface_context&& rhs) {
++    if (this == &rhs) return *this;
+     if (viewport)
+         wp_viewport_destroy(viewport);
+     if (surface)
+@@ -1153,6 +1177,10 @@ surface_context& surface_context::operator=(surface_context&& rhs) {
+ 
+     surface = rhs.surface;
+     viewport = rhs.viewport;
++    opacity_valid = rhs.opacity_valid;
++    opaque_cached = rhs.opaque_cached;
++    opaque_width = rhs.opaque_width;
++    opaque_height = rhs.opaque_height;
+ 
+     rhs.surface = nullptr;
+     rhs.viewport = nullptr;
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 0f46428..6983817 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -175,8 +175,13 @@ enum class BufferTransform : int32_t {
+ BufferTransform hwc_transform_to_buffer_transform(uint32_t hwc_transform);
+ 
+ struct surface_context {
+-    struct wl_surface *surface;
+-    struct wp_viewport *viewport;
++    struct wl_surface *surface {};
++    struct wp_viewport *viewport {};
++    // State belongs to the wl_surface and moves with it, never to a buffer.
++    bool opacity_valid {false};
++    bool opaque_cached {false};
++    int32_t opaque_width {0}, opaque_height {0};
++    void set_opacity(wl_compositor *compositor, bool opaque, int32_t width, int32_t height);
+ 
+     surface_context() = default;
+     surface_context(wl_surface *surface, wp_viewport *viewport);
+-- 
+2.56.0
+

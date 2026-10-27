@@ -33,9 +33,9 @@ a.output.mkdir(parents=True)
 manifest = {'schema_version': 1, 'status': 'candidate; live Android acceptance pending', 'files': {},
     'source_head': subprocess.check_output(['git', '-C', str(repo), 'rev-parse', 'HEAD'], text=True).strip(),
     'source_dirty': bool(subprocess.check_output(['git', '-C', str(repo), 'status', '--porcelain'], text=True).strip()),
-    'pins': (repo/'packaging/ci/pins.env').read_text() + (repo/'packaging/ci/hwc-pins.env').read_text(),
+    'pins': (repo/'packaging/ci/pins.env').read_text() + (repo/'hwcomposer/pins.env').read_text(),
     'source_files': {}}
-for directory in ('build', 'dev', 'patches', 'src', 'packaging/performance'):
+for directory in ('build', 'dev', 'hwcomposer', 'patches', 'src', 'packaging/performance'):
     for f in sorted((repo/directory).rglob('*')):
         if f.is_file() and not any(part in ('__pycache__', 'out') for part in f.parts) and f.suffix not in ('.pyc', '.so', '.o', '.a'):
             manifest['source_files'][str(f.relative_to(repo))] = sha256(f.read_bytes())

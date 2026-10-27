@@ -1,0 +1,116 @@
+#!/bin/bash
+# wd-native — privileged helper for the native driver modes (nvidia-prolapse, glibc-shim).
+#
+# Runs as root through ONE narrow sudoers rule (example: packaging/native/sudoers.example).
+# It only runs this repository's own tools (dev/source-native, dev/driver-mode,
+# waydroid/nvidia_native.py) with validated arguments: roots must be directories directly
+# under /var/lib/waydroid with the expected names, modes are a fixed list, paths given back to
+# the caller must lie under the checkout's build/.
+#
+# SECURITY: whatever code lives in the checkout runs as root here. The checkout is read from
+# the root-owned config /etc/waydroid-nvidia/wd-native.conf (REPO=/absolute/path), default
+# /usr/lib/waydroid-nvidia/native (the package's root-owned copy). A checkout that a normal user
+# can write is refused unless that config also says ALLOW_USER_OWNED_REPO=yes; setting it makes
+# write access to that checkout equivalent to root, which is the developer's own choice.
+set -euo pipefail
+# Tool output parsed here and in every child (readelf, debugfs, lxc-info, systemctl, ...) is the untranslated text
+export LC_ALL=C
+unset LANGUAGE
+umask 022
+
+WD=/var/lib/waydroid
+CONF=/etc/waydroid-nvidia/wd-native.conf
+REPO=/usr/lib/waydroid-nvidia/native
+ALLOW_USER_OWNED_REPO=no
+
+die() { echo "wd-native: $*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || die "run through sudo (see packaging/native/sudoers.example)"
+USER_NAME="${SUDO_USER:-}"
+[[ -n "$USER_NAME" && "$USER_NAME" != root ]] || die "invoke through sudo as a normal user"
+
+# Config: only KEY=VALUE lines for the two known keys; never sourced as shell.
+if [[ -e "$CONF" ]]; then
+    [[ "$(stat -c '%u' "$CONF")" == 0 && ! -L "$CONF" ]] || die "$CONF must be a regular file owned by root"
+    (( ( 8#$(stat -c '%a' "$CONF") & 8#022 ) == 0 )) || die "$CONF must not be group/world-writable"
+    while IFS='=' read -r key value; do
+        case "$key" in
+            ''|'#'*) ;;
+            REPO) REPO=$value ;;
+            ALLOW_USER_OWNED_REPO) ALLOW_USER_OWNED_REPO=$value ;;
+            *) die "$CONF: unknown key '$key'" ;;
+        esac
+    done < "$CONF"
+fi
+[[ "$REPO" == /* ]] || die "REPO must be an absolute path (in $CONF)"
+REPO=$(realpath -e -- "$REPO") || die "REPO $REPO does not exist (set REPO= in $CONF)"
+for f in dev/source-native dev/driver-mode waydroid/nvidia_native.py; do
+    [[ -f "$REPO/$f" ]] || die "$REPO is not a waydroid-nvidia checkout or bundle (no $f); set REPO= in $CONF"
+done
+if [[ "$ALLOW_USER_OWNED_REPO" != yes ]]; then
+    for p in "$REPO" "$REPO/dev" "$REPO/waydroid" "$REPO/tools" "$REPO/nvidia-prolapse" \
+             "$REPO/dev/source-native" "$REPO/dev/driver-mode" "$REPO/waydroid/nvidia_native.py"; do
+        [[ -e "$p" ]] || continue
+        [[ "$(stat -c '%u' "$p")" == 0 ]] || die "$p is not owned by root: running it as root would let its owner act as root. Use the packaged copy, or opt in with ALLOW_USER_OWNED_REPO=yes in $CONF"
+        (( ( 8#$(stat -c '%a' "$p") & 8#022 ) == 0 )) || die "$p is group/world-writable"
+    done
+fi
+
+real() { realpath -m -- "$1"; }
+under() { local rp; rp=$(real "$1"); [[ "$rp" == "$2"/* ]] || die "path '$1' not under $2"; printf '%s' "$rp"; }
+source_root() { # /var/lib/waydroid/nvidia-source-native-* (staged roots) or before-source-native-* (checkpoints)
+    local rp; rp=$(real "$1")
+    [[ "$rp" =~ ^$WD/(nvidia-source-native-|before-source-native-)[A-Za-z0-9._-]+$ ]] || die "not a source-native root/checkpoint: $1"
+    printf '%s' "$rp"
+}
+MODES='^(nvidia-prolapse|glibc-shim|venus)$'
+PY=/usr/bin/python3
+
+cmd="${1:-}"; shift || true
+cd "$REPO"
+case "$cmd" in
+  stage)    # stage ROOT [--rust-profile dev|release]
+    dest=$(source_root "${1:?ROOT}"); shift
+    [[ $# -eq 0 || ( $# -eq 2 && "$1" == --rust-profile && "$2" =~ ^(dev|release)$ ) ]] || die "usage: stage ROOT [--rust-profile dev|release]"
+    exec "$PY" dev/source-native stage "$dest" "$@" ;;
+  activate) dest=$(source_root "${1:?ROOT}"); exec "$PY" dev/source-native activate "$dest" ;;
+  restore)  dest=$(source_root "${1:?CHECKPOINT}"); exec "$PY" dev/source-native restore "$dest" ;;
+  status)   [[ $# -eq 0 ]] || die "usage: status"; exec "$PY" dev/source-native status ;;
+  verify)   # LXC entries of the configured mode, generated and hash-verified as root (staged roots
+            # hold root-only files such as odm/etc/build.prop 0600); empty in venus mode
+    [[ $# -eq 0 ]] || die "usage: verify"; exec "$PY" waydroid/nvidia_native.py --cfg "$WD/waydroid.cfg" ;;
+  invalidate-caches) # container stopped: move obsolete HWUI/EGL shader caches into a new checkpoint dir
+    [[ $# -eq 0 ]] || die "usage: invalidate-caches"
+    exec "$PY" dev/source-native invalidate-caches "$WD/before-source-native-$(date +%Y%m%d-%H%M%S)" ;;
+  driver-mode) # check|apply MODE [--native-gl on|off] [--install vendor-image|dev-root] | verify-active | link MODE ROOT
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      check|apply)
+        usage="usage: driver-mode $sub nvidia-prolapse|glibc-shim|venus [--native-gl on|off] [--install vendor-image|dev-root]"
+        [[ "${1:-}" =~ $MODES ]] || die "$usage"
+        rest=("${@:2}")
+        while [[ ${#rest[@]} -gt 0 ]]; do
+            case "${rest[0]}" in
+              --native-gl) [[ "${rest[1]:-}" =~ ^(on|off)$ ]] || die "$usage" ;;
+              --install) [[ "${rest[1]:-}" =~ ^(vendor-image|dev-root)$ ]] || die "$usage" ;;
+              *) die "$usage" ;;
+            esac
+            rest=("${rest[@]:2}")
+        done
+        exec "$PY" dev/driver-mode "$sub" "$@" ;;
+      verify-active) [[ $# -eq 0 ]] || die "usage: driver-mode verify-active"; exec "$PY" dev/driver-mode verify-active ;;
+      link) # link nvidia-prolapse|glibc-shim ROOT : generator-check ROOT, then repoint /var/lib/waydroid/nvidia-<mode>
+        [[ $# -eq 2 ]] || die "usage: driver-mode link nvidia-prolapse|glibc-shim ROOT"
+        case "$1" in
+          nvidia-prolapse) dest=$(source_root "$2") ;;
+          glibc-shim) dest=$(real "$2")
+                      [[ "$dest" =~ ^$WD/[A-Za-z0-9._-]+$ && "$dest" != "$WD/nvidia-glibc-shim" && "$dest" != "$WD/nvidia-prolapse" ]] \
+                          || die "not a staging root directly under $WD: $2" ;;
+          *) die "usage: driver-mode link nvidia-prolapse|glibc-shim ROOT" ;;
+        esac
+        exec "$PY" dev/driver-mode link "$1" "$dest" ;;
+      *) die "usage: driver-mode check|apply MODE [--native-gl on|off] | driver-mode verify-active | driver-mode link MODE ROOT" ;;
+    esac ;;
+  chown)    # chown PATH : hand a root-written output under <checkout>/build back to the caller
+    p=$(under "${1:?PATH}" "$REPO/build"); chown -R -- "$USER_NAME:" "$p" ;;
+  *) die "usage: wd-native stage|activate|restore|status|verify|invalidate-caches|driver-mode|chown ..." ;;
+esac

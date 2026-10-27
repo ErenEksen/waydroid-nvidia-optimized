@@ -1,0 +1,292 @@
+From: waydroid-nvidia-prolapse
+Subject: [PATCH] Vulkan: Prefer ReBAR memory for dynamic buffers on discrete GPUs
+
+Base: https://chromium.googlesource.com/angle/angle c1a25085dd9e4a8cd6c72be278c0b4bdf6ce2824
+(the relevant code is unchanged on main 34ffa963ca9c, 2026-10-09). Apply with `git apply`.
+
+preferDeviceLocalMemoryHostVisible was only enabled for virtual GPUs whose
+host visible device local heap covers >= 80% of the device local heap, and
+never for discrete GPUs. GL_DYNAMIC_DRAW / GL_STREAM_DRAW buffers were given
+host visible system memory regardless of the feature. On a discrete GPU with
+resizable BAR, a dynamic-draw storage buffer updated with atomics by a compute
+shader therefore lives in system RAM and every atomic crosses PCIe.
+
+Measured on an RTX 5090 (615.71.09, ReBAR: memory type 4
+DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT on the 31.84 GiB VRAM heap),
+Minecraft Bedrock 1.26.60.24 Vibrant Visuals main menu at 2560x1412:
+  before: 59.4 fps, render thread 16.8 ms, luminance-histogram dispatch
+          13.2 ms/frame, its storage buffer in memory type 2 (system RAM)
+  after:  500 fps (vsync cap), render thread 1.9 ms, same dispatch
+          0.031 ms/frame, no storage buffer outside device local memory
+
+Changes:
+- Renderer: factor the existing ">= 80%" heap check into
+  hasLargeHostVisibleDeviceLocalHeap() and also enable
+  preferDeviceLocalMemoryHostVisible for discrete GPUs that pass it (ReBAR).
+  A discrete GPU without ReBAR (256 MiB BAR heap) keeps today's behaviour.
+  mutableMipmapTextureUpload, which shares canPreferDeviceLocalMemoryHostVisible(),
+  is unchanged.
+- BufferVk: with the feature enabled, DynamicDraw/StreamDraw request
+  DEVICE_LOCAL|HOST_VISIBLE|HOST_COHERENT, as static usages already do
+  (preferHostCachedForNonStaticBufferUsage keeps precedence). Read/Copy
+  usages keep host cached memory.
+- BufferVk: CPU reads of BAR memory are uncached PCIe round trips
+  (RTX 5090: 0.084 GB/s memcpy vs 36-43 GB/s host cached, 0.79 GB/s system
+  uncached; writes 19 GB/s vs 22-27 GB/s). On discrete GPUs only:
+  * non-persistent read maps of such buffers go through the existing
+    staging-copy path (handleDeviceLocalBufferMap), as device local buffers
+    did before;
+  * buffer-to-buffer copies from them are done on the GPU
+    (ShouldUseCPUToCopyData);
+  * ghosting copies the bytes outside the mapped range on the GPU and reads
+    back on the CPU only the mapped range when it must be preserved;
+  * glBufferStorage buffers with GL_MAP_READ_BIT keep host cached memory.
+  Integrated and virtual GPUs keep their existing read paths.
+
+diff --git a/src/libANGLE/renderer/vulkan/BufferVk.cpp b/src/libANGLE/renderer/vulkan/BufferVk.cpp
+index 3bfcb32988..4aee823c6c 100644
+--- a/src/libANGLE/renderer/vulkan/BufferVk.cpp
++++ b/src/libANGLE/renderer/vulkan/BufferVk.cpp
+@@ -52,6 +52,28 @@ constexpr VkMemoryPropertyFlags kHostUncachedFlags =
+ constexpr VkMemoryPropertyFlags kHostCachedNonCoherentFlags =
+     (VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT);
+ 
++bool IsDiscreteGPU(vk::Renderer *renderer)
++{
++    return renderer->getPhysicalDeviceProperties().deviceType ==
++           VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
++}
++
++// On a discrete GPU, host visible device local memory is the PCIe BAR (all of VRAM with resizable
++// BAR, see preferDeviceLocalMemoryHostVisible).  The CPU maps it uncached/write-combined: CPU
++// writes stream at close to system memory speed, but every CPU read is a round trip over PCIe (two
++// orders of magnitude slower than host cached memory).  Buffers in such memory are read back
++// through a GPU copy into cached memory instead, the way device local buffers are.
++bool IsSlowForCPURead(vk::Renderer *renderer, const vk::BufferHelper &buffer)
++{
++    constexpr VkMemoryPropertyFlags kMask = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT |
++                                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
++                                            VK_MEMORY_PROPERTY_HOST_CACHED_BIT;
++    constexpr VkMemoryPropertyFlags kUncachedDeviceLocalHostVisible =
++        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
++    return IsDiscreteGPU(renderer) &&
++           (buffer.getMemoryPropertyFlags() & kMask) == kUncachedDeviceLocalHostVisible;
++}
++
+ // Vertex attribute buffers are used as storage buffers for conversion in compute, where access to
+ // the buffer is made in 4-byte chunks.  Assume the size of the buffer is 4k+n where n is in [0, 3).
+ // On some hardware, reading 4 bytes from address 4k returns 0, making it impossible to read the
+@@ -87,9 +109,16 @@ VkMemoryPropertyFlags GetPreferredMemoryType(vk::Renderer *renderer,
+         case gl::BufferUsage::DynamicDraw:
+         case gl::BufferUsage::StreamDraw:
+             // For non-static usage where the CPU performs a write-only access, request
+-            // a host uncached memory
+-            return renderer->getFeatures().preferHostCachedForNonStaticBufferUsage.enabled
+-                       ? kHostCachedFlags
++            // a host uncached memory.  When host visible device local memory is preferred, use it:
++            // CPU writes to it are as cheap as to uncached system memory, while the GPU, which may
++            // also read and write these buffers heavily (e.g. storage buffers), accesses them
++            // without crossing PCIe on a discrete GPU.
++            if (renderer->getFeatures().preferHostCachedForNonStaticBufferUsage.enabled)
++            {
++                return kHostCachedFlags;
++            }
++            return renderer->getFeatures().preferDeviceLocalMemoryHostVisible.enabled
++                       ? kDeviceLocalHostCoherentFlags
+                        : kHostUncachedFlags;
+         case gl::BufferUsage::DynamicCopy:
+         case gl::BufferUsage::DynamicRead:
+@@ -126,6 +155,13 @@ VkMemoryPropertyFlags GetStorageMemoryType(vk::Renderer *renderer,
+             // If persistently mapped buffers ever use non-coherent memory, then said
+             // |glMemoryBarrier| call must result in |vkInvalidateMappedMemoryRanges| for all
+             // persistently mapped buffers.
++            //
++            // A buffer the CPU maps for reading (possibly persistently) stays in host cached
++            // memory on a discrete GPU, see IsSlowForCPURead().
++            if (!externalBuffer && (storageFlags & GL_MAP_READ_BIT) != 0 && IsDiscreteGPU(renderer))
++            {
++                return kHostCachedFlags;
++            }
+             return kDeviceLocalHostCoherentFlags;
+         }
+         return kDeviceLocalFlags;
+@@ -186,6 +222,12 @@ bool ShouldUseCPUToCopyData(ContextVk *contextVk,
+         return false;
+     }
+ 
++    // Reading it on the CPU would be slower than a GPU copy.
++    if (IsSlowForCPURead(renderer, buffer))
++    {
++        return false;
++    }
++
+     // For some GPUs (e.g. ARM) we always prefer using CPU to do copy instead of using the GPU to
+     // avoid pipeline bubbles. If the GPU is currently busy and data copy size is less than certain
+     // threshold, we choose to use CPU to do the copy over GPU to achieve better parallelism.
+@@ -752,6 +794,54 @@ angle::Result BufferVk::ghostMappedBuffer(ContextVk *contextVk,
+     ANGLE_TRY(acquireBufferHelper(contextVk, static_cast<size_t>(mState.getSize()),
+                                   BufferUsageType::Dynamic, feedback));
+ 
++    // The previous buffer is slow for the CPU to read: copy everything outside the mapped range on
++    // the GPU (those bytes are disjoint from anything the application may write through the
++    // returned pointer), and read back on the CPU only the mapped range, if it must be preserved.
++    if (IsSlowForCPURead(contextVk->getRenderer(), src))
++    {
++        const VkDeviceSize totalSize  = static_cast<VkDeviceSize>(mState.getSize());
++        const VkDeviceSize rangeEnd   = offset + length;
++        constexpr int kMaxCopyRegions = 2;
++        angle::FixedVector<VkBufferCopy, kMaxCopyRegions> copyRegions;
++        ASSERT(rangeEnd <= totalSize);
++
++        if (offset != 0)
++        {
++            copyRegions.push_back({src.getOffset(), mBuffer.getOffset(), offset});
++        }
++        if (rangeEnd < totalSize)
++        {
++            copyRegions.push_back(
++                {src.getOffset() + rangeEnd, mBuffer.getOffset() + rangeEnd, totalSize - rangeEnd});
++        }
++        if (!copyRegions.empty())
++        {
++            ANGLE_TRY(CopyBuffers(contextVk, &src, &mBuffer,
++                                  static_cast<uint32_t>(copyRegions.size()), copyRegions.data()));
++        }
++
++        uint8_t *dstMapPtr = nullptr;
++        ANGLE_TRY(mBuffer.map(contextVk, &dstMapPtr));
++        ASSERT(mBuffer.isCoherent());
++
++        if ((access & GL_MAP_INVALIDATE_RANGE_BIT) == 0 && length != 0)
++        {
++            uint8_t *srcMapPtr = nullptr;
++            ANGLE_TRY(src.map(contextVk, &srcMapPtr));
++            ASSERT(src.isCoherent());
++            ANGLE_UNSAFE_TODO(
++                memcpy(dstMapPtr + offset, srcMapPtr + offset, static_cast<size_t>(length)));
++        }
++
++        ANGLE_TRY(contextVk->releaseBufferAllocation(&src));
++
++        // Return the already mapped pointer with the offset adjustment to avoid the call to
++        // unmap().
++        *mapPtr = ANGLE_UNSAFE_TODO(dstMapPtr + offset);
++
++        return angle::Result::Continue;
++    }
++
+     // Before returning the new buffer, map the previous buffer and copy its entire
+     // contents into the new buffer.
+     uint8_t *srcMapPtr = nullptr;
+@@ -834,7 +924,10 @@ angle::Result BufferVk::mapRangeImpl(ContextVk *contextVk,
+             }
+             ANGLE_TRY(renderer->finishResourceUse(contextVk, mBuffer.getWriteResourceUse()));
+         }
+-        if (hostVisible)
++        // A persistent mapping must be the buffer's own memory; otherwise read memory that is slow
++        // for the CPU to read through a copy, as for device local memory.
++        if (hostVisible &&
++            ((access & GL_MAP_PERSISTENT_BIT_EXT) != 0 || !IsSlowForCPURead(renderer, mBuffer)))
+         {
+             return mapHostVisibleBuffer(contextVk, offset, access, mapPtrBytes);
+         }
+diff --git a/src/libANGLE/renderer/vulkan/vk_renderer.cpp b/src/libANGLE/renderer/vulkan/vk_renderer.cpp
+index f7177a1b4b..723c332528 100644
+--- a/src/libANGLE/renderer/vulkan/vk_renderer.cpp
++++ b/src/libANGLE/renderer/vulkan/vk_renderer.cpp
+@@ -5431,34 +5431,38 @@ bool Renderer::supportsAstcHdr() const
+            getFeatures().supportsAstcHdr3dTextures.enabled;
+ }
+ 
+-bool Renderer::canPreferDeviceLocalMemoryHostVisible(VkPhysicalDeviceType deviceType)
++bool Renderer::hasLargeHostVisibleDeviceLocalHeap()
+ {
+-    if (deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)
++    const vk::MemoryProperties &memoryProperties = getMemoryProperties();
++    static constexpr VkMemoryPropertyFlags kHostVisiableDeviceLocalFlags =
++        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
++    VkDeviceSize minHostVisiableDeviceLocalHeapSize = std::numeric_limits<VkDeviceSize>::max();
++    VkDeviceSize maxDeviceLocalHeapSize             = 0;
++    for (uint32_t i = 0; i < memoryProperties.getMemoryTypeCount(); ++i)
+     {
+-        const vk::MemoryProperties &memoryProperties = getMemoryProperties();
+-        static constexpr VkMemoryPropertyFlags kHostVisiableDeviceLocalFlags =
+-            VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT | VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT;
+-        VkDeviceSize minHostVisiableDeviceLocalHeapSize = std::numeric_limits<VkDeviceSize>::max();
+-        VkDeviceSize maxDeviceLocalHeapSize             = 0;
+-        for (uint32_t i = 0; i < memoryProperties.getMemoryTypeCount(); ++i)
++        if ((memoryProperties.getMemoryType(i).propertyFlags &
++             VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0)
+         {
+-            if ((memoryProperties.getMemoryType(i).propertyFlags &
+-                 VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) != 0)
+-            {
+-                maxDeviceLocalHeapSize =
+-                    std::max(maxDeviceLocalHeapSize, memoryProperties.getHeapSizeForMemoryType(i));
+-            }
+-            if ((memoryProperties.getMemoryType(i).propertyFlags & kHostVisiableDeviceLocalFlags) ==
+-                kHostVisiableDeviceLocalFlags)
+-            {
+-                minHostVisiableDeviceLocalHeapSize =
+-                    std::min(minHostVisiableDeviceLocalHeapSize,
+-                             memoryProperties.getHeapSizeForMemoryType(i));
+-            }
++            maxDeviceLocalHeapSize =
++                std::max(maxDeviceLocalHeapSize, memoryProperties.getHeapSizeForMemoryType(i));
++        }
++        if ((memoryProperties.getMemoryType(i).propertyFlags & kHostVisiableDeviceLocalFlags) ==
++            kHostVisiableDeviceLocalFlags)
++        {
++            minHostVisiableDeviceLocalHeapSize = std::min(
++                minHostVisiableDeviceLocalHeapSize, memoryProperties.getHeapSizeForMemoryType(i));
+         }
+-        return minHostVisiableDeviceLocalHeapSize != std::numeric_limits<VkDeviceSize>::max() &&
+-               minHostVisiableDeviceLocalHeapSize >=
+-                   static_cast<VkDeviceSize>(maxDeviceLocalHeapSize * 0.8);
++    }
++    return minHostVisiableDeviceLocalHeapSize != std::numeric_limits<VkDeviceSize>::max() &&
++           minHostVisiableDeviceLocalHeapSize >=
++               static_cast<VkDeviceSize>(maxDeviceLocalHeapSize * 0.8);
++}
++
++bool Renderer::canPreferDeviceLocalMemoryHostVisible(VkPhysicalDeviceType deviceType)
++{
++    if (deviceType == VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU)
++    {
++        return hasLargeHostVisibleDeviceLocalHeap();
+     }
+     return deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU;
+ }
+@@ -6274,10 +6278,16 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     ANGLE_FEATURE_CONDITION(&mFeatures, retainSPIRVDebugInfo, getEnableValidationLayers());
+ 
+     // For discrete GPUs, most of device local memory is host invisible. We should not force the
+-    // host visible flag for them and result in allocation failure.
++    // host visible flag for them and result in allocation failure. The exception is a discrete GPU
++    // whose host visible device local heap covers (nearly) all of its VRAM, i.e. resizable BAR is
++    // enabled: there, buffers the CPU writes and the GPU uses (e.g. GL_DYNAMIC_DRAW storage buffers
++    // updated with atomics) would otherwise live in system memory and every GPU access to them
++    // would cross PCIe.
+     ANGLE_FEATURE_CONDITION(
+         &mFeatures, preferDeviceLocalMemoryHostVisible,
+-        canPreferDeviceLocalMemoryHostVisible(mPhysicalDeviceProperties.deviceType));
++        canPreferDeviceLocalMemoryHostVisible(mPhysicalDeviceProperties.deviceType) ||
++            (mPhysicalDeviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
++             hasLargeHostVisibleDeviceLocalHeap()));
+ 
+     // Multiple dynamic state issues on ARM have been fixed.
+     // http://issuetracker.google.com/285124778
+diff --git a/src/libANGLE/renderer/vulkan/vk_renderer.h b/src/libANGLE/renderer/vulkan/vk_renderer.h
+index 9f0e601f49..c61a665356 100644
+--- a/src/libANGLE/renderer/vulkan/vk_renderer.h
++++ b/src/libANGLE/renderer/vulkan/vk_renderer.h
+@@ -806,6 +806,9 @@ class Renderer : angle::NonCopyable
+     bool canSupportFoveatedRendering() const;
+     // Prefer host visible device local via device local based on device type and heap size.
+     bool canPreferDeviceLocalMemoryHostVisible(VkPhysicalDeviceType deviceType);
++    // Whether the smallest host visible device local heap is at least 80% of the largest device
++    // local heap (e.g. a discrete GPU with resizable BAR enabled).
++    bool hasLargeHostVisibleDeviceLocalHeap();
+ 
+     // Find the threshold for pending suballocation and image garbage sizes before the context
+     // should be flushed.

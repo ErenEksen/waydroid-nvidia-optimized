@@ -39,7 +39,7 @@ fi
 
 # --- toolchain ---
 source "$REPO/packaging/ci/pins.env"
-source "$REPO/packaging/ci/hwc-pins.env"
+source "$REPO/hwcomposer/pins.env"
 : "${NDK:=$WNV/android-ndk-$NDK_VERSION}"
 : "${MINIGBM:=$WNV/minigbm}"
 if [[ -d "$WNV/link-rootfs" ]]; then : "${ROOTFS:=$WNV/link-rootfs}"; fi

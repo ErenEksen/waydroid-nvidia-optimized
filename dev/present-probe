@@ -3,7 +3,17 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO/.work/present-probe"
 mkdir -p "$OUT"
-GEN="$REPO/build/hwcomposer/gen"
+# protocol code from `hwcomposer/provision.sh`, else generated from the system's wayland-protocols
+GEN="$REPO/build/hwcomposer-work/deps/gen"
+if [[ ! -f "$GEN/xdg-shell-protocol.c" ]]; then
+    WP="$(pkg-config --variable=pkgdatadir wayland-protocols)" ||
+        { echo "present-probe: install wayland-protocols or run hwcomposer/provision.sh" >&2; exit 1; }
+    GEN="$OUT/gen"; mkdir -p "$GEN"
+    for x in stable/xdg-shell/xdg-shell stable/presentation-time/presentation-time; do
+        wayland-scanner client-header "$WP/$x.xml" "$GEN/${x##*/}-client-protocol.h"
+        wayland-scanner private-code "$WP/$x.xml" "$GEN/${x##*/}-protocol.c"
+    done
+fi
 cc -O2 -Wall -Wextra -Werror -I"$GEN" $(pkg-config --cflags wayland-client) \
     "$REPO/tests/present-probe.c" "$GEN/xdg-shell-protocol.c" \
     "$GEN/presentation-time-protocol.c" $(pkg-config --libs wayland-client) -o "$OUT/probe"

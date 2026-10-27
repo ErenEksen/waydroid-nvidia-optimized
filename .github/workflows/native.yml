@@ -1,0 +1,36 @@
+# Checks for the native driver modes (nvidia-prolapse / glibc-shim) on GitHub-hosted
+# runners only: no self-hosted runner, no secrets, read-only token. The heavy builds
+# (NVK/nvrm Mesa, Android HALs, hwcomposer, vendor image) are not run here yet.
+name: native
+
+# Release tags and manual dispatch only (gh workflow run native.yml --ref <branch>); no branch-push runs.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  driver-mode-unit:
+    name: driver-mode switch, LXC generator, source-native (unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq python3-dbus python3-gi python3-pytest
+      - name: Assemble patched Waydroid (pinned upstream + baseline + native-mounts patches)
+        run: dev/build-waydroid
+      - name: Unit tests
+        run: /usr/bin/python3 -m pytest -q -p no:cacheprovider waydroid/test_nvidia_native.py dev/test_driver_mode.py dev/test_source_native.py packaging/test_setup.py packaging/native/test_glibc_shim.py
+
+  rust-rm-host:
+    name: Rust RM backend (host build, no GPU)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build libnv_bionic_native (host, release)
+        run: cargo build --locked --release --no-default-features --lib --manifest-path nvidia-prolapse/driver-source/native/Cargo.toml

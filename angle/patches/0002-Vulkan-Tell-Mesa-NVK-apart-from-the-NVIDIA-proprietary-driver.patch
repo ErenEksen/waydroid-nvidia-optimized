@@ -1,0 +1,225 @@
+From: waydroid-nvidia-prolapse
+Subject: [PATCH] Vulkan: Tell Mesa NVK apart from the NVIDIA proprietary driver
+
+Base: https://chromium.googlesource.com/angle/angle c1a25085dd9e4a8cd6c72be278c0b4bdf6ce2824
+plus 0001. Apply with `git apply` after 0001. Current main (7865acacb) has the
+same code: no VkDriverId check for NVIDIA.
+
+NVK (Mesa's Vulkan driver for NVIDIA GPUs) reports NVIDIA's vendor ID, so
+Renderer::initFeatures() treated it as the NVIDIA proprietary driver. It
+parsed NVK's Mesa-style driverVersion (VK_MAKE_VERSION(26, 2, 5)) with the
+NVIDIA layout, which reads as driver "26.x", and then applied every
+workaround meant for NVIDIA drivers older than 421/441/470/525/531.
+
+The one that hurts most is externallySynchronizePipelineCacheAccess (NVIDIA
+< 441): every vkCreateGraphicsPipelines of the link-time warm-up tasks runs
+under one renderer mutex, so ANGLE's worker pool compiles one pipeline at a
+time and the draw that waits for the warm-up stalls. NVK's VkPipelineCache
+is internally synchronized (Mesa src/vulkan/runtime/vk_pipeline_cache.c,
+simple_mtx around the object cache), as the Vulkan spec requires unless
+VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT is set.
+
+Measured on an RTX 5090 with NVK (Mesa 26.2.5) under Android 13, Minecraft
+Bedrock 1.26.60.24, first hotbar switch (longest present-to-present
+interval of the app's layer):
+  before: 1542 ms; the render thread is idle while one worker at a time
+          runs NVK's compiler
+  with externallySynchronizePipelineCacheAccess disabled alone: 186 ms,
+          all 16 worker threads compile concurrently
+
+Following the PanVK split (ba5db43c1, isARMProprietary = isARM &&
+!isMesaPanVK), NVK is identified by VkDriverId alone
+(VK_DRIVER_ID_MESA_NVK) and isNvidiaProprietary = isNvidia && !isMesaNVK:
+
+- driverVersion: parsed as Mesa for NVK (NVIDIA layout only for the
+  proprietary driver); getVersionString() likewise.
+- isNvidiaProprietary (driver bugs, NVIDIA driver version checks):
+  clampPointSize, avoidOpSelectWithMismatchingRelaxedPrecision,
+  disableDepthStencilResolveThroughAttachment, avoidInvisibleWindowSwapchainRecreate,
+  swapchainDeferredMemoryAllocation, supportsSPIRV14, supportsGraphicsPipelineLibrary,
+  externallySynchronizePipelineCacheAccess,
+  forceWaitForSubmissionToCompleteForQueryResult, supportsDynamicRenderingLocalRead.
+- isNvidia kept (the GPU, not the driver, or a reason that holds for NVK too):
+  isImmediateModeRenderer, clampFragDepth (only without
+  VK_EXT_depth_clamp_zero_one, which NVK exposes), allowGenerateMipmapWithCompute,
+  doubleDepthBiasConstantFactor (unchanged for NVK; the list already holds the
+  Mesa drivers of other vendors), preferGlobalPipelineCache,
+  skipPipelineCacheSerialization (NVK keeps compiled shaders in its own disk
+  cache; a second copy in the blob cache would only duplicate it).
+---
+diff --git a/src/libANGLE/renderer/vulkan/vk_renderer.cpp b/src/libANGLE/renderer/vulkan/vk_renderer.cpp
+index 723c332528..e81caa15dd 100644
+--- a/src/libANGLE/renderer/vulkan/vk_renderer.cpp
++++ b/src/libANGLE/renderer/vulkan/vk_renderer.cpp
+@@ -215,6 +215,13 @@ bool IsMesaPanVK(uint32_t driverId)
+     return driverId == VK_DRIVER_ID_MESA_PANVK;
+ }
+ 
++bool IsMesaNVK(uint32_t driverId)
++{
++    // NVK reports NVIDIA's vendor ID; rely on VkDriverId alone to tell it apart from the NVIDIA
++    // proprietary driver
++    return driverId == VK_DRIVER_ID_MESA_NVK;
++}
++
+ bool IsQualcommOpenSource(uint32_t vendorId, uint32_t driverId, const char *deviceName)
+ {
+     if (!IsQualcomm(vendorId))
+@@ -5128,7 +5135,8 @@ std::string Renderer::getVersionString(bool includeFullVersion) const
+     {
+         strstr << "-";
+ 
+-        if (mPhysicalDeviceProperties.vendorID == VENDOR_ID_NVIDIA)
++        if (mPhysicalDeviceProperties.vendorID == VENDOR_ID_NVIDIA &&
++            !IsMesaNVK(mDriverProperties.driverID))
+         {
+             strstr << ANGLE_VK_VERSION_MAJOR_NVIDIA(driverVersion) << ".";
+             strstr << ANGLE_VK_VERSION_MINOR_NVIDIA(driverVersion) << ".";
+@@ -5510,6 +5518,12 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     const bool isMesaPanVK      = IsMesaPanVK(mDriverProperties.driverID);
+     const bool isARMProprietary = isARM && !isMesaPanVK;
+ 
++    // Distinguish between the NVIDIA proprietary driver and the Mesa open source driver.  isNvidia
++    // remains true for both and is used where the hardware is what matters; workarounds for
++    // proprietary driver bugs and driver version checks use isNvidiaProprietary.
++    const bool isMesaNVK           = IsMesaNVK(mDriverProperties.driverID);
++    const bool isNvidiaProprietary = isNvidia && !isMesaNVK;
++
+     // Lacking other explicit ways to tell if mali GPU is job manager based or command stream front
+     // end based, we use maxDrawIndirectCount as equivalent since all JM based has
+     // maxDrawIndirectCount==1 and all CSF based has maxDrawIndirectCount>1.
+@@ -5530,12 +5544,12 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+         driverVersion =
+             angle::ParseQualcommVulkanDriverVersion(mPhysicalDeviceProperties.driverVersion);
+     }
+-    else if (isNvidia)
++    else if (isNvidiaProprietary)
+     {
+         driverVersion =
+             angle::ParseNvidiaVulkanDriverVersion(mPhysicalDeviceProperties.driverVersion);
+     }
+-    else if (IsLinux() && (isIntel || isRADV))
++    else if (isMesaNVK || (IsLinux() && (isIntel || isRADV)))
+     {
+         driverVersion =
+             angle::ParseMesaVulkanDriverVersion(mPhysicalDeviceProperties.driverVersion);
+@@ -5640,12 +5654,13 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     //   < 421 otherwise
+     ANGLE_FEATURE_CONDITION(
+         &mFeatures, clampPointSize,
+-        isNvidia && driverVersion < angle::VersionTriple(IsWindows() ? 430 : 421, 0, 0));
++        isNvidiaProprietary && driverVersion < angle::VersionTriple(IsWindows() ? 430 : 421, 0, 0));
+ 
+     // Affecting Nvidia drivers 535 through 551.
+-    ANGLE_FEATURE_CONDITION(&mFeatures, avoidOpSelectWithMismatchingRelaxedPrecision,
+-                            isNvidia && (driverVersion >= angle::VersionTriple(535, 0, 0) &&
+-                                         driverVersion < angle::VersionTriple(552, 0, 0)));
++    ANGLE_FEATURE_CONDITION(
++        &mFeatures, avoidOpSelectWithMismatchingRelaxedPrecision,
++        isNvidiaProprietary && (driverVersion >= angle::VersionTriple(535, 0, 0) &&
++                                driverVersion < angle::VersionTriple(552, 0, 0)));
+ 
+     // Affecting Linux/Intel (unknown range).
+     ANGLE_FEATURE_CONDITION(&mFeatures, wrapSwitchInIfTrue, isIntel && IsLinux());
+@@ -5821,7 +5836,7 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     // - Pixel4: http://anglebug.com/42267096
+     //
+     ANGLE_FEATURE_CONDITION(&mFeatures, disableDepthStencilResolveThroughAttachment,
+-                            isNvidia || isQualcommProprietary);
++                            isNvidiaProprietary || isQualcommProprietary);
+ 
+     // MSRTSS is disabled if the driver does not support it for RGBA8 and RGBA8_SRGB.
+     // This is used to filter out known drivers where support for sRGB formats are missing.
+@@ -5892,8 +5907,9 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     // - Enable for NVIDIA on Linux X11 because of the possible driver bug, when acquire next image
+     //   continuously returns OUT_OF_DATE if recreate the swapchain while window is not visible
+     //   (http://anglebug.com/397848903).
+-    ANGLE_FEATURE_CONDITION(&mFeatures, avoidInvisibleWindowSwapchainRecreate,
+-                            (isNvidia && nativeWindowSystem == angle::NativeWindowSystem::X11));
++    ANGLE_FEATURE_CONDITION(
++        &mFeatures, avoidInvisibleWindowSwapchainRecreate,
++        (isNvidiaProprietary && nativeWindowSystem == angle::NativeWindowSystem::X11));
+ 
+     ANGLE_FEATURE_CONDITION(&mFeatures, padBuffersToMaxVertexAttribStride, isAMD || isSamsung);
+     mMaxVertexAttribStride =
+@@ -6153,7 +6169,7 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     // http://anglebug.com/499347835
+     ANGLE_FEATURE_CONDITION(
+         &mFeatures, swapchainDeferredMemoryAllocation,
+-        mFeatures.supportsSwapchainMaintenance1.enabled && !(IsWayland() && isNvidia));
++        mFeatures.supportsSwapchainMaintenance1.enabled && !(IsWayland() && isNvidiaProprietary));
+ 
+     // The VK_EXT_legacy_dithering extension enables dithering support without emulation
+     // Disable the usage of VK_EXT_legacy_dithering on ARM until the driver bug
+@@ -6270,7 +6286,7 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     ANGLE_FEATURE_CONDITION(
+         &mFeatures, supportsSPIRV14,
+         ExtensionFound(VK_KHR_SPIRV_1_4_EXTENSION_NAME, deviceExtensionNames) &&
+-            !(isNvidia && driverVersion < angle::VersionTriple(525, 0, 0)) &&
++            !(isNvidiaProprietary && driverVersion < angle::VersionTriple(525, 0, 0)) &&
+             !(isQualcommProprietary && driverVersion < angle::VersionTriple(512, 829, 0)) &&
+             !(isARMProprietary && driverVersion < angle::VersionTriple(47, 0, 0)));
+ 
+@@ -6486,10 +6502,11 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     // problematic area gets addressed and fixed. http://anglebug.com/404581992
+     //
+     // PowerVR graphics pipeline support is in development and not yet tested with ANGLE.
+-    ANGLE_FEATURE_CONDITION(&mFeatures, supportsGraphicsPipelineLibrary,
+-                            mGraphicsPipelineLibraryFeatures.graphicsPipelineLibrary == VK_TRUE &&
+-                                (!isNvidia || driverVersion >= angle::VersionTriple(531, 0, 0)) &&
+-                                !isRADV && !isARMProprietary && !isPowerVR);
++    ANGLE_FEATURE_CONDITION(
++        &mFeatures, supportsGraphicsPipelineLibrary,
++        mGraphicsPipelineLibraryFeatures.graphicsPipelineLibrary == VK_TRUE &&
++            (!isNvidiaProprietary || driverVersion >= angle::VersionTriple(531, 0, 0)) && !isRADV &&
++            !isARMProprietary && !isPowerVR);
+ 
+     // When VK_EXT_graphics_pipeline_library is not used:
+     //
+@@ -6526,6 +6543,8 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     // For Windows NVIDIA Vulkan driver, Vulkan pipeline cache will only generate one
+     // single huge cache for one process shared by all graphics pipelines in the same process,
+     // which can be huge. zlib take long time to compress it.
++    // Mesa's NVK keeps compiled shaders in its own on-disk cache, which a copy in the blob cache
++    // would only duplicate.
+     ANGLE_FEATURE_CONDITION(&mFeatures, skipPipelineCacheSerialization, isSwiftShader || isNvidia);
+ 
+     // Practically all drivers still prefer to do cross-stage linking.
+@@ -6572,10 +6591,11 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     // - mergeProgramPipelineCachesToGlobalCache is enabled
+     // - preferMonolithicPipelinesOverLibraries is enabled
+     // - stale nvidia drivers
+-    ANGLE_FEATURE_CONDITION(&mFeatures, externallySynchronizePipelineCacheAccess,
+-                            mFeatures.mergeProgramPipelineCachesToGlobalCache.enabled ||
+-                                mFeatures.preferMonolithicPipelinesOverLibraries.enabled ||
+-                                (isNvidia && driverVersion < angle::VersionTriple(441, 0, 0)));
++    ANGLE_FEATURE_CONDITION(
++        &mFeatures, externallySynchronizePipelineCacheAccess,
++        mFeatures.mergeProgramPipelineCachesToGlobalCache.enabled ||
++            mFeatures.preferMonolithicPipelinesOverLibraries.enabled ||
++            (isNvidiaProprietary && driverVersion < angle::VersionTriple(441, 0, 0)));
+ 
+     ANGLE_FEATURE_CONDITION(&mFeatures, enableAsyncPipelineCacheCompression, true);
+ 
+@@ -6705,9 +6725,9 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+     // Workaround for nvidia earlier version driver which appears having a bug that On older nvidia
+     // driver, vkGetQueryPoolResult() with VK_QUERY_RESULT_WAIT_BIT may result in incorrect result.
+     // In that case we force into CPU wait for submission to complete. http://anglebug.com/42265186
+-    ANGLE_FEATURE_CONDITION(
+-        &mFeatures, forceWaitForSubmissionToCompleteForQueryResult,
+-        isARMProprietary || (isNvidia && driverVersion < angle::VersionTriple(470, 0, 0)));
++    ANGLE_FEATURE_CONDITION(&mFeatures, forceWaitForSubmissionToCompleteForQueryResult,
++                            isARMProprietary || (isNvidiaProprietary &&
++                                                 driverVersion < angle::VersionTriple(470, 0, 0)));
+ 
+     // Some ARM proprietary drivers may not free memory in "vkFreeCommandBuffers()" without
+     // VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT flag.
+@@ -6777,7 +6797,7 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
+         &mFeatures, supportsDynamicRenderingLocalRead,
+         mFeatures.supportsDynamicRendering.enabled &&
+             mDynamicRenderingLocalReadFeatures.dynamicRenderingLocalRead == VK_TRUE &&
+-            !(isNvidia || isSamsung));
++            !(isNvidiaProprietary || isSamsung));
+ 
+     // Using dynamic rendering when VK_KHR_dynamic_rendering_local_read is available, because that's
+     // needed for framebuffer fetch, MSRTT and advanced blend emulation.

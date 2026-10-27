@@ -1,4 +1,4 @@
-# Development workflow
+# Venus mode development loop
 
 Use a disposable `.work/` directory and keep the downloaded original intact.
 `dev/env.sh` defaults to the packaged `/usr/bin/waydroid` and
@@ -12,7 +12,7 @@ dev/bootstrap sources           # exact upstream SHAs, local edits never overwri
 dev/bootstrap ndk               # pinned NDK archive + SHA256 verification
 dev/bootstrap python            # pinned Python build dependencies
 source dev/env.sh
-PATH="$WNV/venv/bin:$PATH" build/hwcomposer/provision.sh "$WNV" "$HWC_TREE"
+hwcomposer/provision.sh        # NDK, AOSP headers, static libs for the hwcomposer build
 # ROOTFS must contain compatible image link libraries; see building.md.
 # A read-only extraction may be supplied instead of starting/mounting Android.
 BUILD_PROFILE=release JOBS=12 dev/build all

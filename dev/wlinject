@@ -4,7 +4,7 @@
 # them into the container's /dev/input/wl_pointer_events (pointer/buttons)
 # or /dev/input/wl_keyboard_events (keys) is indistinguishable from real
 # host input at the Android level (EventHub reads these FIFOs as devices).
-# Used by dev/mcdrive; see STATE.md log 2026-07-16 (night).
+# Used by dev/mcdrive.
 #
 # Commands (';'-separated argv groups):
 #   move X Y     EV_ABS ABS_X/Y + EV_REL dx/dy + SYN in one write (like hwc

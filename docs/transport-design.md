@@ -1,5 +1,8 @@
 # Transport design: extending vtest for Venus-on-NVIDIA
 
+Venus mode only. This is the design reference for the socket transport between the guest Venus driver and the
+host renderer.
+
 The Venus guest driver talks to the host over Mesa's **vtest** unix-socket
 transport (dev-quality, normally used for testing). Stock vtest lacks three
 things HWUI/gralloc need. Each was added as a small, symmetric patch pair

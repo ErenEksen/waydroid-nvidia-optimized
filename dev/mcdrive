@@ -2,7 +2,7 @@
 # mcdrive — drive Minecraft Bedrock autonomously (mode switch, launch, world
 # entry, movement, screencaps) via input-pipe injection. No host cursor is
 # touched: dev/wlinject records go straight into the container FIFOs that
-# waydroid's hwc normally feeds (see STATE.md 2026-07-16 night).
+# waydroid's hwc normally feeds.
 #
 #   mcdrive set-mode {fancy|vv}    edit options.txt graphics_mode (app stopped)
 #                                  WARNING: graphics_mode:3 is NOT applied at
@@ -24,7 +24,7 @@
 # Coordinates assume the guest at 2560x1440, GUI scale 3 (current defaults).
 # Verify with `mcdrive cap` when menus change after a game update.
 source "$(dirname "$0")/env.sh"
-set +o pipefail   # grep -q / head in pipelines must not kill us (see STATE.md)
+set +o pipefail   # grep -q / head in pipelines must not kill us
 
 PKG=com.mojang.minecraftpe
 OPTS=/data/data/$PKG/games/com.mojang/minecraftpe/options.txt

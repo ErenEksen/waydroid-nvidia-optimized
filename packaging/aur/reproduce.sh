@@ -112,11 +112,9 @@ do_virgl() {
 }
 
 do_hwc() {
-    say "hwc: fresh $HWC_BASE + patch -> NDK build (uses \$WNV prereqs, see PREREQS.md)"
-    local d; d=$(checkout hwc) || { bad hwc "checkout"; return; }
-    git -C "$d" apply "$REPO/patches/hwcomposer/0001-wip-nvidia-fixes.patch" \
-        || { bad hwc "patch apply"; return; }
-    if "$REPO/build/hwcomposer/build.sh" "$d/hwcomposer" "$WORK/hwc-out"; then
+    say "hwc: hwcomposer/provision.sh + build.sh (pinned HWC_SHA + hwcomposer/patches)"
+    if HWC_WORK="$WORK/hwc-work" "$REPO/hwcomposer/provision.sh" >/dev/null \
+        && HWC_WORK="$WORK/hwc-work" "$REPO/hwcomposer/build.sh" "$WORK/hwc-out"; then
         [ -f "$WORK/hwc-out/hwcomposer.waydroid.stripped.so" ] \
             && ok hwc "hwcomposer.waydroid.so built" || bad hwc "artifact missing"
     else bad hwc "build (prereqs under \$WNV?)"; fi

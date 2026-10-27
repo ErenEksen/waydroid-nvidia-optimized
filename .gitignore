@@ -1,4 +1,3 @@
-# Developer-only, not published (see README)
 STATE.md
 
 # Built artifacts (source is mcpe-vv-module/src/vvpatch.c)
@@ -7,7 +6,6 @@ mcpe-vv-module/src/vvpatch
 
 # Build outputs
 .work/
-build/hwcomposer/out/
 build/**/out/
 *.o
 *.so
@@ -53,3 +51,48 @@ core.[0-9]*
 /dist/
 /artifacts/
 *.pkg.tar.*
+
+# nvidia-prolapse: build outputs of the Android-agnostic layer
+nvidia-prolapse/*/out/
+nvidia-prolapse/*/out32/
+nvidia-prolapse/probe/vkcompute
+nvidia-prolapse/probe/libldaudit.so
+nvidia-prolapse/probe/compute.spv
+nvidia-prolapse/probe/compute_spv.h
+nvidia-prolapse/probe/nvprobe
+nvidia-prolapse/probe/nvprobe32
+nvidia-prolapse/probe/appsandbox
+nvidia-prolapse/probe/gen/
+nvidia-prolapse/probe/nvexts
+nvidia-prolapse/probe/nvexts32
+nvidia-prolapse/probe/eglgles
+nvidia-prolapse/probe/eglgles-android
+nvidia-prolapse/probe/eglgles-android32
+nvidia-prolapse/probe/vkcaps
+nvidia-prolapse/probe/vkexts
+nvidia-prolapse/probe/*.apk
+nvidia-prolapse/probe/*.apk.idsig
+nvidia-prolapse/probe/glesapp/out/
+nvidia-prolapse/probe/hwuiapp/out/
+
+# driver-source: only native/ and this directory's README are tracked.
+nvidia-prolapse/driver-source/*
+!nvidia-prolapse/driver-source/README.md
+!nvidia-prolapse/driver-source/native/
+nvidia-prolapse/driver-source/native/target/
+
+# Never commit NVIDIA userspace, captures or traces
+*.nvcap
+*.qpa
+
+# build/: the Venus recipes below are tracked; every other build/<dir> is a scratch
+# tree of the native stack (pinned clones, NDK, Mesa worktrees, outputs) and stays local.
+# A new tracked recipe dir needs its own "!/build/<dir>/" line here.
+/build/*
+!/build/angle/
+!/build/gralloc/
+!/build/lineage-20/
+!/build/mesa/
+!/build/virglrenderer/
+!/build/profile.sh
+!/build/requirements.txt

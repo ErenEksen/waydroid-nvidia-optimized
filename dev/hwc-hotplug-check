@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# hwc-hotplug-check — live check of how window resizes reach SurfaceFlinger (hwcomposer 0016/0017).
+#
+#   dev/hwc-hotplug-check [ROUNDS]     (default 6 resizes)
+#
+# Needs KDE Plasma's KWin (window resizes go through KWin scripting over D-Bus, qdbus6) and a running
+# Waydroid session showing its window. By default it drives the KWin of the current session, i.e. it
+# resizes the Waydroid window on your desktop. To use a separate, throwaway compositor instead, set
+# KWIN_RUN to a command prefix that runs a command inside that compositor's session (for example a
+# nested `kwin_wayland` with its own D-Bus session). Each round sets the Waydroid window to a new size,
+# which sends an xdg_toplevel configure to hwc.
+#
+# Before patch 0016, every configure made hwc_set() call hwc_procs_t::hotplug(0, 1) inside SF's present;
+# with the 20260927 vendor adapter that reaches SF as "Connecting HAL display", SF recreates the display
+# from inside HWComposer::presentAndGetReleaseFences and dereferences the erased DisplayData (SEGV).
+# Two expectations, chosen by the guest's ro.vendor.composer.safe_primary_reconnect:
+#   unset (official vendor image): 0 display hotplugs; the Android display keeps its size.
+#   true  (our vendor image): the Android display follows the window, so exactly ONE
+#         "Connecting HAL display" per settled resize (each round waits SETTLE s, longer than
+#         persist.waydroid.resize_settle_ms) and `wm size` changes every round, ending at the size
+#         hwcomposer logged last ("display resize: Android display -> WxH").
+# Both: the same SF and composer pids at the end, and no SurfaceFlinger or composer entry in the crash
+# buffer.
+set -euo pipefail
+REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+KWIN_RUN=${KWIN_RUN:-}
+ROUNDS=${1:-6}
+SETTLE=${SETTLE:-4}
+die() { printf 'xx %s\n' "$*" >&2; exit 1; }
+say() { printf '== %s\n' "$*"; }
+G() { { sudo -n lxc-attach -P /var/lib/waydroid/lxc -n waydroid --clear-env -- /system/bin/sh -c "export PATH=/system/bin; $1"; } 2>&1 | cat; }
+
+command -v qdbus6 >/dev/null || die "qdbus6 missing (KDE Plasma's qt6-tools); this check drives KWin scripting"
+[ -n "$KWIN_RUN" ] || say "no KWIN_RUN: resizing the Waydroid window in the current KWin session"
+WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+
+sf_pid() { G 'pidof surfaceflinger' | tr -d '\r'; }
+hwc_pid() { G 'pidof android.hardware.graphics.composer@2.1-service' | tr -d '\r'; }
+sf0=$(sf_pid); hwc0=$(hwc_pid)
+[ -n "$sf0" ] && [ -n "$hwc0" ] || die "SurfaceFlinger/composer not running in the guest"
+t0=$(G 'date +%s' | tr -d '\r')
+cap=$(G 'getprop ro.vendor.composer.safe_primary_reconnect' | tr -d '\r')
+if [ "$cap" = true ]; then want=$ROUNDS; mode="display follows the window"; else want=0; mode="fixed display"; fi
+say "SurfaceFlinger pid $sf0, composer pid $hwc0, guest epoch $t0, $ROUNDS resizes, $mode: expect $want hotplug(s)"
+
+runjs() {
+    $KWIN_RUN qdbus6 org.kde.KWin /Scripting \
+        org.kde.kwin.Scripting.loadScript "$1" "hpc$RANDOM" >/dev/null 2>&1
+    $KWIN_RUN qdbus6 org.kde.KWin /Scripting org.kde.kwin.Scripting.start >/dev/null 2>&1
+}
+sizes=(1400x900 1200x800 1500x950 1000x700 1580x980 1300x860)
+seen=()
+for i in $(seq 1 "$ROUNDS"); do
+    s=${sizes[$(( (i - 1) % ${#sizes[@]} ))]}; w=${s%x*}; h=${s#*x}
+    cat > "$WORK/set.js" <<EOF
+for (const win of workspace.windowList())
+  if (win.resourceClass && String(win.resourceClass).toLowerCase().indexOf('waydroid') >= 0)
+    { win.setMaximize(false, false); win.frameGeometry = { x: 20 + $i, y: 20, width: $w, height: $h }; }
+EOF
+    runjs "$WORK/set.js"
+    sleep "$SETTLE"
+    size=$(G 'wm size' | tr -d '\r' | sed -n 's/^Physical size: //p')
+    seen+=("$size")
+    say "round $i: window ${w}x${h}, Android display $size"
+done
+
+log=$(G "logcat -d -b main,system -v epoch -s SurfaceFlinger:I")
+hot=$(printf '%s\n' "$log" | awk -v t="$t0" '$1+0 >= t && /Connecting HAL display|Disconnecting HAL display/' || true)
+crash=$(G "logcat -d -b crash -v epoch" | awk -v t="$t0" '$1+0 >= t && /surfaceflinger|composer/' || true)
+sf1=$(sf_pid); hwc1=$(hwc_pid)
+fail=0
+nhot=$(printf '%s\n' "$hot" | grep -c 'HAL display' || true)
+if [ "$nhot" != "$want" ]; then
+    fail=1; say "FAIL: SurfaceFlinger received $nhot display hotplug(s), expected $want:"; printf '%s\n' "$hot" | tail -5
+fi
+if [ "$want" != 0 ]; then
+    last=$(G "logcat -d -b main,system -v epoch -s hwcomposer:I" \
+           | awk -v t="$t0" '$1+0 >= t' | sed -n 's/.*display resize: Android display -> \([0-9]*x[0-9]*\).*/\1/p' | tail -1)
+    prev=""
+    for s in "${seen[@]}"; do
+        if [ -z "$s" ] || [ "$s" = "$prev" ]; then
+            fail=1; say "FAIL: the Android display did not follow the window (wm size per round: ${seen[*]})"; break
+        fi
+        prev=$s
+    done
+    [ "$last" = "${seen[-1]}" ] || { fail=1; say "FAIL: hwcomposer's last resize '$last' != wm size '${seen[-1]}'"; }
+fi
+[ "$sf1" = "$sf0" ] || { fail=1; say "FAIL: SurfaceFlinger pid $sf0 -> ${sf1:-none}"; }
+[ "$hwc1" = "$hwc0" ] || { fail=1; say "FAIL: composer pid $hwc0 -> ${hwc1:-none}"; }
+[ -z "$crash" ] || { fail=1; say "FAIL: crash buffer:"; printf '%s\n' "$crash" | head -5; }
+[ "$fail" = 0 ] || exit 1
+say "PASS: $ROUNDS reconfigures, $nhot display hotplug(s) ($mode), SurfaceFlinger $sf1 and composer $hwc1 unchanged"

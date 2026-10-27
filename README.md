@@ -1,78 +1,94 @@
-# Waydroid NVIDIA Optimized
+# waydroid-nvidia
 
-**Compared with [Shiro836/waydroid-nvidia](https://github.com/Shiro836/waydroid-nvidia):**
-Performance optimizations for smoother desktop animations and lower CPU usage,
-without reducing graphics quality or refresh rate. Includes easy installation
-and rollback. Some games may still stutter; improvements vary by game and system.
+GPU-accelerated [Waydroid](https://waydro.id) on NVIDIA cards. Android apps and games render on your NVIDIA GPU
+inside the normal Waydroid container, with no VM. The default mode uses only the NVIDIA kernel module from your
+system; the rest of the driver is built from source.
 
-## Install / update (existing NVIDIA installation)
+This `public-test` branch is the next version and replaces `main` once testers confirm it works.
+Please report problems as issues titled `[public-test] ...` ([what to include](docs/troubleshooting.md#reporting-a-problem)).
 
-Run as your **normal desktop user**, not root:
+## Why switch from Venus
+
+- **Fast:** 475 FPS in 3DMark Wild Life Extreme on an RTX 5090 (NVIDIA's own driver: 508)
+- **No shader stutter:** Minecraft's first item switch ~0.2 s (Venus: 1.8 s)
+- **Hardware video decode:** H.264, HEVC, VP9, AV1 (RTX 20 and newer)
+- **Closed kernel module works too**
+
+## Does my setup work?
+
+✅ works · 🧪 driver tests pass, Waydroid not tried yet · ⚠️ known bug · ⚪ untested · ❌ no
+
+| | default (`nvidia-prolapse`) | `glibc-shim` | `venus` |
+|---|---|---|---|
+| RTX 50 (Blackwell) | ✅ | ✅ | ✅ |
+| RTX 40 (Ada) | 🧪 | ✅ | ✅ |
+| RTX 30 (Ampere) | ✅ | ✅ | ✅ |
+| RTX 20 / GTX 16 (Turing) | 🧪 | ⚪ | ✅ |
+| Titan V (Volta) | 🧪 | ⚪ | ❌ |
+| GTX 10 (Pascal) | ✅ (⚠️ `--native-gl on` crashes on some textures) | ⚪ | ❌ |
+| GTX 900 / 750 (Maxwell) | ⚠️ some GL tests fail | ⚪ | ❌ |
+| Kepler and older | ❌ | ❌ | ❌ |
+| Driver 570–615, open module | ✅ on 615, 🧪 others | ✅ on 570 and 615 | ✅ from 580 |
+| Driver 550–610, closed module | ✅ on 580, 🧪 others | ✅ on 550, 570, 580, 595 | ❌ |
+| Driver 535 | ⚪ | ❌ | ⚪ |
+| Driver 470 and older | ❌ | ❌ | ❌ |
+
+Data-centre GPUs (A100, H100, V100, …) are not supported. Tested on Arch and CachyOS; `glibc-shim` also on
+Ubuntu 22.04. Only the official Android 13 image (LineageOS 20) is supported.
+
+You need `nvidia-drm.modeset=1`, a Wayland desktop on the NVIDIA GPU (tested on KDE Plasma 6) and the usual
+Waydroid kernel support (binder). A brand-new driver release may be refused until our next release knows it.
+
+## Install
+
+Current release: [v0.2.0-rc12](https://github.com/Shiro836/waydroid-nvidia/releases/tag/v0.2.0-rc12) (prerelease).
+The installer is for systemd distributions. On Arch use it too: the AUR package still has the previous release.
 
 ```sh
-git clone https://github.com/ErenEksen/waydroid-nvidia-optimized.git && cd waydroid-nvidia-optimized && ./install.sh
-```
-
-Already cloned? `git pull --ff-only && ./install.sh`.
-The installer downloads the pinned `perf-v1` bundle, verifies SHA-256 and every
-component, asks for sudo, backs up the old set, and restarts Waydroid. **Save your
-game first.** It is a persistent update: launch Waydroid normally afterward.
-Apps, saves and Android images are not erased. `./install.sh --check` only downloads
-and validates; it does not install or restart anything.
-
-**Prerequisite:** an initialized upstream **waydroid-nvidia** installation using
-`wd-venus.service` and `waydroid-container.service`. Stock Waydroid alone is not
-sufficient. On Arch/CachyOS, first follow the upstream installation:
-
-```sh
-yay -S waydroid-nvidia-bin
-# Only for a fresh installation; do not reinitialize existing Android data:
-waydroid init
+curl -fsSL https://raw.githubusercontent.com/Shiro836/waydroid-nvidia/public-test/packaging/install.sh | sudo bash
 sudo waydroid-nvidia-setup
-sudo systemctl enable --now waydroid-container.service
-systemctl --user enable --now wd-venus.service
+waydroid session start
 ```
 
-The AUR package above is the **upstream base**, not this fork's optimized release.
-Then run this fork's installer. It preserves the existing display configuration.
-The prebuilt host binaries require glibc **2.38+** and the upstream renderer
-runtime libraries (initial validation: Arch/CachyOS). First-time upstream setup,
-NVIDIA open kernel modules, a compatible NVIDIA driver,
-Wayland, binder and working DMA-BUF sharing are still required. Hybrid/iGPU-driven
-compositors retain upstream limitations. See [manual installation](docs/install-manual.md)
-and [troubleshooting](docs/troubleshooting.md). Other installation layouts need manual
-review; the updater refuses custom renderer paths.
+The installer verifies every download and will not overwrite files owned by a distro package, so remove an older
+`waydroid` or `waydroid-nvidia-bin` package first. On SELinux hosts (Fedora) it also builds and loads Waydroid's
+SELinux policy module, the one Fedora's own `waydroid-selinux` package ships. `waydroid-nvidia-setup` checks your
+system, tests the driver on your GPU, and only then installs our Android vendor image. Your official vendor image is
+kept as a backup. If a check fails, it says why and leaves everything as it was.
 
-### Rollback
+On a fresh install the setup runs `waydroid init` for you. For Google apps, use `sudo waydroid-nvidia-setup -s GAPPS`
+instead (the default is `VANILLA`, without them). On an existing install `-s` only checks the system type; to switch,
+run `sudo waydroid init -f -s GAPPS`, then `sudo waydroid-nvidia-setup` again (apps and data are kept).
 
-The installer prints the exact backup directory. From this checkout, use it as follows:
+Run `sudo waydroid-nvidia-setup` again after every NVIDIA driver or package update; Waydroid refuses to start until
+you do. `sudo waydroid-nvidia-setup --restore-official-vendor` takes you back to stock Waydroid. Uninstalling is
+described in [docs/install-manual.md](docs/install-manual.md#uninstall).
 
-```sh
-sudo -v && ./dev/install-bundle --rollback /var/lib/waydroid/nv/perf-backups/EXACT-BACKUP
-```
+## Driver modes
 
-A failed post-install health check attempts to restore the previous complete set.
-Package upgrades or upstream setup can overwrite these optimizations; reapply afterward.
-No global governor, real-time priority, sysctl or passwordless-sudo rules are installed.
+| Mode | How it works | Pick it when |
+|---|---|---|
+| `nvidia-prolapse` (default) | Our open-source driver (Mesa NVK plus our own NVIDIA backend) runs inside Android and talks to the kernel module directly | almost always: it has video decode and the widest driver support |
+| `venus` | Android's Vulkan calls go over a socket to the NVIDIA driver on the host | the default mode fails on your machine; slowest, needs the open kernel module |
+| `glibc-shim` | Your host's own NVIDIA driver (550 or newer) runs inside Android through our compatibility libraries | you want NVIDIA's own driver and shader compiler; the setup checks your driver first and needs its 32-bit libraries too |
 
-## What's shipped / validation
+Switch with `sudo waydroid-nvidia-setup --mode venus` (or `--mode glibc-shim`, `--mode nvidia-prolapse`). Apps get
+OpenGL ES through ANGLE by default. `--native-gl on` uses the mode's own GL driver instead: our `nvrm` in the
+default mode (a bit faster but newer, so compare with `--native-gl off` before reporting a GL bug), NVIDIA's GLES in
+`glibc-shim` (driver 570 or newer). In `glibc-shim`, run the setup again after every driver update, as in the
+default mode.
 
-The bundle updates both x86 and x86_64 guest Mesa drivers, the host renderer,
-gralloc backend, HWC and a user-service cache override. It **reuses** the upstream
-Waydroid Python integration, ANGLE and SurfaceFlinger; it is not a complete Android image.
-`perf-v1` contains locally built binaries with checksums, **not CI/SLSA-attested binaries**.
-Source patches and pinned build recipes are in this repository; binaries live in Releases,
-not Git. Native synchronization/fault tests and both guest builds passed; full Android
-gameplay/desktop acceptance is still pending.
+## Known issues
 
-- [Measured results and remaining Epic Seven stutter](docs/performance-epic7-2026-09-19.md)
-- [Performance scope and acceptance criteria](docs/performance-smoothness.md)
-- [Build and development workflow](docs/dev-workflow.md)
-- [Architecture](docs/architecture.md) · [Building](docs/building.md)
+- With `--native-gl on`, GTA San Andreas sometimes shows black frames.
+- `glibc-shim` on drivers 550–560 and 580 works around two NVIDIA driver bugs, which may add some frame latency.
+- Above about 333 Hz the display can stall. Cap the rate with `sudo waydroid-nvidia-setup --refresh <hz>`.
+- Android 14 and 15 have no official Waydroid images and are untested.
 
-## Credits / license
+## More
 
-Based on **Shiro836/waydroid-nvidia**, Mesa Venus, virglrenderer and Waydroid.
-Original project code is [MIT](LICENSE); patches retain their respective upstream
-licenses. The upstream AUR/Nix packages and upstream benchmark claims are not
-maintained or independently guaranteed by this fork.
+[Troubleshooting](docs/troubleshooting.md) · [installer options and uninstall](docs/install-manual.md) ·
+[how it works](docs/architecture.md) · [building](docs/building.md) · [developing](docs/dev-setup.md) ·
+[third-party sources](THIRD_PARTY.md)
+
+Our code is MIT licensed. Patches to other projects keep their upstream licenses; see [LICENSE](LICENSE).

@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# native-deploy — stage the NVIDIA-native guest tree on the host.
+#
+#   sudo -n dev/native-deploy            (needs root: /var/lib/waydroid is root-owned)
+#
+# Produces /var/lib/waydroid/nvidia-glibc-shim-staging/vendor_extra/lib64/ with:
+#   - the glibc-compat shims from nvidia-prolapse/shim/out (libnvglibc.so + six fronts)
+#   - host-glibc-version   (what the shims report as gnu_get_libc_version())
+#   - libEGL_nvidia.so.0 -> libEGL_nvidia.so.<driver>   (relative symlink; the ICD's soname)
+#   - empty placeholders for the host driver's ICD closure, which the container bind-mounts over
+#     (waydroid/nvidia_native.py emits those entries; the blobs themselves are never copied)
+#   - hw/vulkan.nvidia.so          our Vulkan HAL   (nvidia-prolapse/hal/out/android)
+#   - libgbm_mesa_wrapper.so       our gralloc backend (nvidia-prolapse/gralloc/out/android); the container
+#                                  bind-mounts it over /vendor/lib64/libgbm_mesa_wrapper.so
+#   - libminigbm_gralloc_gbm_mesa.so  minigbm's gbm_mesa core rebuilt with our patches (0001: CPU usage does
+#                                  not force LINEAR on GPU render targets; 0002: locks pass their access
+#                                  flags to the backend; nvidia-prolapse/gralloc make minigbm), bound over
+#                                  /vendor/lib64/libminigbm_gralloc_gbm_mesa.so
+# and /var/lib/waydroid/nvidia-glibc-shim-staging/vendor_extra/lib/ (32-bit x86, P6) with the same set built
+# for i686: shims from nvidia-prolapse/shim/out32 (ld-linux.so.2 front), host-glibc-version, the
+# libEGL_nvidia.so.0 symlink, placeholders for the 32-bit driver closure (bound from the host's 32-bit libraries),
+# hw/vulkan.nvidia.so (hal/out/android32), libdrm.so.2 (libdrm/out32), and
+#   - libgbm_mesa_wrapper.so       the backend built 32-bit (out/android32), bound over
+#                                  /vendor/lib/libgbm_mesa_wrapper.so for the image's 32-bit
+#                                  mapper processes (mediaserver, 32-bit apps)
+#   - libminigbm_gralloc_gbm_mesa.so  the patched core built 32-bit (out/android32), bound over
+#                                  /vendor/lib/libminigbm_gralloc_gbm_mesa.so: 32-bit locks pass their
+#                                  access flags too (a read lock never writes a block-linear buffer)
+#   - libdrm.so.2                  upstream libdrm built for bionic (nvidia-prolapse/libdrm/out);
+#                                  the ICD dlopens it by this name and advertises
+#                                  VK_EXT_external_memory_dma_buf only when it loads
+# EGL (P7): <root>/vendor/lib{64,}/egl/ is bind-mounted over the guest's /vendor/lib{64,}/egl and holds
+#   - lib{EGL,GLESv1_CM,GLESv2}_nvnative.so   our front (nvidia-prolapse/egl/out/android{,32}), real files
+#   - lib{EGL,GLESv1_CM,GLESv2}_angle.so      empty placeholders; the container binds ANGLE from
+#                                             /var/lib/waydroid/nv/guest onto them
+# and vendor_extra/lib{64,}/ gets libnvnative-egl-android.so (the NVIDIA external platform),
+# nvnative_egl_android.json and nvglibc-default-env (the shims' default environment naming that JSON).
+# waydroid.cfg [waydroid] nvidia_native_gl = on|off selects nvnative or angle (glibc-shim mode).
+# The tree is bind-mounted whole onto the guest's /vendor_extra, a stock sphal search path.
+# After the generator accepts the tree, /var/lib/waydroid/nvidia-glibc-shim (the glibc-shim mode's root
+# convention) is atomically repointed at it.
+# Every input is checked before anything is written; a missing build fails with the make
+# command that produces it.
+#
+# Never writes to a blob path while the container is running: that path is then a bind of
+# the host's own driver library. Our own files (shims, HAL, gbm wrapper, libdrm) are replaced as new
+# inodes (copy to .tmp, rename), never rewritten in place, so a running process keeps the
+# version it mapped. While the container runs: the shims, libdrm and the HAL are reached through the
+# directory mount, so processes started afterwards get the new files; the gbm wrapper and the minigbm
+# core are binds of the old inode and change only at the next container start.
+set -euo pipefail
+REPO=$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)
+SHIM_OUT=$REPO/nvidia-prolapse/shim/out
+SHIM32_OUT=$REPO/nvidia-prolapse/shim/out32
+HAL_SO=$REPO/nvidia-prolapse/hal/out/android/vulkan.nvidia.so
+HAL32_SO=$REPO/nvidia-prolapse/hal/out/android32/vulkan.nvidia.so
+GBM_SO=$REPO/nvidia-prolapse/gralloc/out/android/libgbm_mesa_wrapper.so
+GBM32_SO=$REPO/nvidia-prolapse/gralloc/out/android32/libgbm_mesa_wrapper.so
+MG_SO=$REPO/nvidia-prolapse/gralloc/out/android/libminigbm_gralloc_gbm_mesa.so
+MG32_SO=$REPO/nvidia-prolapse/gralloc/out/android32/libminigbm_gralloc_gbm_mesa.so
+DRM_SO=$REPO/nvidia-prolapse/libdrm/out/libdrm.so.2
+DRM32_SO=$REPO/nvidia-prolapse/libdrm/out32/libdrm.so.2
+EGL_DIR=$REPO/nvidia-prolapse/egl
+EGL_FRONT="libEGL_nvnative.so libGLESv1_CM_nvnative.so libGLESv2_nvnative.so"
+EGL_ANGLE="libEGL_angle.so libGLESv1_CM_angle.so libGLESv2_angle.so"
+ROOT=${NVP_ROOT:-/var/lib/waydroid/nvidia-glibc-shim-staging}   # == nvidia_native.GLIBC_SHIM_STAGING
+L=$ROOT/vendor_extra/lib64
+L32=$ROOT/vendor_extra/lib
+die() { echo "native-deploy: $*" >&2; exit 1; }
+# Inputs first (they need no root), so a missing build is reported as such.
+[ -f "$SHIM_OUT/.checked" ] || die "$SHIM_OUT is not a checked shim build; run make -C $REPO/nvidia-prolapse/shim"
+[ -f "$HAL_SO" ] || die "$HAL_SO missing; build the Vulkan HAL: make -C $REPO/nvidia-prolapse/hal"
+[ -f "$GBM_SO" ] || die "$GBM_SO missing; build the gralloc backend: make -C $REPO/nvidia-prolapse/gralloc"
+[ -f "$GBM32_SO" ] || die "$GBM32_SO missing; build the 32-bit gralloc backend (mapper for mediaserver and 32-bit apps): make -C $REPO/nvidia-prolapse/gralloc android32"
+case "$(LC_ALL=C readelf -h "$GBM32_SO" 2>/dev/null)" in *"Class:"*ELF32*) ;; *) die "$GBM32_SO is not an ELF32 object";; esac
+[ -f "$MG_SO" ] || die "$MG_SO missing; build minigbm's gbm_mesa core with our patch: make -C $REPO/nvidia-prolapse/gralloc minigbm check-minigbm"
+case "$(LC_ALL=C readelf -h "$MG_SO" 2>/dev/null)" in *"Class:"*ELF64*) ;; *) die "$MG_SO is not an ELF64 object";; esac
+[ -f "$MG32_SO" ] || die "$MG32_SO missing; build minigbm's gbm_mesa core (32-bit) with our patches: make -C $REPO/nvidia-prolapse/gralloc minigbm check-minigbm"
+case "$(LC_ALL=C readelf -h "$MG32_SO" 2>/dev/null)" in *"Class:"*ELF32*) ;; *) die "$MG32_SO is not an ELF32 object";; esac
+[ -f "$DRM_SO" ] && [ -f "$(dirname "$DRM_SO")/.checked" ] || die "$DRM_SO missing or not checked; build libdrm for bionic: make -C $REPO/nvidia-prolapse/libdrm"
+[ -f "$SHIM32_OUT/.checked" ] || die "$SHIM32_OUT is not a checked 32-bit shim build; run make -C $REPO/nvidia-prolapse/shim ARCH=x86"
+[ -f "$HAL32_SO" ] || die "$HAL32_SO missing; build the 32-bit Vulkan HAL: make -C $REPO/nvidia-prolapse/hal android32"
+[ -f "$DRM32_SO" ] && [ -f "$(dirname "$DRM32_SO")/.checked" ] || die "$DRM32_SO missing or not checked; build libdrm for 32-bit bionic: make -C $REPO/nvidia-prolapse/libdrm ARCH=x86"
+for f in "$HAL32_SO" "$DRM32_SO" "$SHIM32_OUT/libnvglibc.so"; do
+    case "$(LC_ALL=C readelf -h "$f" 2>/dev/null)" in *"Class:"*ELF32*) ;; *) die "$f is not an ELF32 object";; esac
+done
+for a in android:ELF64 android32:ELF32; do
+    for f in $EGL_FRONT libnvnative-egl-android.so; do
+        o=$EGL_DIR/out/${a%%:*}/$f
+        case "$(LC_ALL=C readelf -h "$o" 2>/dev/null)" in *"Class:"*${a#*:}*) ;; *) die "$o missing or not ${a#*:}; build the EGL front + platform: make -C $EGL_DIR";; esac
+    done
+done
+[ -f "$EGL_DIR/nvnative_egl_android.json" ] && [ -f "$EGL_DIR/nvglibc-default-env" ] || die "$EGL_DIR/nvnative_egl_android.json or nvglibc-default-env missing"
+[ "$(id -u)" = 0 ] || die "must run as root (sudo -n $0)"
+V=$(awk '/^NVRM version/ { for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) { print $i; exit } }' /proc/driver/nvidia/version 2>/dev/null || true)
+[ -n "$V" ] || die "cannot read the driver version from /proc/driver/nvidia/version"
+GLIBC=$(getconf GNU_LIBC_VERSION | awk '{print $2}')
+[ -n "$GLIBC" ] || die "getconf GNU_LIBC_VERSION gave nothing"
+
+if grep -qs " $ROOT/vendor_extra " /proc/self/mountinfo || grep -qs "/vendor_extra/lib64/libnvidia-" /proc/self/mountinfo; then
+    RUNNING=1
+else
+    RUNNING=0
+fi
+
+# put SRC DST: install as a new inode (tmp + rename), root:root 0644.
+put() { install -o root -g root -m 644 "$1" "$2.tmp" && mv -f "$2.tmp" "$2"; }
+install -d -m 755 "$L" "$L/hw" "$L32" "$L32/hw"
+for f in libnvglibc.so libc.so.6 libm.so.6 libpthread.so.0 librt.so.1 libdl.so.2 ld-linux-x86-64.so.2; do
+    put "$SHIM_OUT/$f" "$L/$f"
+done
+for f in libnvglibc.so libc.so.6 libm.so.6 libpthread.so.0 librt.so.1 libdl.so.2 ld-linux.so.2; do
+    put "$SHIM32_OUT/$f" "$L32/$f"
+done
+put "$HAL_SO" "$L/hw/vulkan.nvidia.so"
+put "$HAL32_SO" "$L32/hw/vulkan.nvidia.so"
+put "$GBM_SO" "$L/libgbm_mesa_wrapper.so"
+put "$GBM32_SO" "$L32/libgbm_mesa_wrapper.so"
+put "$MG_SO" "$L/libminigbm_gralloc_gbm_mesa.so"
+put "$MG32_SO" "$L32/libminigbm_gralloc_gbm_mesa.so"
+put "$DRM_SO" "$L/libdrm.so.2"
+put "$DRM32_SO" "$L32/libdrm.so.2"
+# EGL: platform + its JSON + the shims' default environment next to the shims; the staged egl dirs
+for pair in "$L:android:lib64" "$L32:android32:lib"; do
+    D=${pair%%:*}; rest=${pair#*:}; OUT=$EGL_DIR/out/${rest%%:*}; SUB=${rest#*:}
+    E=$ROOT/vendor/$SUB/egl
+    install -d -m 755 "$ROOT/vendor" "$ROOT/vendor/$SUB" "$E"
+    put "$OUT/libnvnative-egl-android.so" "$D/libnvnative-egl-android.so"
+    put "$EGL_DIR/nvnative_egl_android.json" "$D/nvnative_egl_android.json"
+    put "$EGL_DIR/nvglibc-default-env" "$D/nvglibc-default-env"
+    for f in $EGL_FRONT; do put "$OUT/$f" "$E/$f"; done
+    # ANGLE placeholders: may be bind-mounted right now, so only created when absent
+    for f in $EGL_ANGLE; do [ -e "$E/$f" ] || { : > "$E/$f"; chmod 644 "$E/$f"; }; done
+    # the pre-G7d location of the front (vendor_extra/<lib>/egl) is gone: the loader only searches /vendor
+    if [ -d "$D/egl" ]; then
+        for f in $EGL_FRONT; do rm -f "$D/egl/$f"; done
+        rmdir "$D/egl" 2>/dev/null && echo "removed old $D/egl" || die "$D/egl holds files other than the front; inspect and remove them"
+    fi
+done
+# per ABI dir: sidecar, placeholders for the host's driver closure (found through the loader cache by the
+# generator: waydroid/nvidia_native.py --host-closure), soname link, stale-placeholder sweep
+for pair in "$L:64" "$L32:32"; do
+    D=${pair%%:*}; BITS=${pair#*:}
+    printf '%s\n' "$GLIBC" > "$D/host-glibc-version.tmp" && chmod 644 "$D/host-glibc-version.tmp" && mv -f "$D/host-glibc-version.tmp" "$D/host-glibc-version"
+    CLOSURE=$("$REPO/waydroid/nvidia_native.py" --host-closure "$BITS") || die "the host's ${BITS}-bit NVIDIA driver libraries (above)"
+    while read -r name _; do
+        tgt="$D/$name"
+        # an existing one may be bind-mounted right now: leave it alone
+        [ -e "$tgt" ] || { : > "$tgt"; chmod 644 "$tgt"; }
+    done <<< "$CLOSURE"
+    ln -sfn "libEGL_nvidia.so.$V" "$D/libEGL_nvidia.so.0"
+    # Stale placeholders from a previous driver version are an error waiting to happen: remove.
+    for old in "$D"/libEGL_nvidia.so.[0-9]* "$D"/libnvidia-*.so.[0-9]*; do
+        [ -e "$old" ] || continue
+        [ -L "$old" ] && continue   # the libEGL_nvidia.so.0 soname symlink made above
+        case "$old" in *".so.$V") ;; *) [ -s "$old" ] && die "refusing to remove non-empty $old" ; rm -f "$old"; echo "removed stale $old";; esac
+    done
+done
+chmod 755 "$ROOT" "$ROOT/vendor_extra"
+# The packaged waydroid-nvidia-prolapse-setup --check (waydroid-container.service ExecStartPre) accepts
+# a tree marked as a dev deploy and says so; without the mark it refuses a tree it did not stage.
+printf 'dev-deploy %s %s\n' "$(date -Is)" "$REPO" > "$ROOT/staged-build-info.tmp" && chmod 644 "$ROOT/staged-build-info.tmp" \
+    && mv -f "$ROOT/staged-build-info.tmp" "$ROOT/staged-build-info"
+echo "native-deploy: driver $V, glibc $GLIBC -> $L"
+ls -la "$L" "$L/hw" "$L32" "$L32/hw" "$ROOT/vendor/lib64/egl" "$ROOT/vendor/lib/egl"
+entries=$("$REPO/waydroid/nvidia_native.py" "$ROOT") || die "generator check failed for $ROOT (message above); the glibc-shim root link was not repointed"
+echo "native-deploy: generator check OK ($(printf '%s\n' "$entries" | wc -l) mount entries)"
+# glibc-shim mode runs whatever /var/lib/waydroid/nvidia-glibc-shim points at (nvidia_native.ROOT_LINKS):
+# point it at this tree now that the generator accepts it (atomic: new link + rename)
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import nvidia_native as n
+link = n.ROOT_LINKS["glibc-shim"]; was = n.repoint_link(link, sys.argv[2])
+print("native-deploy: %s -> %s (was %s); waydroid upgrade -o (dev/driver-mode set glibc-shim) makes the container use it" % (link, sys.argv[2], was or "absent"))' \
+    "$REPO/waydroid" "$(realpath "$ROOT")"
+if [ "$RUNNING" = 1 ]; then
+    echo "native-deploy: NOTE the container is running: shims, libdrm.so.2, hw/vulkan.nvidia.so and the EGL front/platform (lib64 and lib) reach only processes"
+    echo "               started from now on; libgbm_mesa_wrapper.so, libminigbm_gralloc_gbm_mesa.so (bound over /vendor/lib{64,}) and new"
+    echo "               mount entries take effect at the next container start"
+fi

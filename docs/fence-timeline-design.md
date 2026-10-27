@@ -1,10 +1,12 @@
 # Zero-roundtrip fence export via shared DRM timeline syncobj
 
-Status (2026-09-19): isolated correctness/fallback tests pass; live Android
+Venus mode only. Status (2026-09-19): isolated correctness/fallback tests pass; live Android
 performance acceptance is **pending**. The measurements below are retained as
 historical maintainer notes from 2026-07-12, not results for the present 165 Hz
 system. See `performance-validation-2026-09-19.md`.
 Guest fallback switch: `VTEST_NO_TIMELINE_FENCE=1`.
+Server switch: `VTEST_NO_TIMELINE=1`. Syncobj ioctls are DRM_RENDER_ALLOW and work across
+processes and drivers by design; reference designs are linux-drm-syncobj-v1 and PipeWire 1.2.
 
 ## Problem
 

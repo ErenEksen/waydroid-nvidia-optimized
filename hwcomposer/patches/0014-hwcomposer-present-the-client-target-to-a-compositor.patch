@@ -1,0 +1,1272 @@
+From 4cd0f63ac9a55d296bff68f9609d2a4eb7c2295c Mon Sep 17 00:00:00 2001
+From: waydroid-nvidia-prolapse <build@local>
+Date: Wed, 14 Oct 2026 16:33:08 +0300
+Subject: [PATCH 14/14] hwcomposer: present the client target to a compositor on
+ another GPU through a system-memory LINEAR copy
+
+What: bind zwp_linux_dmabuf_v1 at min(version, 4) and read the default
+dma-buf feedback (format table + tranches replace the v3 format/modifier
+events; main_device / tranche target_device name the compositor's GPU).
+decide_present_path() compares those dev_ts with the guest's nvidia-drm
+render node (and its primary node from sysfs): the first tranche listing
+ABGR8888/XBGR8888 decides, target == NVIDIA -> same-GPU direct, target ==
+main device (another GPU) -> cross-GPU copy. The decision is logged
+("present path: ...", and once per change at the first client-target
+frame) and exported as waydroid.hwc.present_path = direct|cross-gpu-copy.
+In cross-GPU mode:
+- the client target (FBT) is imported into Vulkan (prime-copy.cpp: the
+  guest's libvulkan, dlopened only in this mode; NVIDIA device, dma-buf
+  import with VK_EXT_image_drm_format_modifier) and, after its acquire
+  fence, copied with vkCmdCopyImageToBuffer into a target buffer from a
+  HOST_VISIBLE, non-DEVICE_LOCAL memory type (system memory), pitch =
+  align(width*bpp, 256), size = align(pitch*height, 4096), offset 0,
+  exported as a dma-buf and attached with DRM_FORMAT_MOD_LINEAR. The
+  commit waits for the copy on the CPU; targets are reused after
+  wl_buffer.release (pool of up to 4, then a 100 ms wait, then the oldest
+  with an error log).
+- compositor_supports() refuses every layer buffer, so all other layers
+  are composed by SurfaceFlinger (or go through the existing wl_shm
+  backstop in multi-window mode / for the cursor).
+- a failed copy is not presented (logged), never the block-linear original.
+
+Why: baseline issue #2. A compositor on an Intel/AMD iGPU cannot import
+NVIDIA block-linear buffers; the FBT is exempt from the displayable gate
+and was create_immed'd anyway -> zwp_linux_buffer_params error 7 -> the
+Wayland connection dies -> hwc exits 75 -> SurfaceFlinger aborts.
+Advertised LINEAR does not help with gralloc buffers either: they live in
+NVIDIA video memory, and nvidia-drm exports NVKMS video memory without
+pages (nvidia-drm-gem-nvkms-memory.c __nv_drm_gem_nvkms_memory_prime_
+get_sg_table: pages_count == 0 -> -ENOMEM), so a foreign attach fails.
+Reproduced and verified with a virtual KWin rendering on the AMD iGPU
+(before: error 7 + hwc exit 75 + SF tombstone; after: Launcher and
+Settings render, no errors, no dma-buf attach failure in the kernel log).
+
+Source: ours. The recipe is NVIDIA's own driver behaviour in the same
+situation, observed with the stock Vulkan driver (vkcube --wsi wayland on
+the NVIDIA GPU against a KWin rendering on the AMD iGPU, WAYLAND_DEBUG +
+strace): it requests per-surface dma-buf feedback and presents 500x500
+XR24 images as zwp_linux_buffer_params add(fd, plane 0, offset 0, stride
+2048, modifier 0) = LINEAR with the pitch aligned to 256 bytes. Its
+public EGL analogue is egl-wayland2 1.0.2 (src/wayland/wayland-display.c
+force_prime when the render device differs from the server device;
+src/wayland/wayland-swapchain.c LINEAR present buffers allocated with
+force_sysmem = prime, copied after rendering).
+Licence: Apache-2.0 (android_hardware_waydroid).
+Deviation from the stock recipe: default feedback instead of per-surface
+feedback; no tranche for either GPU -> decided by the main device
+(stock fails the swapchain); copy on the device's single NVK queue family
+(NVK exposes no transfer-only family; its copies use the copy-engine class
+on that channel); system memory is NVK's cached+snooped type (stock uses
+write-combined); no wp_linux_drm_syncobj explicit sync (stock's fallback
+path: CPU wait + wl_buffer.release); compositors with dma-buf < v4 keep
+the direct path (logged; stock falls back to wl_drm's device).
+---
+ hwcomposer/gralloc_handler.cpp |  33 ++
+ hwcomposer/gralloc_handler.h   |   2 +
+ hwcomposer/hwcomposer.cpp      |  67 +++-
+ hwcomposer/prime-copy.cpp      | 639 +++++++++++++++++++++++++++++++++
+ hwcomposer/prime-copy.h        |  48 +++
+ hwcomposer/wayland-hwc.cpp     | 209 ++++++++++-
+ hwcomposer/wayland-hwc.h       |  23 ++
+ 7 files changed, 992 insertions(+), 29 deletions(-)
+ create mode 100644 hwcomposer/prime-copy.cpp
+ create mode 100644 hwcomposer/prime-copy.h
+
+diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
+index 3215c6f..6b6096b 100644
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -45,6 +45,7 @@
+ #include "wayland-android-client-protocol.h"
+ 
+ #include "egl-tools.h"
++#include "prime-copy.h"
+ #include "wayland-hwc.h"
+ 
+ namespace {
+@@ -173,6 +174,18 @@ namespace {
+ bool compositor_supports(display *display, uint32_t drm_format, uint64_t modifier) {
+     if (modifier == DRM_FORMAT_MOD_INVALID)
+         return false;
++    /* Compositor on another GPU (prime-copy.h): it cannot import NVIDIA block-linear, and an
++     * advertised LINEAR does not help either, because gralloc's LINEAR buffers live in NVIDIA
++     * video memory, which nvidia-drm exports without pages (foreign attach fails). Every layer
++     * is composed by SurfaceFlinger (or copied into wl_shm); only the client target reaches the
++     * compositor, through the system-memory copy. */
++    if (display->present_path.load() == (int)present_path::cross_gpu) {
++        static std::atomic<bool> logged{false};
++        if (!logged.exchange(true))
++            ALOGI("cross-GPU compositor: no layer buffer is attached directly; layers are composed "
++                  "by SurfaceFlinger and the client target is copied into system memory");
++        return false;
++    }
+     /* Search under the lock: the Wayland thread may reallocate this vector at any time. */
+     std::lock_guard<std::mutex> lock(display->formats_mutex);
+     /* NVIDIA's EGL imports a LINEAR dma-buf only as GL_TEXTURE_EXTERNAL_OES (eglQueryDmaBuf-
+@@ -248,6 +261,26 @@ std::unique_ptr<buffer> create_dmabuf_wl_buffer(display *display, const buffer_m
+     return buf;
+ }
+ 
++std::unique_ptr<buffer> create_prime_wl_buffer(display *display, const buffer_metadata& metadata, buffer_handle_t handle)
++{
++    if (display->gtype == GrallocType::GRALLOC_CROS) {
++        auto *h = reinterpret_cast<const cros_gralloc_handle *>(handle);
++        return prime_create_buffer(display, metadata, h->fds[0], h->format, h->strides[0],
++                                   h->offsets[0], h->format_modifier, handle);
++    }
++    if (display->gtype == GrallocType::GRALLOC_GBM) {
++        auto *h = reinterpret_cast<const gralloc_handle_t *>(handle);
++        int drm_format = ConvertHalFormatToDrm(display, h->format);
++        if (drm_format < 0)
++            return nullptr;
++        return prime_create_buffer(display, metadata, h->prime_fd, (uint32_t)drm_format, h->stride,
++                                   0, h->modifier, handle);
++    }
++    ALOGE("cross-GPU copy needs a dma-buf gralloc (gbm or cros), this one is type %d; the client "
++          "target is not shown", (int)display->gtype);
++    return nullptr;
++}
++
+ std::unique_ptr<buffer> create_android_wl_buffer(display *display, const buffer_metadata& metadata, buffer_handle_t handle)
+ {
+     std::unique_ptr<buffer> buf { new buffer() };
+diff --git a/hwcomposer/gralloc_handler.h b/hwcomposer/gralloc_handler.h
+index 73a173b..aa15147 100644
+--- a/hwcomposer/gralloc_handler.h
++++ b/hwcomposer/gralloc_handler.h
+@@ -34,6 +34,8 @@ std::unique_ptr<buffer> create_shm_wl_buffer(display *display, const buffer_meta
+ std::unique_ptr<buffer> create_dmabuf_wl_buffer(display *display, const buffer_metadata& metadata,
+                                                                 int prime_fd, int format, int byte_stride,
+                                                                 int offset, uint64_t modifier, buffer_handle_t handle);
++/* client target for a compositor on another GPU (prime-copy.h) */
++std::unique_ptr<buffer> create_prime_wl_buffer(display *display, const buffer_metadata& metadata, buffer_handle_t handle);
+ std::unique_ptr<buffer> create_android_wl_buffer(display *display, const buffer_metadata& metadata, buffer_handle_t target);
+ 
+ 
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index 3ff35a2..9d60732 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -53,6 +53,7 @@
+ #include "WaydroidClipboard.h"
+ #include "WaydroidWindow.h"
+ #include "gralloc_handler.h"
++#include "prime-copy.h"
+ #include "egl-tools.h"
+ #include "extension.h"
+ 
+@@ -124,6 +125,28 @@ namespace {
+         metadata.opaque = layer->blending == HWC_BLENDING_NONE
+                           && !(layer->flags & HWC_IS_CURSOR_LAYER);
+         buffer *buf = find_cached_buffer(pdev, metadata, layer->handle);
++        /* The client target goes through the cross-GPU copy exactly when the compositor renders
++         * on another GPU (decided from dmabuf feedback, which can change at runtime). */
++        const int path = pdev->display->present_path.load();
++        const bool prime = layer->compositionType == HWC_FRAMEBUFFER_TARGET
++            && path == (int)present_path::cross_gpu;
++        if (layer->compositionType == HWC_FRAMEBUFFER_TARGET) {
++            /* once per change: the decision is also logged at startup, often before logd runs */
++            static int logged_path = -1;
++            if (path != logged_path) {
++                logged_path = path;
++                char decided[PROPERTY_VALUE_MAX];
++                property_get("waydroid.hwc.present_path", decided, "undecided");
++                ALOGI("client target present path: %s (waydroid.hwc.present_path=%s)",
++                      prime ? "cross-GPU copy into system-memory LINEAR"
++                            : "same-GPU direct (buffer attached as rendered)", decided);
++            }
++        }
++        if (buf && buf->prime != prime) {
++            auto it = pdev->display->buffer_map.find(layer->handle);
++            erase_cached_buffer(pdev, it);
++            buf = nullptr;
++        }
+ 
+         if (!buf) {
+             /* set-time backstop for the prepare-time displayable gate: a layer
+@@ -139,7 +162,9 @@ namespace {
+                 && layer->handle
+                 && !gralloc_handler.displayable_buffer(pdev->display, layer->handle);
+             std::unique_ptr<buffer> result;
+-            if (layer->flags & HWC_IS_CURSOR_LAYER)
++            if (prime)
++                result = create_prime_wl_buffer(pdev->display, metadata, layer->handle);
++            else if (layer->flags & HWC_IS_CURSOR_LAYER)
+                 result = pdev->display->cursor_handler->create_buffer(pdev, metadata, layer);
+             else if (undisplayable) {
+                 static int undisp_count = 0;
+@@ -401,6 +426,29 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+     // TODO: Implement per-hwc_layer explicit synchronization
+     hwc_layer->releaseFenceFd = -1;
+ 
++    /* The compositor does not wait for the producer (NVIDIA takes no part in dma-buf implicit
++     * sync), so the commit must wait for the acquire fence. A fence that has not signalled after
++     * acquireTimeoutMS (a GPU hang or a pathological frame) is reported at error level and the
++     * frame is presented anyway: blocking the composer longer would freeze the whole display,
++     * and failing the layer used to skip set_position() and the wp_presentation feedback of an
++     * already committed buffer (window stuck in DRAW_PENDING). */
++    if (hwc_layer->acquireFenceFd != -1) {
++        if (sync_wait(hwc_layer->acquireFenceFd, acquireTimeoutMS) < 0) {
++            if (errno == ETIME)
++                ALOGE("acquire fence %d of layer %zu not signalled after %d ms; presenting "
++                      "the frame anyway", hwc_layer->acquireFenceFd, hwc_layer_index,
++                      acquireTimeoutMS);
++            else
++                ALOGE("waiting on acquire fence %d of layer %zu failed: %s; presenting the frame",
++                      hwc_layer->acquireFenceFd, hwc_layer_index, strerror(errno));
++        }
++    }
++    /* Cross-GPU: the rendered client target is copied into a system-memory LINEAR buffer now
++     * (after its acquire fence), and that buffer is attached. A failed copy is not presented:
++     * the block-linear original would be a fatal import error in the compositor. */
++    if (buf->prime && prime_copy(pdev->display, buf) != 0)
++        goto out;
++
+     surface_context.attach_buffer(*buf);
+     apply_surface_damage(hwc_layer, surface_context);
+     surface_context.set_buffer_transform(hwc_transform_to_buffer_transform(hwc_layer->transform));
+@@ -437,23 +485,6 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+         surface_context.set_buffer_scale(pdev->display->scale);
+     }
+ 
+-    /* The compositor does not wait for the producer (NVIDIA takes no part in dma-buf implicit
+-     * sync), so the commit must wait for the acquire fence. A fence that has not signalled after
+-     * acquireTimeoutMS (a GPU hang or a pathological frame) is reported at error level and the
+-     * frame is presented anyway: blocking the composer longer would freeze the whole display,
+-     * and failing the layer used to skip set_position() and the wp_presentation feedback of an
+-     * already committed buffer (window stuck in DRAW_PENDING). */
+-    if (hwc_layer->acquireFenceFd != -1) {
+-        if (sync_wait(hwc_layer->acquireFenceFd, acquireTimeoutMS) < 0) {
+-            if (errno == ETIME)
+-                ALOGE("acquire fence %d of layer %zu not signalled after %d ms; presenting "
+-                      "the frame anyway", hwc_layer->acquireFenceFd, hwc_layer_index,
+-                      acquireTimeoutMS);
+-            else
+-                ALOGE("waiting on acquire fence %d of layer %zu failed: %s; presenting the frame",
+-                      hwc_layer->acquireFenceFd, hwc_layer_index, strerror(errno));
+-        }
+-    }
+     res = 0;
+ 
+     wl_surface_commit(surface_context.surface);
+diff --git a/hwcomposer/prime-copy.cpp b/hwcomposer/prime-copy.cpp
+new file mode 100644
+index 0000000..d586e4a
+--- /dev/null
++++ b/hwcomposer/prime-copy.cpp
+@@ -0,0 +1,639 @@
++/*
++ * Cross-GPU ("PRIME") presentation of the client target; see prime-copy.h.
++ *
++ * Recipe (NVIDIA's own Wayland WSI, cross-GPU case): per presented image, after rendering, a
++ * copy-engine copy from the block-linear image into a system-memory LINEAR buffer (pitch aligned
++ * to 256 bytes, offset 0, size aligned to 4 KiB), presented with DRM_FORMAT_MOD_LINEAR. Without
++ * explicit sync the present waits for the copy on the CPU before the commit, and a buffer is
++ * reused only after the compositor's wl_buffer.release. Here the copy is a Vulkan
++ * vkCmdCopyImageToBuffer on the guest's NVIDIA Vulkan driver (NVK: copy-engine class on the
++ * queue's channel), into VkDeviceMemory from a host-visible, non-device-local memory type
++ * (system memory) exported as a dma-buf. Video memory is never offered to the other GPU: an
++ * nvidia-drm export of video memory has no pages and the foreign importer fails.
++ *
++ * Copyright 2026 waydroid-nvidia-prolapse. Apache-2.0.
++ */
++#define VK_NO_PROTOTYPES 1
++#include "prime-copy.h"
++
++#include <algorithm>
++#include <chrono>
++#include <condition_variable>
++#include <cstring>
++#include <deque>
++#include <mutex>
++#include <vector>
++
++#include <dirent.h>
++#include <dlfcn.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/sysmacros.h>
++#include <unistd.h>
++
++#include <drm_fourcc.h>
++#include <log/log.h>
++#include <vulkan/vulkan.h>
++#include <xf86drm.h>
++
++#include "linux-dmabuf-unstable-v1-client-protocol.h"
++#include "wayland-hwc.h"
++
++bool prime_find_nvidia_devices(dev_t *render, dev_t *primary)
++{
++    *render = *primary = 0;
++    DIR *dir = opendir("/dev/dri");
++    if (!dir) {
++        ALOGE("prime: cannot list /dev/dri: %s", strerror(errno));
++        return false;
++    }
++    while (struct dirent *e = readdir(dir)) {
++        if (strncmp(e->d_name, "renderD", 7) != 0)
++            continue;
++        std::string path = std::string("/dev/dri/") + e->d_name;
++        int fd = open(path.c_str(), O_RDWR | O_CLOEXEC);
++        if (fd < 0)
++            continue;
++        drmVersionPtr v = drmGetVersion(fd);
++        bool nvidia = v && v->name && strcmp(v->name, "nvidia-drm") == 0;
++        drmFreeVersion(v);
++        struct stat st;
++        if (nvidia && fstat(fd, &st) == 0)
++            *render = st.st_rdev;
++        close(fd);
++        if (*render)
++            break;
++    }
++    closedir(dir);
++    if (!*render)
++        return false;
++    /* The primary node is not bound into the guest; sysfs names it (…/device/drm/cardN/dev). */
++    char path[128];
++    snprintf(path, sizeof(path), "/sys/dev/char/%u:%u/device/drm", major(*render), minor(*render));
++    if ((dir = opendir(path))) {
++        while (struct dirent *e = readdir(dir)) {
++            if (strncmp(e->d_name, "card", 4) != 0)
++                continue;
++            std::string dev = std::string(path) + "/" + e->d_name + "/dev";
++            FILE *f = fopen(dev.c_str(), "re");
++            unsigned maj, min;
++            if (f && fscanf(f, "%u:%u", &maj, &min) == 2)
++                *primary = makedev(maj, min);
++            if (f)
++                fclose(f);
++            break;
++        }
++        closedir(dir);
++    }
++    if (!*primary)
++        ALOGW("prime: NVIDIA primary node not found under %s; comparing feedback devices with the "
++              "render node %u:%u only", path, major(*render), minor(*render));
++    return true;
++}
++
++namespace {
++
++#define VK_FUNCS(X) \
++    X(vkDestroyInstance) X(vkEnumeratePhysicalDevices) X(vkGetPhysicalDeviceProperties2) \
++    X(vkGetPhysicalDeviceMemoryProperties) X(vkGetPhysicalDeviceQueueFamilyProperties) \
++    X(vkEnumerateDeviceExtensionProperties) X(vkCreateDevice) X(vkGetDeviceProcAddr)
++#define VK_DEV_FUNCS(X) \
++    X(vkGetDeviceQueue) X(vkCreateCommandPool) X(vkAllocateCommandBuffers) X(vkCreateFence) \
++    X(vkCreateImage) X(vkDestroyImage) X(vkGetImageMemoryRequirements) X(vkAllocateMemory) \
++    X(vkFreeMemory) X(vkBindImageMemory) X(vkCreateBuffer) X(vkDestroyBuffer) \
++    X(vkGetBufferMemoryRequirements) X(vkBindBufferMemory) X(vkGetMemoryFdKHR) \
++    X(vkGetMemoryFdPropertiesKHR) X(vkBeginCommandBuffer) X(vkEndCommandBuffer) \
++    X(vkResetCommandBuffer) X(vkCmdPipelineBarrier) X(vkCmdCopyImageToBuffer) X(vkQueueSubmit) \
++    X(vkWaitForFences) X(vkResetFences)
++
++struct copier;
++struct target {
++    copier *owner = nullptr;
++    VkBuffer buffer = VK_NULL_HANDLE;
++    VkDeviceMemory memory = VK_NULL_HANDLE;
++    struct wl_buffer *wl_buffer = nullptr;
++    bool busy = false;          /* attached and not yet released by the compositor */
++    uint64_t last_used = 0;
++};
++
++struct source {
++    copier *owner = nullptr;
++    VkImage image = VK_NULL_HANDLE;
++    VkDeviceMemory memory = VK_NULL_HANDLE;
++    uint32_t width = 0, height = 0, drm_format = 0, bpp = 0;
++};
++
++struct copier {
++    void *lib = nullptr;
++    PFN_vkGetInstanceProcAddr gipa = nullptr;
++    VkInstance instance = VK_NULL_HANDLE;
++    VkPhysicalDevice pdev = VK_NULL_HANDLE;
++    VkDevice dev = VK_NULL_HANDLE;
++    VkQueue queue = VK_NULL_HANDLE;
++    uint32_t queue_family = 0;
++    VkCommandPool pool = VK_NULL_HANDLE;
++    VkCommandBuffer cmd = VK_NULL_HANDLE;
++    VkFence fence = VK_NULL_HANDLE;
++    uint32_t sysmem_type_bits = 0;     /* HOST_VISIBLE and not DEVICE_LOCAL */
++    VkPhysicalDeviceMemoryProperties mem_props{};
++#define DECL(f) PFN_##f f = nullptr;
++    VK_FUNCS(DECL) VK_DEV_FUNCS(DECL)
++#undef DECL
++
++    /* copy targets for the current geometry/format; release events come from the Wayland thread */
++    std::mutex mutex;
++    std::condition_variable released;
++    std::deque<target> targets;
++    uint32_t t_width = 0, t_height = 0, t_format = 0, t_pitch = 0;
++    uint64_t frame = 0;
++    bool logged_first = false;
++};
++
++const char *vk_err(VkResult r)
++{
++    static char buf[32];
++    snprintf(buf, sizeof(buf), "VkResult %d", (int)r);
++    return buf;
++}
++
++bool init_copier(copier *c)
++{
++    c->lib = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
++    if (!c->lib) {
++        ALOGE("prime: cannot load libvulkan.so: %s", dlerror());
++        return false;
++    }
++    c->gipa = (PFN_vkGetInstanceProcAddr)dlsym(c->lib, "vkGetInstanceProcAddr");
++    auto create_instance = (PFN_vkCreateInstance)c->gipa(VK_NULL_HANDLE, "vkCreateInstance");
++    VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
++    app.pApplicationName = "hwcomposer.waydroid cross-GPU copy";
++    app.apiVersion = VK_API_VERSION_1_2;
++    VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
++    ici.pApplicationInfo = &app;
++    VkResult r = create_instance(&ici, nullptr, &c->instance);
++    if (r != VK_SUCCESS) {
++        ALOGE("prime: vkCreateInstance failed: %s", vk_err(r));
++        return false;
++    }
++#define LOAD(f) c->f = (PFN_##f)c->gipa(c->instance, #f); \
++    if (!c->f) { ALOGE("prime: Vulkan entry point " #f " missing"); return false; }
++    VK_FUNCS(LOAD)
++#undef LOAD
++
++    uint32_t n = 0;
++    c->vkEnumeratePhysicalDevices(c->instance, &n, nullptr);
++    std::vector<VkPhysicalDevice> pdevs(n);
++    c->vkEnumeratePhysicalDevices(c->instance, &n, pdevs.data());
++    for (auto p : pdevs) {
++        VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
++        c->vkGetPhysicalDeviceProperties2(p, &props);
++        if (props.properties.vendorID == 0x10de) {
++            c->pdev = p;
++            ALOGI("prime: copying on %s (Vulkan %u.%u)", props.properties.deviceName,
++                  VK_API_VERSION_MAJOR(props.properties.apiVersion),
++                  VK_API_VERSION_MINOR(props.properties.apiVersion));
++            break;
++        }
++    }
++    if (!c->pdev) {
++        ALOGE("prime: no NVIDIA Vulkan device among %u", n);
++        return false;
++    }
++
++    const char *exts[] = {
++        VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME, VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
++        VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME, VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
++    };
++    c->vkEnumerateDeviceExtensionProperties(c->pdev, nullptr, &n, nullptr);
++    std::vector<VkExtensionProperties> have(n);
++    c->vkEnumerateDeviceExtensionProperties(c->pdev, nullptr, &n, have.data());
++    for (const char *e : exts) {
++        if (std::none_of(have.begin(), have.end(), [&](auto &h) { return !strcmp(h.extensionName, e); })) {
++            ALOGE("prime: the NVIDIA Vulkan device lacks %s", e);
++            return false;
++        }
++    }
++
++    /* A transfer-capable queue; NVK's copies run on the copy-engine class of that channel. */
++    c->vkGetPhysicalDeviceQueueFamilyProperties(c->pdev, &n, nullptr);
++    std::vector<VkQueueFamilyProperties> qf(n);
++    c->vkGetPhysicalDeviceQueueFamilyProperties(c->pdev, &n, qf.data());
++    uint32_t family = UINT32_MAX;
++    for (uint32_t i = 0; i < n; i++) {   /* prefer a transfer-only family (a copy-engine channel) */
++        if ((qf[i].queueFlags & VK_QUEUE_TRANSFER_BIT)
++            && !(qf[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))) { family = i; break; }
++    }
++    for (uint32_t i = 0; family == UINT32_MAX && i < n; i++)
++        if (qf[i].queueFlags & (VK_QUEUE_TRANSFER_BIT | VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT))
++            family = i;
++    if (family == UINT32_MAX) {
++        ALOGE("prime: no transfer-capable queue family");
++        return false;
++    }
++    c->queue_family = family;
++    float prio = 1.0f;
++    VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
++    qci.queueFamilyIndex = family;
++    qci.queueCount = 1;
++    qci.pQueuePriorities = &prio;
++    VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
++    dci.queueCreateInfoCount = 1;
++    dci.pQueueCreateInfos = &qci;
++    dci.enabledExtensionCount = sizeof(exts) / sizeof(exts[0]);
++    dci.ppEnabledExtensionNames = exts;
++    r = c->vkCreateDevice(c->pdev, &dci, nullptr, &c->dev);
++    if (r != VK_SUCCESS) {
++        ALOGE("prime: vkCreateDevice failed: %s", vk_err(r));
++        return false;
++    }
++#define LOAD(f) c->f = (PFN_##f)c->vkGetDeviceProcAddr(c->dev, #f); \
++    if (!c->f) { ALOGE("prime: Vulkan device entry point " #f " missing"); return false; }
++    VK_DEV_FUNCS(LOAD)
++#undef LOAD
++    c->vkGetDeviceQueue(c->dev, family, 0, &c->queue);
++
++    c->vkGetPhysicalDeviceMemoryProperties(c->pdev, &c->mem_props);
++    for (uint32_t i = 0; i < c->mem_props.memoryTypeCount; i++) {
++        auto f = c->mem_props.memoryTypes[i].propertyFlags;
++        if ((f & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) && !(f & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
++            c->sysmem_type_bits |= 1u << i;
++    }
++    if (!c->sysmem_type_bits) {
++        ALOGE("prime: the NVIDIA Vulkan device has no host-visible system-memory type");
++        return false;
++    }
++
++    VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
++    pci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
++    pci.queueFamilyIndex = family;
++    VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
++    cai.commandBufferCount = 1;
++    VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
++    if ((r = c->vkCreateCommandPool(c->dev, &pci, nullptr, &c->pool)) != VK_SUCCESS
++        || ((cai.commandPool = c->pool), (r = c->vkAllocateCommandBuffers(c->dev, &cai, &c->cmd)) != VK_SUCCESS)
++        || (r = c->vkCreateFence(c->dev, &fci, nullptr, &c->fence)) != VK_SUCCESS) {
++        ALOGE("prime: command pool/buffer/fence creation failed: %s", vk_err(r));
++        return false;
++    }
++    return true;
++}
++
++copier *get_copier(display *d)
++{
++    static bool failed = false;
++    if (d->prime_copier)
++        return (copier *)d->prime_copier;
++    if (failed)
++        return nullptr;
++    copier *c = new copier();
++    if (!init_copier(c)) {
++        failed = true;   /* logged above; not retried every frame. Objects leak on purpose:
++                          * this is a one-time failure of a process-lifetime object. */
++        ALOGE("prime: cross-GPU copy unavailable; the client target is not shown (a "
++              "block-linear buffer would be rejected by the compositor with error 7)");
++        return nullptr;
++    }
++    d->prime_copier = c;
++    return c;
++}
++
++bool vk_format_for(uint32_t drm_format, VkFormat *fmt, uint32_t *bpp)
++{
++    switch (drm_format) {
++        case DRM_FORMAT_ABGR8888: case DRM_FORMAT_XBGR8888: *fmt = VK_FORMAT_R8G8B8A8_UNORM; *bpp = 4; return true;
++        case DRM_FORMAT_ARGB8888: case DRM_FORMAT_XRGB8888: *fmt = VK_FORMAT_B8G8R8A8_UNORM; *bpp = 4; return true;
++        case DRM_FORMAT_ABGR2101010: case DRM_FORMAT_XBGR2101010:
++            *fmt = VK_FORMAT_A2B10G10R10_UNORM_PACK32; *bpp = 4; return true;
++        case DRM_FORMAT_RGB565: *fmt = VK_FORMAT_R5G6B5_UNORM_PACK16; *bpp = 2; return true;
++        case DRM_FORMAT_ABGR16161616F: case DRM_FORMAT_XBGR16161616F:
++            *fmt = VK_FORMAT_R16G16B16A16_SFLOAT; *bpp = 8; return true;
++        default: return false;
++    }
++}
++
++uint32_t pick_type(const copier *c, uint32_t bits)
++{
++    for (uint32_t i = 0; i < c->mem_props.memoryTypeCount; i++)
++        if (bits & (1u << i))
++            return i;
++    return UINT32_MAX;
++}
++
++void target_release(void *data, struct wl_buffer *)
++{
++    auto *t = (target *)data;
++    std::lock_guard<std::mutex> lock(t->owner->mutex);
++    t->busy = false;
++    t->owner->released.notify_all();
++}
++const struct wl_buffer_listener target_listener = { target_release };
++
++void destroy_targets(copier *c)
++{
++    std::lock_guard<std::mutex> lock(c->mutex);
++    for (auto &t : c->targets) {
++        /* The compositor keeps its own reference to the dma-buf; destroying the wl_buffer and
++         * freeing our memory while it is still on screen is safe. */
++        wl_buffer_destroy(t.wl_buffer);
++        c->vkDestroyBuffer(c->dev, t.buffer, nullptr);
++        c->vkFreeMemory(c->dev, t.memory, nullptr);
++    }
++    c->targets.clear();
++}
++
++/* One sysmem LINEAR copy target: pitch = align(width * bpp, 256), size = align(pitch * height,
++ * 4096), offset 0, modifier LINEAR (the stock request). Appended to c->targets under c->mutex. */
++bool make_target(display *d, copier *c)
++{
++    const VkDeviceSize size = ((VkDeviceSize)c->t_pitch * c->t_height + 0xfff) & ~(VkDeviceSize)0xfff;
++    VkExternalMemoryBufferCreateInfo ext{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
++    ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++    VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
++    bci.pNext = &ext;
++    bci.size = size;
++    bci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
++    bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++    target t;
++    t.owner = c;
++    VkResult r = c->vkCreateBuffer(c->dev, &bci, nullptr, &t.buffer);
++    if (r != VK_SUCCESS) {
++        ALOGE("prime: vkCreateBuffer(%llu bytes) failed: %s", (unsigned long long)size, vk_err(r));
++        return false;
++    }
++    VkMemoryRequirements req;
++    c->vkGetBufferMemoryRequirements(c->dev, t.buffer, &req);
++    uint32_t type = pick_type(c, req.memoryTypeBits & c->sysmem_type_bits);
++    if (type == UINT32_MAX) {
++        ALOGE("prime: no system-memory type for the copy target (buffer types 0x%x, sysmem 0x%x)",
++              req.memoryTypeBits, c->sysmem_type_bits);
++        c->vkDestroyBuffer(c->dev, t.buffer, nullptr);
++        return false;
++    }
++    VkMemoryDedicatedAllocateInfo ded{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
++    ded.buffer = t.buffer;
++    VkExportMemoryAllocateInfo exp{VK_STRUCTURE_TYPE_EXPORT_MEMORY_ALLOCATE_INFO};
++    exp.pNext = &ded;
++    exp.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
++    mai.pNext = &exp;
++    mai.allocationSize = req.size;
++    mai.memoryTypeIndex = type;
++    int fd = -1;
++    VkMemoryGetFdInfoKHR gfi{VK_STRUCTURE_TYPE_MEMORY_GET_FD_INFO_KHR};
++    gfi.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++    if ((r = c->vkAllocateMemory(c->dev, &mai, nullptr, &t.memory)) != VK_SUCCESS
++        || (r = c->vkBindBufferMemory(c->dev, t.buffer, t.memory, 0)) != VK_SUCCESS
++        || ((gfi.memory = t.memory), (r = c->vkGetMemoryFdKHR(c->dev, &gfi, &fd)) != VK_SUCCESS)) {
++        ALOGE("prime: system-memory copy target (type %u, %llu bytes): allocate/bind/export "
++              "failed: %s", type, (unsigned long long)req.size, vk_err(r));
++        if (t.memory)
++            c->vkFreeMemory(c->dev, t.memory, nullptr);
++        c->vkDestroyBuffer(c->dev, t.buffer, nullptr);
++        return false;
++    }
++    zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(d->dmabuf);
++    zwp_linux_buffer_params_v1_add(params, fd, 0, 0, c->t_pitch, DRM_FORMAT_MOD_LINEAR >> 32,
++                                   DRM_FORMAT_MOD_LINEAR & 0xffffffff);
++    t.wl_buffer = zwp_linux_buffer_params_v1_create_immed(params, c->t_width, c->t_height, c->t_format, 0);
++    zwp_linux_buffer_params_v1_destroy(params);
++    close(fd);   /* libwayland duplicated it when marshalling the request */
++    c->targets.push_back(t);
++    target &placed = c->targets.back();   /* deque: stable address for the listener */
++    wl_buffer_add_listener(placed.wl_buffer, &target_listener, &placed);
++    ALOGI("prime: copy target %zu: %ux%u fourcc 0x%x pitch %u, %llu bytes system memory (type %u "
++          "flags 0x%x), modifier LINEAR", c->targets.size(), c->t_width, c->t_height, c->t_format,
++          c->t_pitch, (unsigned long long)req.size, type, c->mem_props.memoryTypes[type].propertyFlags);
++    return true;
++}
++
++}  // namespace
++
++std::unique_ptr<buffer> prime_create_buffer(display *d, const buffer_metadata &metadata, int dma_fd,
++                                            uint32_t drm_format, uint32_t stride, uint32_t offset,
++                                            uint64_t modifier, buffer_handle_t handle)
++{
++    copier *c = get_copier(d);
++    if (!c)
++        return nullptr;
++    VkFormat fmt;
++    uint32_t bpp;
++    if (!vk_format_for(drm_format, &fmt, &bpp)) {
++        ALOGE("prime: client target fourcc 0x%x has no copy format; not shown", drm_format);
++        return nullptr;
++    }
++    auto *s = new source();
++    s->owner = c;
++    s->width = metadata.width;
++    s->height = metadata.height;
++    s->drm_format = drm_format;
++    s->bpp = bpp;
++
++    VkSubresourceLayout plane{};
++    plane.offset = offset;
++    plane.rowPitch = stride;
++    VkImageDrmFormatModifierExplicitCreateInfoEXT mod{VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT};
++    mod.drmFormatModifier = modifier;
++    mod.drmFormatModifierPlaneCount = 1;
++    mod.pPlaneLayouts = &plane;
++    VkExternalMemoryImageCreateInfo ext{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
++    ext.pNext = &mod;
++    ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++    VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
++    ici.pNext = &ext;
++    ici.imageType = VK_IMAGE_TYPE_2D;
++    ici.format = fmt;
++    ici.extent = {metadata.width, metadata.height, 1};
++    ici.mipLevels = 1;
++    ici.arrayLayers = 1;
++    ici.samples = VK_SAMPLE_COUNT_1_BIT;
++    ici.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
++    ici.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++    ici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++    ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
++    VkResult r = c->vkCreateImage(c->dev, &ici, nullptr, &s->image);
++    if (r != VK_SUCCESS) {
++        ALOGE("prime: importing the client target (%ux%u fourcc 0x%x modifier 0x%llx stride %u) "
++              "as an image failed: %s", metadata.width, metadata.height, drm_format,
++              (unsigned long long)modifier, stride, vk_err(r));
++        delete s;
++        return nullptr;
++    }
++    VkMemoryRequirements req;
++    c->vkGetImageMemoryRequirements(c->dev, s->image, &req);
++    VkMemoryFdPropertiesKHR fdp{VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR};
++    r = c->vkGetMemoryFdPropertiesKHR(c->dev, VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, dma_fd, &fdp);
++    if (r != VK_SUCCESS)
++        fdp.memoryTypeBits = 0;   /* reported with the failed import below */
++    uint32_t type = pick_type(c, req.memoryTypeBits & fdp.memoryTypeBits);
++    int fd = fcntl(dma_fd, F_DUPFD_CLOEXEC, 0);   /* a successful import consumes it */
++    VkImportMemoryFdInfoKHR imp{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
++    imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
++    imp.fd = fd;
++    VkMemoryDedicatedAllocateInfo ded{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_ALLOCATE_INFO};
++    ded.pNext = &imp;
++    ded.image = s->image;
++    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
++    mai.pNext = &ded;
++    mai.allocationSize = req.size;
++    mai.memoryTypeIndex = type;
++    if (fd < 0 || type == UINT32_MAX
++        || (r = c->vkAllocateMemory(c->dev, &mai, nullptr, &s->memory)) != VK_SUCCESS
++        || (r = c->vkBindImageMemory(c->dev, s->image, s->memory, 0)) != VK_SUCCESS) {
++        ALOGE("prime: importing the client target's dma-buf failed (fd %d, image types 0x%x, "
++              "dma-buf types 0x%x, chosen %u, %s)", fd, req.memoryTypeBits, fdp.memoryTypeBits,
++              type, vk_err(r));
++        if (s->memory)
++            c->vkFreeMemory(c->dev, s->memory, nullptr);
++        else if (fd >= 0)
++            close(fd);
++        c->vkDestroyImage(c->dev, s->image, nullptr);
++        delete s;
++        return nullptr;
++    }
++
++    std::unique_ptr<buffer> buf { new buffer() };
++    buf->metadata = metadata;
++    buf->handle = handle;
++    buf->isShm = false;
++    buf->prime = true;
++    buf->prime_source = s;
++    buf->wl_buffer = nullptr;   /* chosen per frame by prime_copy() */
++    ALOGI("prime: client target %ux%u fourcc 0x%x modifier 0x%llx stride %u imported for copying",
++          metadata.width, metadata.height, drm_format, (unsigned long long)modifier, stride);
++    return buf;
++}
++
++void prime_release_source(void *p)
++{
++    auto *s = (source *)p;
++    if (!s)
++        return;
++    copier *c = s->owner;
++    /* prime_copy() waits for its copy before returning, so the image is idle here */
++    c->vkDestroyImage(c->dev, s->image, nullptr);
++    c->vkFreeMemory(c->dev, s->memory, nullptr);
++    delete s;
++}
++
++int prime_copy(display *d, buffer *buf)
++{
++    auto *s = (source *)buf->prime_source;
++    copier *c = s->owner;
++    /* Geometry or format change (resize, display-mode switch): new pool. */
++    uint32_t format = s->drm_format;
++    if (buf->metadata.opaque) {
++        if (format == DRM_FORMAT_ABGR8888) format = DRM_FORMAT_XBGR8888;
++        else if (format == DRM_FORMAT_ARGB8888) format = DRM_FORMAT_XRGB8888;
++        else if (format == DRM_FORMAT_ABGR2101010) format = DRM_FORMAT_XBGR2101010;
++        else if (format == DRM_FORMAT_ABGR16161616F) format = DRM_FORMAT_XBGR16161616F;
++    }
++    if (c->t_width != s->width || c->t_height != s->height || c->t_format != format) {
++        destroy_targets(c);
++        c->t_width = s->width;
++        c->t_height = s->height;
++        c->t_format = format;
++        c->t_pitch = (s->width * s->bpp + 0xff) & ~0xffu;   /* stock: 256-byte pitch alignment */
++    }
++
++    /* A target the compositor has released; up to 4 (SurfaceFlinger triple-buffers the client
++     * target, plus one in flight), then wait for a release like NVIDIA's WSI does without
++     * explicit sync. */
++    constexpr size_t kMaxTargets = 4;
++    target *t = nullptr;
++    {
++        std::unique_lock<std::mutex> lock(c->mutex);
++        auto find_free = [&]() -> target * {
++            target *best = nullptr;
++            for (auto &x : c->targets)
++                if (!x.busy && (!best || x.last_used < best->last_used))
++                    best = &x;
++            return best;
++        };
++        t = find_free();
++        if (!t && c->targets.size() < kMaxTargets) {
++            lock.unlock();
++            bool ok = make_target(d, c);   /* takes no lock while talking Vulkan */
++            lock.lock();
++            if (!ok)
++                return -1;
++            t = &c->targets.back();
++        }
++        if (!t && !c->released.wait_for(lock, std::chrono::milliseconds(100),
++                                        [&] { return (t = find_free()) != nullptr; })) {
++            /* the compositor holds every target: reuse the oldest (may tear), say so */
++            static int count = 0;
++            if ((count++ % 100) == 0)
++                ALOGE("prime: the compositor released none of %zu copy targets within 100 ms; "
++                      "reusing the oldest (%d times)", c->targets.size(), count);
++            t = &*std::min_element(c->targets.begin(), c->targets.end(),
++                                   [](auto &a, auto &b) { return a.last_used < b.last_used; });
++        }
++        t->busy = true;
++        t->last_used = ++c->frame;
++    }
++
++    VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
++    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
++    c->vkResetCommandBuffer(c->cmd, 0);
++    c->vkBeginCommandBuffer(c->cmd, &bi);
++    /* acquire the image from its producer (SurfaceFlinger's GPU work, already complete: the
++     * caller waited for the acquire fence) */
++    VkImageMemoryBarrier ib{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
++    ib.srcAccessMask = 0;
++    ib.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
++    ib.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
++    ib.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++    ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
++    ib.dstQueueFamilyIndex = c->queue_family;
++    ib.image = s->image;
++    ib.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++    c->vkCmdPipelineBarrier(c->cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                            0, 0, nullptr, 0, nullptr, 1, &ib);
++    VkBufferImageCopy region{};
++    region.bufferOffset = 0;
++    region.bufferRowLength = c->t_pitch / s->bpp;
++    region.bufferImageHeight = s->height;
++    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
++    region.imageExtent = {s->width, s->height, 1};
++    c->vkCmdCopyImageToBuffer(c->cmd, s->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, t->buffer, 1, &region);
++    /* hand the buffer to the other GPU, and the image back to its producer */
++    VkBufferMemoryBarrier bb{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
++    bb.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++    bb.dstAccessMask = 0;
++    bb.srcQueueFamilyIndex = c->queue_family;
++    bb.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
++    bb.buffer = t->buffer;
++    bb.size = VK_WHOLE_SIZE;
++    ib.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
++    ib.dstAccessMask = 0;
++    ib.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++    ib.newLayout = VK_IMAGE_LAYOUT_GENERAL;
++    ib.srcQueueFamilyIndex = c->queue_family;
++    ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_FOREIGN_EXT;
++    c->vkCmdPipelineBarrier(c->cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
++                            0, 0, nullptr, 1, &bb, 1, &ib);
++    VkResult r = c->vkEndCommandBuffer(c->cmd);
++    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
++    si.commandBufferCount = 1;
++    si.pCommandBuffers = &c->cmd;
++    if (r == VK_SUCCESS)
++        r = c->vkQueueSubmit(c->queue, 1, &si, c->fence);
++    /* No explicit sync towards the compositor: the commit waits for the copy (stock's fallback
++     * without wp_linux_drm_syncobj). */
++    if (r == VK_SUCCESS)
++        r = c->vkWaitForFences(c->dev, 1, &c->fence, VK_TRUE, 1000000000ull);
++    c->vkResetFences(c->dev, 1, &c->fence);
++    if (r != VK_SUCCESS) {
++        ALOGE("prime: copy of the client target failed: %s; frame not presented", vk_err(r));
++        std::lock_guard<std::mutex> lock(c->mutex);
++        t->busy = false;
++        return -1;
++    }
++    buf->wl_buffer = t->wl_buffer;
++    if (!c->logged_first) {
++        c->logged_first = true;
++        ALOGI("prime: first cross-GPU frame: %ux%u copied on the NVIDIA GPU into system-memory "
++              "LINEAR pitch %u and attached", s->width, s->height, c->t_pitch);
++    }
++    return 0;
++}
+diff --git a/hwcomposer/prime-copy.h b/hwcomposer/prime-copy.h
+new file mode 100644
+index 0000000..60d76fd
+--- /dev/null
++++ b/hwcomposer/prime-copy.h
+@@ -0,0 +1,48 @@
++/*
++ * Cross-GPU ("PRIME") presentation of the client target.
++ *
++ * When the Wayland compositor renders on another GPU than the NVIDIA GPU the guest renders on
++ * (hybrid laptops: KWin/Mutter on the Intel or AMD iGPU), it cannot import NVIDIA block-linear
++ * dma-bufs (zwp_linux_buffer_params error 7), and it cannot import NVIDIA video memory at all
++ * (nvidia-drm exports NVKMS video memory without pages). NVIDIA's own Wayland WSI handles the same
++ * case by copying each presented image, after rendering, on the copy engine into a system-memory
++ * LINEAR buffer with a 256-byte aligned pitch and presenting that buffer with
++ * DRM_FORMAT_MOD_LINEAR; without explicit sync the copy is waited for on the CPU before the
++ * commit. This file does the same for the client target, through the guest's Vulkan driver.
++ *
++ * Copyright 2026 waydroid-nvidia-prolapse. Apache-2.0.
++ */
++#pragma once
++
++#include <cstdint>
++#include <memory>
++#include <sys/types.h>
++
++#include <cutils/native_handle.h>
++
++struct display;
++struct buffer;
++struct buffer_metadata;
++
++/* Where the client target goes. Decided from zwp_linux_dmabuf_v1 v4 default feedback. */
++enum class present_path : int {
++    unknown = 0,     /* no feedback (dmabuf < v4) or not decided yet: direct, as before */
++    direct = 1,      /* compositor on the NVIDIA GPU: block-linear buffers attached directly */
++    cross_gpu = 2,   /* compositor on another GPU: client target copied into sysmem LINEAR */
++};
++
++/* The NVIDIA DRM device of this guest (render node, and its primary node when sysfs shows it).
++ * Returns false (and logs why) when no nvidia-drm render node is visible. */
++bool prime_find_nvidia_devices(dev_t *render, dev_t *primary);
++
++/* A client-target buffer presented through a copy. buf->wl_buffer is borrowed from the copy
++ * target pool and changes every frame; prime_copy() selects it. */
++std::unique_ptr<buffer> prime_create_buffer(display *display, const buffer_metadata &metadata,
++                                            int dma_fd, uint32_t drm_format, uint32_t stride,
++                                            uint32_t offset, uint64_t modifier,
++                                            buffer_handle_t handle);
++/* Copy buf's source into a free sysmem LINEAR target and point buf->wl_buffer at it. Call after
++ * the layer's acquire fence has signalled and before attach. Returns 0 on success. */
++int prime_copy(display *display, buffer *buf);
++/* Called from ~buffer for prime buffers. */
++void prime_release_source(void *source);
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index 6066dd4..d56c55f 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -40,6 +40,7 @@
+ #include <sys/mman.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
++#include <sys/sysmacros.h>
+ #include <sys/wait.h>
+ #include <spawn.h>
+ #include <signal.h>
+@@ -69,6 +70,7 @@
+ #include <cinttypes>
+ 
+ #include "gralloc_handler.h"
++#include "prime-copy.h"
+ 
+ #include <wayland-client.h>
+ #include <wayland-android-client-protocol.h>
+@@ -98,7 +100,10 @@ static void note_input_serial(struct display *display, uint32_t serial)
+ struct buffer;
+ 
+ buffer::~buffer() {
+-    wl_buffer_destroy(wl_buffer);
++    if (prime)
++        prime_release_source(prime_source);   /* wl_buffer belongs to the copy-target pool */
++    else
++        wl_buffer_destroy(wl_buffer);
+     if (isShm)
+         munmap(shm_data, size);
+ }
+@@ -1809,22 +1814,23 @@ static const struct wl_seat_listener seat_listener = {
+ };
+ 
+ static void dmabuf_format(void *, struct zwp_linux_dmabuf_v1 *, uint32_t);
++/* One (format, modifier) the compositor imports. Shared by the v3 modifier event and the v4
++ * feedback tranches; a pair already known is ignored (feedback is re-sent on changes). */
+ static void
+-dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
+-         uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo)
++add_format_modifier(struct display *d, uint32_t format, uint64_t modifier)
+ {
+-    dmabuf_format(data, dmabuf, format);
+-
+-    struct display *d = (struct display*)data;
+-    uint64_t modifier = ((uint64_t)modifier_hi << 32) | modifier_lo;
+     if (modifier == DRM_FORMAT_MOD_INVALID)
+         return;
+ 
+     size_t index;
+     {
+         std::lock_guard<std::mutex> lock(d->formats_mutex);
+-        index = d->modifiers[format].size();
+-        d->modifiers[format].push_back(modifier);
++        d->formats.insert(format);
++        auto &mods = d->modifiers[format];
++        if (std::find(mods.begin(), mods.end(), modifier) != mods.end())
++            return;
++        index = mods.size();
++        mods.push_back(modifier);
+         if (fourcc_mod_get_vendor(modifier) == DRM_FORMAT_MOD_VENDOR_NVIDIA)
+             d->nvidia_modifier_formats.insert(format);
+     }
+@@ -1838,6 +1844,14 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
+     property_set(prop_name.c_str(), prop_value.c_str());
+ }
+ 
++static void
++dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
++         uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo)
++{
++    dmabuf_format(data, dmabuf, format);
++    add_format_modifier((struct display*)data, format, ((uint64_t)modifier_hi << 32) | modifier_lo);
++}
++
+ static void
+ dmabuf_format(void *data, struct zwp_linux_dmabuf_v1 *, uint32_t format)
+ {
+@@ -1851,6 +1865,167 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
+     dmabuf_modifiers
+ };
+ 
++/* zwp_linux_dmabuf_v1 v4 default feedback. Since v4 the compositor sends no format/modifier
++ * events; the format table plus the tranches replace them, and main_device / tranche
++ * target_device say which GPU the compositor imports with. NVIDIA's WSI makes its cross-GPU
++ * decision from the same events (dev_t equality, no vendor or P2P check); see
++ * decide_present_path(). Events arrive on the thread that dispatches the default queue. */
++static dev_t
++feedback_dev(struct wl_array *device)
++{
++    dev_t dev = 0;
++    if (device->size == sizeof(dev))
++        memcpy(&dev, device->data, sizeof(dev));
++    else
++        ALOGE("dmabuf feedback: device array of %zu bytes, expected %zu", device->size, sizeof(dev));
++    return dev;
++}
++
++static void
++feedback_format_table(void *data, struct zwp_linux_dmabuf_feedback_v1 *, int32_t fd, uint32_t size)
++{
++    struct display *d = (struct display*)data;
++    auto &f = d->feedback;
++    if (f.table)
++        munmap(f.table, f.table_size);
++    f.table = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0);
++    f.table_size = size;
++    if (f.table == MAP_FAILED) {
++        ALOGE("dmabuf feedback: cannot map the %u-byte format table: %s", size, strerror(errno));
++        f.table = nullptr;
++        f.table_size = 0;
++    }
++    close(fd);
++}
++
++static void
++feedback_main_device(void *data, struct zwp_linux_dmabuf_feedback_v1 *, struct wl_array *device)
++{
++    ((struct display*)data)->feedback.main_device = feedback_dev(device);
++}
++
++static void
++feedback_tranche_target_device(void *data, struct zwp_linux_dmabuf_feedback_v1 *, struct wl_array *device)
++{
++    ((struct display*)data)->feedback.tranche_device = feedback_dev(device);
++}
++
++static void
++feedback_tranche_formats(void *data, struct zwp_linux_dmabuf_feedback_v1 *, struct wl_array *indices)
++{
++    auto &f = ((struct display*)data)->feedback;
++    const uint16_t *idx = (const uint16_t *)indices->data;
++    f.tranche_indices.insert(f.tranche_indices.end(), idx, idx + indices->size / sizeof(uint16_t));
++}
++
++static void
++feedback_tranche_flags(void *, struct zwp_linux_dmabuf_feedback_v1 *, uint32_t)
++{
++}
++
++static void
++feedback_tranche_done(void *data, struct zwp_linux_dmabuf_feedback_v1 *)
++{
++    auto &f = ((struct display*)data)->feedback;
++    f.tranches.push_back({f.tranche_device, std::move(f.tranche_indices)});
++    f.tranche_indices.clear();
++    f.tranche_device = 0;
++}
++
++struct feedback_entry { uint32_t format; uint32_t pad; uint64_t modifier; };
++
++static const char *
++present_path_name(int path)
++{
++    switch ((present_path)path) {
++        case present_path::direct: return "same-GPU direct";
++        case present_path::cross_gpu: return "cross-GPU copy";
++        default: return "undecided (direct)";
++    }
++}
++
++/* NVIDIA's Wayland WSI order: walk the tranches in order; the first one that lists
++ * the client target's format decides: target device == the NVIDIA GPU -> direct, target device ==
++ * the compositor's main device (another GPU) -> copy; a tranche for any other device is skipped.
++ * No tranche lists the format: the main device decides (stock fails the swapchain instead; the
++ * composer has no such option, and the fallback is logged). */
++static void
++decide_present_path(struct display *d)
++{
++    auto &f = d->feedback;
++    dev_t nv_render = 0, nv_primary = 0;
++    if (!prime_find_nvidia_devices(&nv_render, &nv_primary)) {
++        ALOGE("dmabuf feedback: the NVIDIA DRM device is not visible in the guest, so the "
++              "compositor's GPU cannot be compared with it; presenting directly (block-linear). "
++              "A compositor on another GPU will reject these buffers (error 7)");
++        d->present_path = (int)present_path::direct;
++        return;
++    }
++    auto is_nvidia = [&](dev_t dev) { return dev && (dev == nv_render || dev == nv_primary); };
++    const auto *table = (const feedback_entry *)f.table;
++    const size_t entries = f.table ? f.table_size / sizeof(feedback_entry) : 0;
++    /* the client target is RGBA_8888 (DRM ABGR8888, XBGR8888 when opaque) */
++    auto lists_target_format = [&](const std::vector<uint16_t> &indices) {
++        for (uint16_t i : indices)
++            if (i < entries && (table[i].format == DRM_FORMAT_ABGR8888 || table[i].format == DRM_FORMAT_XBGR8888))
++                return true;
++        return false;
++    };
++    present_path path = present_path::unknown;
++    const char *why = "";
++    for (const auto &t : f.tranches) {
++        if (!lists_target_format(t.indices))
++            continue;
++        if (is_nvidia(t.target)) {
++            path = present_path::direct;
++            why = "first tranche with the format targets the NVIDIA GPU";
++            break;
++        }
++        if (t.target == f.main_device) {
++            path = present_path::cross_gpu;
++            why = "first tranche with the format targets the compositor's main device, another GPU";
++            break;
++        }
++    }
++    if (path == present_path::unknown) {
++        path = is_nvidia(f.main_device) ? present_path::direct : present_path::cross_gpu;
++        why = "no tranche lists ABGR8888/XBGR8888 for the NVIDIA GPU or the main device; decided by "
++              "the main device";
++    }
++    int old = d->present_path.exchange((int)path);
++    if (old != (int)path) {
++        ALOGI("present path: %s (compositor main device %u:%u, NVIDIA render %u:%u primary %u:%u; %s)",
++              present_path_name((int)path), major(f.main_device), minor(f.main_device),
++              major(nv_render), minor(nv_render), major(nv_primary), minor(nv_primary), why);
++        property_set("waydroid.hwc.present_path", path == present_path::cross_gpu ? "cross-gpu-copy" : "direct");
++    }
++}
++
++static void
++feedback_done(void *data, struct zwp_linux_dmabuf_feedback_v1 *)
++{
++    struct display *d = (struct display*)data;
++    auto &f = d->feedback;
++    const auto *table = (const feedback_entry *)f.table;
++    const size_t entries = f.table ? f.table_size / sizeof(feedback_entry) : 0;
++    for (const auto &t : f.tranches)
++        for (uint16_t i : t.indices)
++            if (i < entries)
++                add_format_modifier(d, table[i].format, table[i].modifier);
++    decide_present_path(d);
++    f.tranches.clear();
++}
++
++static const struct zwp_linux_dmabuf_feedback_v1_listener dmabuf_feedback_listener = {
++    feedback_done,
++    feedback_format_table,
++    feedback_main_device,
++    feedback_tranche_done,
++    feedback_tranche_target_device,
++    feedback_tranche_formats,
++    feedback_tranche_flags,
++};
++
+ static void
+ output_handle_mode(void *data, struct wl_output *,
+                    uint32_t, int32_t width, int32_t height,
+@@ -2358,9 +2533,21 @@ registry_handle_global(void *data, struct wl_registry *registry,
+                (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
+         if (version < 3)
+             return;
++        /* v4: device feedback tells which GPU the compositor imports with (NVIDIA's WSI binds
++         * min(version, 4) for the same reason). v3: format/modifier events only. */
+         d->dmabuf = (struct zwp_linux_dmabuf_v1*)wl_registry_bind(registry, id,
+-                &zwp_linux_dmabuf_v1_interface, 3);
+-        zwp_linux_dmabuf_v1_add_listener(d->dmabuf, &dmabuf_listener, d);
++                &zwp_linux_dmabuf_v1_interface, std::min<uint32_t>(version, 4));
++        if (version >= 4) {
++            d->dmabuf_feedback = zwp_linux_dmabuf_v1_get_default_feedback(d->dmabuf);
++            zwp_linux_dmabuf_feedback_v1_add_listener(d->dmabuf_feedback, &dmabuf_feedback_listener, d);
++            wl_display_roundtrip(d->display);
++        } else {
++            zwp_linux_dmabuf_v1_add_listener(d->dmabuf, &dmabuf_listener, d);
++            ALOGW("present path: compositor offers zwp_linux_dmabuf_v1 v%u (< 4), no device "
++                  "feedback; presenting directly (block-linear) without checking that the "
++                  "compositor renders on the NVIDIA GPU", version);
++            d->present_path = (int)present_path::direct;
++        }
+     } else if (strcmp(interface, "zwp_tablet_manager_v2") == 0) {
+         d->tablet_manager = (struct zwp_tablet_manager_v2 *)wl_registry_bind(registry, id,
+                 &zwp_tablet_manager_v2_interface, 1);
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 44037f4..44f9cd3 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -44,6 +44,8 @@
+ #include <errno.h>
+ #include <map>
+ #include <mutex>
++#include <atomic>
++#include <vector>
+ #include <list>
+ #include <set>
+ #include <pthread.h>
+@@ -147,6 +149,11 @@ struct buffer {
+     /* hwc_set() calls in a row in which no layer used this buffer; see
+      * prune_stale_cached_buffers() in hwcomposer.cpp. */
+     int unused_frames = 0;
++    /* Client target presented through a cross-GPU copy (prime-copy.cpp): wl_buffer is borrowed
++     * from the copy-target pool and re-pointed by prime_copy() every frame; prime_source is the
++     * imported source image, released with the buffer. */
++    bool prime = false;
++    void *prime_source = nullptr;
+ 
+     ~buffer();
+ };
+@@ -455,6 +462,22 @@ struct display {
+     std::unordered_set<uint32_t> nvidia_modifier_formats;
+ 
+     std::map<uint32_t, std::vector<uint64_t>> modifiers;
++
++    /* zwp_linux_dmabuf_v1 v4 default feedback (Wayland thread only) and the decision made from
++     * it (read by the HWC thread). See dmabuf_feedback_done() and prime-copy.h. */
++    struct zwp_linux_dmabuf_feedback_v1 *dmabuf_feedback;
++    struct dmabuf_feedback_state {
++        void *table = nullptr;
++        size_t table_size = 0;
++        dev_t main_device = 0;
++        dev_t tranche_device = 0;
++        std::vector<uint16_t> tranche_indices;
++        struct tranche { dev_t target; std::vector<uint16_t> indices; };
++        std::vector<tranche> tranches;
++    } feedback;
++    std::atomic<int> present_path{0};
++    void *prime_copier = nullptr;
++
+     std::map<uint32_t, std::string> layer_names;
+     std::map<uint32_t, struct handleExt> layer_handles_ext;
+     struct handleExt target_layer_handle_ext;
+-- 
+2.56.0
+

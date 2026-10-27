@@ -42,7 +42,7 @@ require_basename() {
 src_realpath() {
     local rp; rp="$(realpath -m -- "$1")" || die "cannot resolve '$1'"
     [[ -f "$rp" ]] || die "source '$rp' is not a regular file"
-    require_under "$rp" "$USER_HOME" "/tmp/claude-1000"
+    require_under "$rp" "$USER_HOME"
     printf '%s' "$rp"
 }
 

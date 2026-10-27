@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# deploy-guest — stage the P1 spike into the running Waydroid guest's /data/local/tmp/nvp.
+# Must run as root (the data dir is root-owned): sudo -n dev/deploy-guest
+# Copies: the host driver's ICD closure for the installed driver version (read from /proc/driver/nvidia/version),
+# the shim build outputs (shim/out), nvprobe + nvprobe.sh, and the host glibc version string.
+set -euo pipefail
+NVP=$(cd "$(dirname "$(readlink -f "$0")")/../nvidia-prolapse" && pwd)   # the nvidia-prolapse sub-project
+# Waydroid user data of the invoking user (sudo keeps SUDO_USER); override with WAYDROID_DATA=.
+DATA=${WAYDROID_DATA:-$(getent passwd "${SUDO_USER:-$(id -un)}" | cut -d: -f6)/.local/share/waydroid/data}
+D=$DATA/local/tmp/nvp
+# two- or three-part versions (595.80, 615.78.08), the first one on the line
+V=$(awk '/NVRM version/{for(i=1;i<=NF;i++) if($i ~ /^[0-9]+\.[0-9]+(\.[0-9]+)?$/) {print $i; exit}}' /proc/driver/nvidia/version)
+[ -n "$V" ] || { echo "deploy-guest: cannot read the driver version from /proc/driver/nvidia/version" >&2; exit 1; }
+mkdir -p "$D/lib" "$D/shim" "$D/bin"
+# the driver's ICD closure, found through the loader cache at the kernel module's version
+BLOBS=$(python3 -I "$NVP/shim/tools/find-driver.py" --arch x86_64) || exit 1
+for p in $BLOBS; do
+    f=$(basename "$p")
+    cmp -s "$p" "$D/lib/$f" || cp -f "$p" "$D/lib/$f"
+done
+ln -sfn "libEGL_nvidia.so.$V" "$D/lib/libEGL_nvidia.so.0"
+[ -d "$NVP/shim/out" ] || { echo "deploy-guest: $NVP/shim/out missing — run make in shim/ first" >&2; exit 1; }
+rm -f "$D"/shim/*
+cp -f "$NVP"/shim/out/libnvglibc.so "$NVP"/shim/out/libc.so.6 "$NVP"/shim/out/libm.so.6 "$NVP"/shim/out/libpthread.so.0 \
+      "$NVP"/shim/out/librt.so.1 "$NVP"/shim/out/libdl.so.2 "$NVP"/shim/out/ld-linux-x86-64.so.2 "$D/shim/"
+cp -f "$NVP/probe/nvprobe" "$D/bin/nvprobe"
+cp -f "$NVP/probe/nvprobe.sh" "$D/bin/nvprobe.sh"
+# P2: the same probe plus the app sandbox in a *system* linker-section directory
+# (/data/local/tests/system is 'dir.system' in LineageOS 20's linker config), so nvprobe runs
+# under the [system] section like app_process and can reach the sphal namespace.
+T=$DATA/local/tests/system
+mkdir -p "$T"
+for f in nvprobe nvexts appsandbox nvprobe-sphal.sh nvprobe32 nvexts32; do
+    [ -e "$NVP/probe/$f" ] || { echo "deploy-guest: $NVP/probe/$f missing (make -C nvidia-prolapse/probe nvprobe nvexts appsandbox nvprobe32 nvexts32)" >&2; exit 1; }
+    cp -f "$NVP/probe/$f" "$T/$f"
+done
+# P7 G7a: eglgles (NVIDIA EGL + GLES with our own glvnd vendor host), NDK builds -> eglgles / eglgles32
+for f in eglgles:eglgles-android eglgles32:eglgles-android32; do
+    [ -e "$NVP/probe/${f#*:}" ] || { echo "deploy-guest: $NVP/probe/${f#*:} missing (make -C nvidia-prolapse/probe eglgles-android eglgles-android32)" >&2; exit 1; }
+    cp -f "$NVP/probe/${f#*:}" "$T/${f%%:*}"
+done
+# HAL test for duplicate ppEnabledExtensionNames (hal/test/ext-duplicates.c): --hal vulkan.nvidia.so --sphal,
+# --icd libEGL_nvidia.so.0 --sphal, or --loader libvulkan.so; run with LIBC_DEBUG_MALLOC_OPTIONS="guard backtrace=8".
+[ -e "$NVP/hal/out/android/ext-duplicates" ] || { echo "deploy-guest: $NVP/hal/out/android/ext-duplicates missing (make -C nvidia-prolapse/hal android)" >&2; exit 1; }
+cp -f "$NVP/hal/out/android/ext-duplicates" "$T/ext-duplicates"
+[ -e "$NVP/hal/out/android32/ext-duplicates" ] || { echo "deploy-guest: $NVP/hal/out/android32/ext-duplicates missing (make -C nvidia-prolapse/hal android32)" >&2; exit 1; }
+cp -f "$NVP/hal/out/android32/ext-duplicates" "$T/ext-duplicates32"
+chown -R root:root "$DATA/local/tests"; chmod -R a+rX "$DATA/local/tests"; chmod 755 "$T"/*
+getconf GNU_LIBC_VERSION | awk '{print $2}' > "$D/host-glibc-version"
+chown -R root:root "$D"; chmod -R a+rX "$D"; chmod 755 "$D"/bin/*
+echo "deployed driver $V, glibc $(cat "$D/host-glibc-version") -> $D (spike) and $T (P2)"; ls -la "$D/shim" "$D/bin" "$T"

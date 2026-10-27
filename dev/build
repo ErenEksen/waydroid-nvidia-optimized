@@ -37,7 +37,7 @@ case "${1:-}" in
              ANDROID_ABI=x86 "$B/mesa/build.sh" "$MESA_TREE" "$MESA_BUILD_X86" ;;
     mesa-host) say "native Venus ICD (tests only)"; "$B/mesa/build-host.sh" "$MESA_TREE" "$WNV/mesa-host" ;;
     virgl)   say "virglrenderer (host renderer)"; REPO="$REPO" "$B/virglrenderer/build.sh" "$VIRGL_TREE" "$VIRGL_BUILD" ;;
-    hwc)     say "hwcomposer"; "$B/hwcomposer/build.sh" "$HWC_TREE/hwcomposer" "$HWC_BUILD/out" ;;
+    hwc)     say "hwcomposer"; HWC_SRC="$HWC_TREE" "$REPO/hwcomposer/build.sh" "$HWC_BUILD/out" ;;
     gralloc) say "gralloc backend"; REPO="$REPO" "$B/gralloc/build.sh" "$HWC_BUILD/out" ;;
     angle)   "$0" angle-x86_64; "$0" angle-x86 ;;
     angle-x86_64) say "ANGLE (x86_64, rare, slow)"; build_angle x86_64 ;;

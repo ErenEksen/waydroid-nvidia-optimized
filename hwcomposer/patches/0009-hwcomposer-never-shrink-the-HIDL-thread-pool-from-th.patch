@@ -1,0 +1,77 @@
+From 4fc176f2ae5a06e05ad9f65cd6a8ccf6ce03b96c Mon Sep 17 00:00:00 2001
+From: waydroid-nvidia-prolapse <build@local>
+Date: Mon, 12 Oct 2026 00:58:44 +0300
+Subject: [PATCH 09/13] hwcomposer: never shrink the HIDL thread pool from the
+ binder thread
+
+What: hwc_binder_thread() configures the HIDL pool with
+max(1, hardware::ProcessState::self()->getMaxThreads()) threads instead of 1.
+
+Why: the composer service (hardware/interfaces graphics/composer/2.1/default/
+service.cpp at the pinned AOSP commit) calls configureRpcThreadpool(4, true),
+then HwcLoader::load() (which opens this module; hwc_open() starts
+hwc_binder_thread), then composer->registerAsService(). Registration runs
+hidl-gen's BpHwServiceManager::_hidl_add*, which call
+hardware::ProcessState::startThreadPool() (the image's libhidlbase has 14 such
+call sites, objdump). libhwbinder ProcessState::setThreadPoolConfiguration()
+(pinned system/libhwbinder ProcessState.cpp:311) is
+LOG_ALWAYS_FATAL_IF(mThreadPoolStarted && maxThreads < mMaxThreads,
+"Binder threadpool cannot be shrunk after starting"). So when the main
+thread's registration wins the race against this thread's
+configureRpcThreadpool(1, true), 1 < 4 aborts the composer at start, and
+SurfaceFlinger and zygote restart behind it. Not seen in this project's
+retained logs (50 tombstones, 58 dropbox tombstones: no composer crash), but
+the path is reachable on every start. The configured count is written by
+main before this thread exists and startThreadPool() does not change it, so
+re-using it is never a shrink, whichever thread wins.
+
+Source: problem reported by QuinOvaX, quinovax/waydroid-nvidia dev 74f7b93
+  https://github.com/quinovax/waydroid-nvidia/commit/74f7b9308fa1d1e4e81fb52570735ed562ee3fc1
+  (observed there as two composer aborts at start, 2026-10-04).
+Licence: Apache-2.0 (android_hardware_waydroid).
+
+Deviation from the source: the fix is ours. The source replaced
+configure/join with setupBinderPolling()/handleBinderPoll(), but
+IPCThreadState::setupPolling() itself calls
+setThreadPoolConfiguration(1, true) (pinned libhwbinder IPCThreadState.cpp:579),
+the same guard, and its handleBinderPoll() loop never poll()s the fd. It also
+cites ProcessState.cpp:393, which is libbinder's (frameworks/native) copy of
+the guard; HIDL's configureRpcThreadpool goes to libhwbinder.
+---
+ hwcomposer/hwcomposer.cpp | 16 +++++++++++++++-
+ 1 file changed, 15 insertions(+), 1 deletion(-)
+
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index a36b3fc..8f9b0c9 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -17,6 +17,9 @@
+ 
+ #include "hwcomposer.h"
+ 
++#include <algorithm>
++#include <hwbinder/ProcessState.h>
++
+ #include <errno.h>
+ #include <pthread.h>
+ #include <semaphore.h>
+@@ -784,7 +787,18 @@ static void* hwc_binder_thread(void* data) {
+     sp<IWaydroidClipboard> waydroidClipboard;
+ 
+     setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
+-    configureRpcThreadpool(1, true /*callerWillJoin*/);
++    /* Never shrink the HIDL thread pool. This module is loaded by
++     * android.hardware.graphics.composer@2.1-service, whose main() has already called
++     * configureRpcThreadpool(4, true) before HwcLoader::load() opened us, and whose
++     * registerAsService() (hidl-gen BpHwServiceManager::_hidl_add*, run concurrently with this
++     * thread) calls hardware::ProcessState::startThreadPool(). libhwbinder's
++     * setThreadPoolConfiguration() is LOG_ALWAYS_FATAL when the pool is started and the new
++     * count is lower ("Binder threadpool cannot be shrunk after starting"), so the old
++     * configureRpcThreadpool(1, true) aborted the composer whenever main won that race.
++     * Re-using the configured count (main's configure happens-before this thread exists) can
++     * never be lower, whatever the order; a process with no configured pool gets 1 as before. */
++    configureRpcThreadpool(std::max<size_t>(1, android::hardware::ProcessState::self()->getMaxThreads()),
++                           true /*callerWillJoin*/);
+ 
+     waydroidDisplay = new WaydroidDisplay(pdev->display);
+     if (waydroidDisplay == nullptr) {
