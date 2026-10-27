@@ -45,7 +45,7 @@ flowchart LR
 | Submit bookkeeping, 5–20 submits | malloc/free + list walk per submit | pooled, constant time | ~5–50 µs CPU; more in long sessions |
 | Semaphore imports, 2–3 waits | one guest↔host round trip each (~20–60 µs) | one ring wait per submission | ~20–120 µs latency |
 | Fence export on the socket path | driver export under a contended mutex (up to ~0.7 ms measured upstream) | `dup()` of the kept payload | up to ~0.1–0.7 ms when the lock is contended |
-| **Total, typical frame** | | | **≈ 0.05–0.9 ms less CPU/latency per frame (≈ 1–15 % of the budget)** |
+| **Total, typical frame** | | | **≈ 0.2–1.9 ms less CPU/latency per frame (≈ 5–25 % of the budget)** |
 
 ### By scenario
 
