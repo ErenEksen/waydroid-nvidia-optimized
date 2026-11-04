@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:56:58 +0300
-Subject: [PATCH 05/17] hwcomposer: no abort() on per-frame and unreachable
+Subject: [PATCH 05/20] hwcomposer: no abort() on per-frame and unreachable
  conditions
 
 What: the composer no longer abort()s when
@@ -152,7 +152,7 @@ index a874a73..432c21b 100644
                  int res = apply_hwc_layer_to_window(pdev, fbt, skipped_layers.framebuffer_target_index(), window);
                  if (in_run || is_fbt) {
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 0d89163..7f2ec25 100644
+index b9e7421..def657f 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -675,8 +675,9 @@ BufferTransform hwc_transform_to_buffer_transform(uint32_t hwc_transform) {
@@ -178,7 +178,7 @@ index 0d89163..7f2ec25 100644
      }
  
      if (display->isMaximized || calibrating) {
-@@ -2525,6 +2528,15 @@ create_display(const char *gralloc)
+@@ -2535,6 +2538,15 @@ create_display(const char *gralloc)
                   &registry_listener, display);
      wl_display_roundtrip(display->display);
  

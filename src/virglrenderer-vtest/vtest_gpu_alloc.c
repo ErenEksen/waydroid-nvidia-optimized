@@ -34,6 +34,9 @@
 #define ALLOC_DRM_FORMAT_ABGR8888      DRM_FOURCC('A', 'B', '2', '4')
 #define ALLOC_DRM_FORMAT_ABGR2101010   DRM_FOURCC('A', 'B', '3', '0')
 #define ALLOC_DRM_FORMAT_ABGR16161616F DRM_FOURCC('A', 'B', '4', 'H')
+/* DRM_FORMAT_NV12 -- see vtest_wrapper.c's FMT_NV12 comment. Always arrives
+ * here via vtest_gpu_alloc_cpu(), never the Vulkan/tiled path. */
+#define ALLOC_DRM_FORMAT_NV12          DRM_FOURCC('N', 'V', '1', '2')
 
 struct alloc_vk {
    void *lib;
@@ -459,11 +462,24 @@ vtest_gpu_alloc_cpu(uint32_t width, uint32_t height, uint32_t drm_format,
    /* experiment control: udmabuf-first (NVIDIA-linear path suspected of
     * breaking hwcomposer's own SW buffers) */
 {
-   if (!width || !height || (uint64_t)width * drm_format_bpp(drm_format) > UINT32_MAX - 255u)
+   /* NV12 carries 1 byte per pixel in its Y plane; the UV plane adds half the rows at the same stride. */
+   const uint32_t bpp = drm_format == ALLOC_DRM_FORMAT_NV12 ? 1u : drm_format_bpp(drm_format);
+   if (!width || !height || (uint64_t)width * bpp > UINT32_MAX - 255u)
       return -EINVAL;
-   const uint32_t bpp = drm_format_bpp(drm_format);
    const uint32_t stride = (uint32_t)ALLOC_ALIGN((uint64_t)width * bpp, 256);
-   const uint64_t size = ALLOC_ALIGN((uint64_t)stride * height, 4096);
+   uint64_t size;
+   if (drm_format == ALLOC_DRM_FORMAT_NV12) {
+      /* Biplanar 4:2:0: one contiguous buffer, Y plane followed by an
+       * interleaved half-height UV plane at the SAME row stride (2 bytes
+       * per 2x1 UV samples averages to the same byte width as 1-byte-per-
+       * pixel Y). This has to match minigbm's own drv_bo_from_format()
+       * (biplanar_yuv_420_layout in drv_helpers.c) exactly, since the guest
+       * recomputes both planes' offsets/sizes from just this stride and
+       * height -- it never sees anything else we send back. */
+      size = ALLOC_ALIGN((uint64_t)stride * height + (uint64_t)stride * ((height + 1) / 2), 4096);
+   } else {
+      size = ALLOC_ALIGN((uint64_t)stride * height, 4096);
+   }
 
    int memfd = memfd_create("vtest-gralloc", MFD_ALLOW_SEALING | MFD_CLOEXEC);
    if (memfd < 0)

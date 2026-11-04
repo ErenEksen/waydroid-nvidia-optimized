@@ -361,7 +361,7 @@ diff --git a/src/venus/vkr_context.c b/src/venus/vkr_context.c
 index c170bd3..2433bb4 100644
 --- a/src/venus/vkr_context.c
 +++ b/src/venus/vkr_context.c
-@@ -5,10 +5,19 @@
+@@ -5,10 +5,20 @@
  
  #include "vkr_context.h"
  
@@ -370,6 +370,7 @@ index c170bd3..2433bb4 100644
 +#include <sys/ioctl.h>
  #include <sys/mman.h>
  #include <sys/types.h>
++#include <time.h>
  #include <unistd.h>
  
 +/* the bundled UAPI header (src/drm/drm-uapi) — NOT <drm/drm.h>: the one-ioctl
@@ -381,7 +382,7 @@ index c170bd3..2433bb4 100644
  #include "util/anon_file.h"
  #include "venus-protocol/vn_protocol_renderer_dispatches.h"
  
-@@ -136,11 +145,15 @@ vkr_context_init_proc_table(struct vkr_context *ctx)
+@@ -136,11 +146,15 @@ vkr_context_init_proc_table(struct vkr_context *ctx)
  }
  
  bool
@@ -401,7 +402,7 @@ index c170bd3..2433bb4 100644
     /* retire fence on cpu timeline directly */
     if (ring_idx == 0) {
        ctx->retire_fence(ctx->ctx_id, ring_idx, fence_id);
-@@ -155,17 +168,344 @@ vkr_context_submit_fence(struct vkr_context *ctx,
+@@ -155,17 +169,375 @@ vkr_context_submit_fence(struct vkr_context *ctx,
     /* always merge fences */
     assert(!(flags & ~VIRGL_RENDERER_FENCE_FLAG_MERGEABLE));
     flags = VIRGL_RENDERER_FENCE_FLAG_MERGEABLE;
@@ -693,16 +694,47 @@ index c170bd3..2433bb4 100644
 +                                     uint64_t semaphore_id,
 +                                     int sync_file_fd)
 +{
++   /* VCMD_SEMAPHORE_IMPORT_SYNC_FD is a direct, synchronous vtest command,
++    * while the device/semaphore it names were created by an EARLIER venus
++    * command that the ring dispatches asynchronously. A guest that creates a
++    * semaphore and immediately imports a fence into it can win this command
++    * ahead of the ring dispatcher (seen upstream under sustained load:
++    * "import_semaphore: bad object ids" with increasing ids). This fork's
++    * guest waits for ring consumption once per submission before importing,
++    * which closes the race for its own driver; the bounded retry below keeps
++    * older or third-party guests working. ~25.5 ms worst case, and the
++    * external-sync lock is dropped while sleeping so other imports of this
++    * context are not held up. */
++   static const long retry_delays_ns[] = { 100000L,  200000L,  400000L,
++                                           800000L,  1600000L, 3200000L,
++                                           6400000L, 6400000L, 6400000L };
++   struct vkr_device *dev = NULL;
++   struct vkr_semaphore *sem = NULL;
++   long waited_ns = 0;
 +   mtx_lock(&ctx->external_sync_mutex);
-+   struct vkr_device *dev = vkr_context_get_object(ctx, device_id);
-+   struct vkr_semaphore *sem = vkr_context_get_object(ctx, semaphore_id);
-+   if (!dev || dev->base.type != VK_OBJECT_TYPE_DEVICE || !sem ||
-+       sem->base.type != VK_OBJECT_TYPE_SEMAPHORE || sem->device != dev) {
-+      vkr_log("import_semaphore: bad object ids dev %" PRIu64 " sem %" PRIu64,
-+              device_id, semaphore_id);
-+      close(sync_file_fd);
++   for (unsigned attempt = 0;; attempt++) {
++      dev = vkr_context_get_object(ctx, device_id);
++      sem = vkr_context_get_object(ctx, semaphore_id);
++      if (dev && dev->base.type == VK_OBJECT_TYPE_DEVICE && sem &&
++          sem->base.type == VK_OBJECT_TYPE_SEMAPHORE && sem->device == dev)
++         break;
++      /* an object of the wrong type or device is never fixed by waiting */
++      const bool wrong = (dev && dev->base.type != VK_OBJECT_TYPE_DEVICE) ||
++                         (sem && sem->base.type != VK_OBJECT_TYPE_SEMAPHORE) ||
++                         (dev && sem && sem->device != dev);
++      if (wrong || attempt >= ARRAY_SIZE(retry_delays_ns)) {
++         vkr_log("import_semaphore: bad object ids dev %" PRIu64 " sem %" PRIu64
++                 " (%u retries, ~%.1fms)",
++                 device_id, semaphore_id, attempt, waited_ns / 1e6);
++         mtx_unlock(&ctx->external_sync_mutex);
++         close(sync_file_fd);
++         return -EINVAL;
++      }
 +      mtx_unlock(&ctx->external_sync_mutex);
-+      return -EINVAL;
++      struct timespec ts = { .tv_sec = 0, .tv_nsec = retry_delays_ns[attempt] };
++      nanosleep(&ts, NULL);
++      waited_ns += retry_delays_ns[attempt];
++      mtx_lock(&ctx->external_sync_mutex);
 +   }
 +
 +   const VkImportSemaphoreFdInfoKHR info = {
@@ -747,7 +779,7 @@ index c170bd3..2433bb4 100644
     /* ring 0 is the cpu timeline: fences retire at submit time */
     if (ring_idx == 0)
        return 1;
-@@ -182,7 +522,7 @@ bool
+@@ -182,7 +554,7 @@ bool
  vkr_context_submit_cmd(struct vkr_context *ctx, const void *buffer, size_t size)
  {
     /* CS error is considered fatal (destroy the context?) */
@@ -756,7 +788,7 @@ index c170bd3..2433bb4 100644
        vkr_log("submit_cmd: early bail due to fatal decoder state");
        return false;
     }
-@@ -644,6 +984,25 @@ vkr_context_destroy(struct vkr_context *ctx)
+@@ -644,6 +1016,25 @@ vkr_context_destroy(struct vkr_context *ctx)
  
     vkr_context_wait_ring_fini(ctx);
  
@@ -782,7 +814,7 @@ index c170bd3..2433bb4 100644
     if (ctx->ring_monitor.started)
        vkr_context_ring_monitor_fini(ctx);
  
-@@ -659,12 +1018,18 @@ vkr_context_destroy(struct vkr_context *ctx)
+@@ -659,12 +1050,18 @@ vkr_context_destroy(struct vkr_context *ctx)
  
     _mesa_hash_table_destroy(ctx->object_table, vkr_context_free_object);
     mtx_destroy(&ctx->object_mutex);
@@ -801,7 +833,7 @@ index c170bd3..2433bb4 100644
     free(ctx->debug_name);
     free(ctx);
  }
-@@ -727,6 +1092,15 @@ vkr_context_create(uint32_t ctx_id,
+@@ -727,6 +1124,15 @@ vkr_context_create(uint32_t ctx_id,
     if (!vkr_context_wait_ring_init(ctx))
        goto err_ctx_wait_ring_init;
  
@@ -817,7 +849,7 @@ index c170bd3..2433bb4 100644
     if (mtx_init(&ctx->object_mutex, mtx_plain) != thrd_success)
        goto err_ctx_object_mutex;
  
-@@ -771,6 +1145,10 @@ err_ctx_resource_mutex:
+@@ -771,6 +1177,10 @@ err_ctx_resource_mutex:
  err_ctx_object_table:
     mtx_destroy(&ctx->object_mutex);
  err_ctx_object_mutex:
@@ -1640,7 +1672,15 @@ diff --git a/vtest/vtest_renderer.c b/vtest/vtest_renderer.c
 index f3212ad..6823253 100644
 --- a/vtest/vtest_renderer.c
 +++ b/vtest/vtest_renderer.c
-@@ -53,6 +53,7 @@
+@@ -32,6 +32,7 @@
+ #include <time.h>
+ #include <unistd.h>
+ #include <fcntl.h>
++#include <inttypes.h>
+ #include <limits.h>
+ #include <c11/threads.h>
+ 
+@@ -53,6 +54,7 @@
  
  #include "vtest.h"
  #include "vtest_shm.h"
@@ -1648,7 +1688,21 @@ index f3212ad..6823253 100644
  #include "vtest_protocol.h"
  #include "threadpool.h"
  
-@@ -865,6 +866,13 @@ static struct vtest_context *vtest_get_current_context(void)
+@@ -160,6 +162,13 @@ struct vtest_context {
+    struct util_hash_table *resource_table;
+    struct util_hash_table *sync_table;
+ 
++   /* Rolling one-second allocation-rate window for VCMD_RESOURCE_ALLOC_GPU;
++    * see the cap check in vtest_resource_alloc_gpu. Bytes handed out since
++    * window_start_ns; the window resets (not decays) once a request is seen
++    * more than a second after it started. */
++   uint64_t gpu_alloc_window_bytes;
++   uint64_t gpu_alloc_window_start_ns;
++
+    struct vtest_timeline timelines[VTEST_MAX_TIMELINE_COUNT];
+ 
+    struct list_head sync_waits;
+@@ -865,6 +874,13 @@ static struct vtest_context *vtest_get_current_context(void)
     return renderer.current_context;
  }
  
@@ -1662,7 +1716,7 @@ index f3212ad..6823253 100644
  int vtest_ping_protocol_version(UNUSED uint32_t length_dw)
  {
     struct vtest_context *ctx = vtest_get_current_context();
-@@ -970,6 +978,20 @@ int vtest_get_param(UNUSED uint32_t length_dw)
+@@ -970,6 +986,20 @@ int vtest_get_param(UNUSED uint32_t length_dw)
        resp[0] = true;
        resp[1] = !!(renderer.ctx_flags & VIRGL_RENDERER_VENUS);
        break;
@@ -1683,7 +1737,7 @@ index f3212ad..6823253 100644
     case VCMD_PARAM_HAS_TIMELINE_SYNCOBJ: {
  #ifdef ENABLE_DRM
        int fd = virgl_renderer_get_dev_fd(ctx->ctx_id);
-@@ -2238,7 +2260,8 @@ struct drm_virtgpu_execbuffer_syncobj {
+@@ -2238,7 +2268,8 @@ struct drm_virtgpu_execbuffer_syncobj {
  static int vtest_submit_cmd2_batch(struct vtest_context *ctx,
                                     const struct vcmd_submit_cmd2_batch *batch,
                                     const uint32_t *cmds,
@@ -1693,7 +1747,7 @@ index f3212ad..6823253 100644
  {
     struct vtest_timeline_submit *submit = NULL;
     struct drm_virtgpu_execbuffer_syncobj *in_syncobj = NULL, *out_syncobj = NULL;
-@@ -2361,10 +2384,18 @@ static int vtest_submit_cmd2_batch(struct vtest_context *ctx,
+@@ -2361,10 +2392,18 @@ static int vtest_submit_cmd2_batch(struct vtest_context *ctx,
        uint64_t fence_id = (uintptr_t)submit;
  
        submit->timeline = timeline;
@@ -1716,7 +1770,7 @@ index f3212ad..6823253 100644
        if (ret) {
           vtest_free_timeline_submit(submit);
           goto out;
-@@ -2439,6 +2470,7 @@ int vtest_resource_import_blob(uint32_t length_dw)
+@@ -2439,6 +2478,7 @@ int vtest_resource_import_blob(uint32_t length_dw)
     /* venus imports with size 0 when only querying memory properties (see
      * vn_get_memory_dma_buf_properties); derive the size from the dmabuf
      */
@@ -1724,7 +1778,7 @@ index f3212ad..6823253 100644
     if (!size) {
        const off_t seek_size = lseek(fd, 0, SEEK_END);
        if (seek_size < 0) {
-@@ -2491,6 +2523,64 @@ int vtest_resource_import_blob(uint32_t length_dw)
+@@ -2491,6 +2531,129 @@ int vtest_resource_import_blob(uint32_t length_dw)
     return vtest_block_write(ctx->out_fd, resp_buf, sizeof(resp_buf)) >= 0 ? 0 : -1;
  }
  
@@ -1764,6 +1818,71 @@ index f3212ad..6823253 100644
 +   if (ret)
 +      report_failed_call("vtest_gpu_alloc", ret);
 +
++   /* Per-context allocation RATE limit. The width/height clamp above only
++    * bounds a single call (up to ~4 GiB for a 4-byte-per-pixel 32768x32768
++    * image); with no further check a client could repeat
++    * VCMD_RESOURCE_ALLOC_GPU indefinitely and exhaust host VRAM (or the
++    * udmabuf-backed CPU path).
++    *
++    * First attempt at this fix used a lifetime-cumulative cap per context
++    * instead of a rate limit, and it was wrong: in the field, one
++    * long-lived context legitimately accumulated well past a 2 GiB
++    * lifetime total from perfectly ordinary use (scrolling an app store's
++    * icon grid, opening a few apps over a session) and then permanently
++    * rejected every further allocation for the rest of that context's
++    * life, with no way to recover short of restarting the whole renderer —
++    * i.e. it took down normal use, not just abuse. A cumulative cap can
++    * only ever be correct if contexts are actually short-lived, and this
++    * one evidently isn't.
++    *
++    * A rolling one-second window is the right tool for the actual threat
++    * (a fast, repeated-request flood), because it recovers on its own:
++    * legitimate UI work is paced by user interaction and decode/compose
++    * throughput, not by how fast this loop can spin, so it will not
++    * plausibly need anywhere near the per-second budget below, while a
++    * hostile or buggy client gets capped to that budget every second
++    * instead of being let through until VRAM runs out. This command hands
++    * the buffer's dma_buf fd straight to the guest and drops our own
++    * handle (see vtest_gpu_alloc_image's comment: the export keeps the
++    * memory alive, not our VkImage/VkDeviceMemory), so there is no
++    * notification path back to us when the guest eventually frees a given
++    * buffer — real reclamation still happens correctly and independently
++    * via the kernel's own dma_buf refcounting; this limit only ever
++    * throttles the rate new allocations are handed out at. Override the
++    * per-second budget via VTEST_GPU_ALLOC_MB_PER_SEC for unusual
++    * workloads. */
++   if (ret == 0) {
++      static uint64_t budget_bytes;
++      if (!budget_bytes) {
++         const char *env = getenv("VTEST_GPU_ALLOC_MB_PER_SEC");
++         long mb = env ? strtol(env, NULL, 10) : 0;
++         budget_bytes = (mb > 0 ? (uint64_t)mb : 512ull) * 1024 * 1024;
++      }
++      struct timespec ts;
++      clock_gettime(CLOCK_MONOTONIC, &ts);
++      const uint64_t now_ns = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
++      if (now_ns - ctx->gpu_alloc_window_start_ns > 1000000000ull) {
++         ctx->gpu_alloc_window_start_ns = now_ns;
++         ctx->gpu_alloc_window_bytes = 0;
++      }
++      if (ctx->gpu_alloc_window_bytes + size > budget_bytes) {
++         fprintf(stderr, "vtest: context %d: VCMD_RESOURCE_ALLOC_GPU rate limit hit "
++                 "(%" PRIu64 " + %" PRIu64 " > %" PRIu64 " bytes/s); rejecting, "
++                 "retries next second\n",
++                 ctx->ctx_id, ctx->gpu_alloc_window_bytes, size, budget_bytes);
++         if (fd >= 0) {
++            close(fd);
++            fd = -1;
++         }
++         ret = -ENOSPC;
++         stride = 0;
++         modifier = 0;
++         size = 0;
++      } else {
++         ctx->gpu_alloc_window_bytes += size;
++      }
++   }
++
 +   memset(resp_buf, 0, sizeof(resp_buf));
 +   resp_buf[VTEST_CMD_LEN] = VCMD_RESOURCE_ALLOC_GPU_RESP_SIZE;
 +   resp_buf[VTEST_CMD_ID] = VCMD_RESOURCE_ALLOC_GPU;
@@ -1789,7 +1908,7 @@ index f3212ad..6823253 100644
  int vtest_sync_export_sync_file(uint32_t length_dw)
  {
     struct vtest_context *ctx = vtest_get_current_context();
-@@ -2542,7 +2632,7 @@ int vtest_sync_export_sync_file(uint32_t length_dw)
+@@ -2542,7 +2705,7 @@ int vtest_sync_export_sync_file(uint32_t length_dw)
              status = VCMD_SYNC_EXPORT_SYNC_FILE_OK;
           else if (ret == 1)
              status = VCMD_SYNC_EXPORT_SYNC_FILE_SIGNALED;
@@ -1798,7 +1917,7 @@ index f3212ad..6823253 100644
           status = VCMD_SYNC_EXPORT_SYNC_FILE_SIGNALED;
        }
     }
-@@ -2560,7 +2650,7 @@ int vtest_sync_export_sync_file(uint32_t length_dw)
+@@ -2560,7 +2723,7 @@ int vtest_sync_export_sync_file(uint32_t length_dw)
     return ret >= 0 ? 0 : ret;
  }
  
@@ -1807,7 +1926,7 @@ index f3212ad..6823253 100644
  {
     struct vtest_context *ctx = vtest_get_current_context();
     uint32_t *submit_cmd2_buf;
-@@ -2611,7 +2701,9 @@ int vtest_submit_cmd2(uint32_t length_dw)
+@@ -2611,7 +2774,9 @@ int vtest_submit_cmd2(uint32_t length_dw)
           return -EINVAL;
        }
  
@@ -1818,7 +1937,7 @@ index f3212ad..6823253 100644
        if (ret) {
           free(submit_cmd2_buf);
           return ret;
-@@ -2623,6 +2715,92 @@ int vtest_submit_cmd2(uint32_t length_dw)
+@@ -2623,6 +2788,92 @@ int vtest_submit_cmd2(uint32_t length_dw)
     return 0;
  }
  

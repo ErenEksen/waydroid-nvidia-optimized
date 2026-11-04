@@ -1,0 +1,172 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Shiro836 <noreply>
+Date: Tue, 27 Oct 2026 22:59:07 +0300
+Subject: [PATCH 20/20] hwcomposer: report a failed EGL read-back instead of
+ showing a blank wl_shm copy
+
+What: egl_render_to_pixels() checks every step (a current context,
+eglCreateImageKHR, glEGLImageTargetTexture2DOES, glCheckFramebufferStatus,
+glReadPixels) and returns whether the pixels were written; a failure is logged
+with the step, the EGL/GL error and the buffer (size, format, stride),
+rate-limited because the copy runs every frame. The window-snapshot caller
+checks the result and names the window.
+
+Why: the read-back is the only source of pixels for a wl_shm copy of a gralloc
+buffer with minigbm (the mouse pointer, layers the compositor cannot import,
+inactive-window snapshots). The memfd behind it starts zeroed, so any failing
+step (no image, an incomplete framebuffer, an unsupported read format) put a
+fully transparent buffer on screen and logged nothing; an invisible pointer
+had no trace in logcat.
+---
+ hwcomposer/egl-tools.cpp       | 78 +++++++++++++++++++++++++++++++---
+ hwcomposer/egl-tools.h         |  2 +-
+ hwcomposer/gralloc_handler.cpp |  4 +-
+ hwcomposer/wayland-hwc.cpp     |  4 +-
+ 4 files changed, 80 insertions(+), 8 deletions(-)
+
+diff --git a/hwcomposer/egl-tools.cpp b/hwcomposer/egl-tools.cpp
+index d91e58f..5e341b1 100644
+--- a/hwcomposer/egl-tools.cpp
++++ b/hwcomposer/egl-tools.cpp
+@@ -91,7 +91,56 @@ void egl_init(struct display* display) {
+     glBindFramebuffer(GL_FRAMEBUFFER, offscreen_framebuffer);
+ }
+ 
+-void egl_render_to_pixels(struct display* display, struct buffer* buf) {
++static const char* glStrError(GLenum err)
++{
++    switch (err) {
++        case GL_NO_ERROR:                      return "GL_NO_ERROR";
++        case GL_INVALID_ENUM:                  return "GL_INVALID_ENUM";
++        case GL_INVALID_VALUE:                 return "GL_INVALID_VALUE";
++        case GL_INVALID_OPERATION:             return "GL_INVALID_OPERATION";
++        case GL_INVALID_FRAMEBUFFER_OPERATION: return "GL_INVALID_FRAMEBUFFER_OPERATION";
++        case GL_OUT_OF_MEMORY:                 return "GL_OUT_OF_MEMORY";
++        default:                               return "UNKNOWN";
++    }
++}
++
++static const char* glFramebufferStatusStr(GLenum status)
++{
++    switch (status) {
++        case GL_FRAMEBUFFER_COMPLETE:                      return "GL_FRAMEBUFFER_COMPLETE";
++        case GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT:         return "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT";
++        case GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT: return "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT";
++        case GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS:         return "GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS";
++        case GL_FRAMEBUFFER_UNSUPPORTED:                   return "GL_FRAMEBUFFER_UNSUPPORTED";
++        case 0:                                            return "error (status 0)";
++        default:                                           return "UNKNOWN";
++    }
++}
++
++/* The read-back is how a wl_shm copy of a gralloc buffer gets its pixels (the cursor, layers the
++ * compositor cannot import, window snapshots). The memfd behind the wl_shm buffer starts zeroed, so
++ * a step that fails here would otherwise put a fully transparent buffer on screen without a word:
++ * every step is checked, and a failure names the step and the buffer (rate-limited, the copy runs
++ * per frame). Returns false when buf->shm_data was not (completely) written. */
++static void readback_failed(const struct buffer* buf, const char* step, const char* error)
++{
++    static int failures = 0;
++    if ((failures++ % 500) == 0)
++        ALOGE("wl_shm read-back of a %ux%u buffer (format %d, stride %d) failed at %s: %s; the copy "
++              "shows stale or transparent pixels (%d failures so far)",
++              buf->metadata.width, buf->metadata.height, buf->metadata.format,
++              buf->metadata.pixel_stride, step, error, failures);
++}
++
++bool egl_render_to_pixels(struct display* display, struct buffer* buf) {
++    if (eglGetCurrentContext() == EGL_NO_CONTEXT) {
++        readback_failed(buf, "the read-back EGL context", "none is current (egl_init failed; see its log)");
++        return false;
++    }
++    /* errors left by an earlier call must not be blamed on this one */
++    while (glGetError() != GL_NO_ERROR) {
++    }
++
+     // Wrap native handle into ANativeWindowBuffer for eglCreateImageKHR
+     android::sp<android::GraphicBuffer> graphicBuffer = new android::GraphicBuffer(
+             (native_handle_t*)buf->handle, android::GraphicBuffer::WRAP_HANDLE,
+@@ -103,20 +152,39 @@ void egl_render_to_pixels(struct display* display, struct buffer* buf) {
+     auto image = eglCreateImageKHR(display->egl_dpy, EGL_NO_CONTEXT,
+                                 EGL_NATIVE_BUFFER_ANDROID, (EGLClientBuffer) graphicBuffer->getNativeBuffer(),
+                                 image_attrs);
++    if (image == EGL_NO_IMAGE_KHR) {
++        readback_failed(buf, "eglCreateImageKHR(EGL_NATIVE_BUFFER_ANDROID)", eglStrError(eglGetError()));
++        return false;
++    }
+ 
++    bool ok = false;
+     GLuint texture;
+     glGenTextures(1, &texture);
+     glBindTexture(GL_TEXTURE_2D, texture);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+     glEGLImageTargetTexture2DOES(GL_TEXTURE_2D, image);
+-
+-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+-
+-    glReadPixels(0, 0, buf->metadata.width, buf->metadata.height, GL_BGRA_EXT, GL_UNSIGNED_BYTE, buf->shm_data);
++    GLenum err = glGetError();
++    if (err != GL_NO_ERROR) {
++        readback_failed(buf, "glEGLImageTargetTexture2DOES", glStrError(err));
++    } else {
++        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
++        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
++        if (status != GL_FRAMEBUFFER_COMPLETE) {
++            readback_failed(buf, "glCheckFramebufferStatus", glFramebufferStatusStr(status));
++        } else {
++            glReadPixels(0, 0, buf->metadata.width, buf->metadata.height, GL_BGRA_EXT, GL_UNSIGNED_BYTE, buf->shm_data);
++            err = glGetError();
++            if (err != GL_NO_ERROR)
++                readback_failed(buf, "glReadPixels(GL_BGRA_EXT)", glStrError(err));
++            else
++                ok = true;
++        }
++    }
+ 
+     glDeleteTextures(1, &texture);
+     eglDestroyImageKHR(display->egl_dpy, image);
++    return ok;
+ }
+ 
+ void* egl_loop(void* data) {
+diff --git a/hwcomposer/egl-tools.h b/hwcomposer/egl-tools.h
+index fce2dd4..36b7563 100644
+--- a/hwcomposer/egl-tools.h
++++ b/hwcomposer/egl-tools.h
+@@ -28,4 +28,4 @@
+ #include "wayland-hwc.h"
+ 
+ void* egl_loop(void* data);
+-void egl_render_to_pixels(struct display* display, struct buffer* buf);
++bool egl_render_to_pixels(struct display* display, struct buffer* buf);
+diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
+index 15804f4..2890ad6 100644
+--- a/hwcomposer/gralloc_handler.cpp
++++ b/hwcomposer/gralloc_handler.cpp
+@@ -413,7 +413,9 @@ std::unique_ptr<buffer> create_buffer_android(display *display, const buffer_met
+ }
+ 
+ void update_shm_buffer_generic(display *display, buffer *buffer) {
+-    display->egl_work_queue.emplace_back(std::bind(egl_render_to_pixels, display, buffer));
++    /* egl_render_to_pixels() names the failing step itself (rate-limited); there is no other
++     * source for these pixels, so a failed read-back is reported, not replaced */
++    display->egl_work_queue.emplace_back([display, buffer] { egl_render_to_pixels(display, buffer); });
+     sem_post(&display->egl_go);
+     sem_wait(&display->egl_done);
+ }
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index a31de20..a43b195 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -178,7 +178,9 @@ void snapshot_inactive_app_window(struct display *display, struct window *window
+     // FIXME won't work as expected if there are multiple surfaces
+     struct wl_surface *surface = window->layers[0].surface;
+ 
+-    egl_render_to_pixels(display, window->snapshot_buffer.get());
++    if (!egl_render_to_pixels(display, window->snapshot_buffer.get()))
++        ALOGE("snapshot of inactive window %s: the read-back failed (logged above); the window shows "
++              "a transparent snapshot", window->taskID.c_str());
+ 
+     wl_surface_attach(surface, window->snapshot_buffer->wl_buffer, 0, 0);
+     wl_surface_damage(surface, 0, 0, INT32_MAX, INT32_MAX);

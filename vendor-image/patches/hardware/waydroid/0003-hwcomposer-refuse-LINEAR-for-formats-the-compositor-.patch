@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:53:11 +0300
-Subject: [PATCH 03/17] hwcomposer: refuse LINEAR for formats the compositor
+Subject: [PATCH 03/20] hwcomposer: refuse LINEAR for formats the compositor
  imports through NVIDIA EGL
 
 What: dmabuf_modifiers() records, under formats_mutex, every format for which
@@ -89,10 +89,10 @@ index f1fbdc9..ccb6699 100644
      if (it == display->modifiers.end())
          return false;
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 1fee9e6..0d89163 100644
+index 4ef5150..b9e7421 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
-@@ -1802,6 +1802,8 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
+@@ -1812,6 +1812,8 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
          std::lock_guard<std::mutex> lock(d->formats_mutex);
          index = d->modifiers[format].size();
          d->modifiers[format].push_back(modifier);

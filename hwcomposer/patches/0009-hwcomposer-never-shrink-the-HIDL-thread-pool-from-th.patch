@@ -1,7 +1,7 @@
-From 4fc176f2ae5a06e05ad9f65cd6a8ccf6ce03b96c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:58:44 +0300
-Subject: [PATCH 09/13] hwcomposer: never shrink the HIDL thread pool from the
+Subject: [PATCH 09/20] hwcomposer: never shrink the HIDL thread pool from the
  binder thread
 
 What: hwc_binder_thread() configures the HIDL pool with
@@ -42,7 +42,7 @@ the guard; HIDL's configureRpcThreadpool goes to libhwbinder.
  1 file changed, 15 insertions(+), 1 deletion(-)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index a36b3fc..8f9b0c9 100644
+index 4bb6a18..80ad7e6 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
 @@ -17,6 +17,9 @@
@@ -55,7 +55,7 @@ index a36b3fc..8f9b0c9 100644
  #include <errno.h>
  #include <pthread.h>
  #include <semaphore.h>
-@@ -784,7 +787,18 @@ static void* hwc_binder_thread(void* data) {
+@@ -789,7 +792,18 @@ static void* hwc_binder_thread(void* data) {
      sp<IWaydroidClipboard> waydroidClipboard;
  
      setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);

@@ -55,6 +55,12 @@
 #define FMT_ABGR8888      FOURCC('A', 'B', '2', '4')
 #define FMT_ABGR2101010   FOURCC('A', 'B', '3', '0')
 #define FMT_ABGR16161616F FOURCC('A', 'B', '4', 'H')
+/* DRM_FORMAT_NV12. gbm_mesa's own driver table (gbm_mesa_driver_init(),
+ * gbm_mesa_internals.cpp) already resolves DRM_FORMAT_FLEX_YCbCr_420_888 to
+ * this and pins it to DRM_FORMAT_MOD_LINEAR for every video/camera use flag
+ * -- so unlike the RGB formats above, this one is never a candidate for the
+ * tiled GPU-image path below; see vtest_alloc(). */
+#define FMT_NV12          FOURCC('N', 'V', '1', '2')
 
 struct vtest_dev {
    pthread_mutex_t mutex;
@@ -197,6 +203,14 @@ vtest_get_gbm_format(uint32_t drm_format)
    case FMT_ABGR8888:
    case FMT_ABGR2101010:
    case FMT_ABGR16161616F:
+   /* NV12: a real biplanar allocation (see vtest_alloc()), not tiled/
+    * renderable, but it must NOT fall through to the R8-blob path either --
+    * minigbm's drv_bo_from_format() only computes correct Y/UV plane
+    * offsets when it believes the format is genuinely supported (fixes
+    * #16: video decoders got a flat R8 blob with no real plane layout,
+    * which ANGLE's YCbCr sampler conversion can't do anything useful
+    * with, and apps that treat the resulting GL error as fatal abort). */
+   case FMT_NV12:
       return drm_format;
    default:
       return 0;
@@ -233,7 +247,19 @@ vtest_alloc(struct alloc_args *args)
    struct vtest_dev *dev = (struct vtest_dev *)args->gbm;
 
    uint32_t flags = 0;
-   if (args->force_linear || args->needs_map_stride)
+   /* NV12 is always linear/mappable here, matching gbm_mesa's own driver
+    * table (gbm_mesa_driver_init() pins DRM_FORMAT_NV12 to
+    * DRM_FORMAT_MOD_LINEAR for every use flag, including
+    * BO_USE_HW_VIDEO_DECODER, which carries neither SW flag and would
+    * otherwise take the tiled GPU-image path below). That matters beyond
+    * just matching policy: minigbm's drv_bo_from_format() computes the
+    * Y/UV plane offsets by simple arithmetic on ONE stride -- correct only
+    * for a linear buffer. A tiled NVIDIA modifier's real chroma-plane
+    * offset comes from the driver's own block layout and generally will
+    * not match that arithmetic, which would silently hand back the wrong
+    * bytes as chroma instead of failing loudly. Staying linear keeps the
+    * plane math minigbm already does for us actually correct. */
+   if (args->force_linear || args->needs_map_stride || args->drm_format == FMT_NV12)
       flags |= VCMD_ALLOC_GPU_FLAG_MAPPABLE;
    if (args->use_scanout)
       flags |= VCMD_ALLOC_GPU_FLAG_SCANOUT;

@@ -1,7 +1,7 @@
-From 79bf9641773122fc29cc5cc94140e929a62a32a9 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 01:00:55 +0300
-Subject: [PATCH 12/13] hwcomposer: use wp_presentation timestamps only on
+Subject: [PATCH 12/20] hwcomposer: use wp_presentation timestamps only on
  CLOCK_MONOTONIC
 
 What:
@@ -34,10 +34,10 @@ the source's "period if more than 4 periods ahead".
  3 files changed, 31 insertions(+), 6 deletions(-)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 81ddf0d..d8a576b 100644
+index 7a1916c..c58d58b 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
-@@ -252,9 +252,20 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
+@@ -257,9 +257,20 @@ static int hwc_prepare(hwc_composer_device_1_t* dev,
      return 0;
  }
  
@@ -59,7 +59,7 @@ index 81ddf0d..d8a576b 100644
      uint64_t frames_since_last_vsync = (now - last_vsync_ns) / vsync_period_ns + 1;
      uint64_t next_vsync = last_vsync_ns + frames_since_last_vsync * vsync_period_ns;
  
-@@ -302,7 +313,7 @@ static void* hwc_vsync_thread(void* data) {
+@@ -307,7 +318,7 @@ static void* hwc_vsync_thread(void* data) {
              continue;
          }
  
@@ -68,7 +68,7 @@ index 81ddf0d..d8a576b 100644
          pdev->procs->vsync(pdev->procs, 0, timestamp);
          ATRACE_END();
      }
-@@ -330,7 +341,10 @@ feedback_presented(void *data,
+@@ -335,7 +346,10 @@ feedback_presented(void *data,
      auto *pdev = static_cast<waydroid_hwc_composer_device_1 *>(data);
      wp_presentation_feedback_destroy(feedback);
  
@@ -80,7 +80,7 @@ index 81ddf0d..d8a576b 100644
  }
  
  static void
-@@ -985,7 +999,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
+@@ -990,7 +1004,7 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
              __FILE__, __LINE__, strerror(errno));
      }
  
@@ -90,10 +90,10 @@ index 81ddf0d..d8a576b 100644
      if (!pdev->vsync_thread) {
          ret = pthread_create (&pdev->vsync_thread, NULL, hwc_vsync_thread, pdev);
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 33db002..28db068 100644
+index 7f8f3f2..2ad322b 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
-@@ -1878,10 +1878,17 @@ static const struct wl_output_listener output_listener = {
+@@ -1888,10 +1888,17 @@ static const struct wl_output_listener output_listener = {
  };
  
  static void

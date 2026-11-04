@@ -1,7 +1,7 @@
-From 4df13be8d1294db9dcc598bc4368c3cfe10a4172 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:58:00 +0300
-Subject: [PATCH 07/13] hwcomposer: ignore SIGPIPE in the composer process
+Subject: [PATCH 07/20] hwcomposer: ignore SIGPIPE in the composer process
 
 What: signal(SIGPIPE, SIG_IGN) at the start of hwc_open().
 
@@ -30,7 +30,7 @@ writers above can.
  1 file changed, 11 insertions(+)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 62e5647..12e7d59 100644
+index 705bde3..7405148 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
 @@ -20,6 +20,7 @@
@@ -41,7 +41,7 @@ index 62e5647..12e7d59 100644
  #include <stdlib.h>
  #include <sys/time.h>
  #include <sys/resource.h>
-@@ -838,6 +839,16 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
+@@ -843,6 +844,16 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
          return -EINVAL;
      }
  

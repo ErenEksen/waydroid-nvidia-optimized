@@ -1,7 +1,7 @@
-From 766b32b9c6166a3dbe4b3bc748c170839ff02cd5 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:58:18 +0300
-Subject: [PATCH 08/13] hwcomposer: check the cursor buffer is importable
+Subject: [PATCH 08/20] hwcomposer: check the cursor buffer is importable
  before attaching it
 
 What: cursor_handler::create_buffer() runs displayable_buffer() and copies an
@@ -29,10 +29,10 @@ cursor hunks of the same commit are input features and not taken.
  1 file changed, 11 insertions(+)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 12e7d59..a36b3fc 100644
+index 7405148..4bb6a18 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
-@@ -982,6 +982,17 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
+@@ -987,6 +987,17 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
  }
  
  std::unique_ptr<buffer> cursor_handler::create_buffer(waydroid_hwc_composer_device_1 *pdev, const buffer_metadata& metadata, hwc_layer_1 *hwc_layer) {

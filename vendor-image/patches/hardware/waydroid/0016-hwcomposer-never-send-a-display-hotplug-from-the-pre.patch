@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Fri, 16 Oct 2026 18:12:50 +0300
-Subject: [PATCH 16/17] hwcomposer: never send a display hotplug from the
+Subject: [PATCH 16/20] hwcomposer: never send a display hotplug from the
  present path
 
 hwc_set() called procs->hotplug(0, 1) whenever an xdg_toplevel configure
@@ -79,7 +79,7 @@ index 53de76f..9adeda1 100644
  }
  
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index db90453..c998b23 100644
+index be44bd9..5d4a5d2 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -85,6 +85,11 @@

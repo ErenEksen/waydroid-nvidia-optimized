@@ -1,7 +1,7 @@
-From 6867d6f67a34cbf0d9e9f190eae2e2a04f894baa Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Wed, 14 Oct 2026 23:35:40 +0300
-Subject: [PATCH 15/15] hwcomposer: compose YUV layers in SurfaceFlinger and
+Subject: [PATCH 15/20] hwcomposer: compose YUV layers in SurfaceFlinger and
  pass every dma-buf plane
 
 What:
@@ -60,7 +60,7 @@ Source: ours. Licence: Apache-2.0 (as android_hardware_waydroid).
  2 files changed, 114 insertions(+), 17 deletions(-)
 
 diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
-index 6b6096b..0a03917 100644
+index c698686..15804f4 100644
 --- a/hwcomposer/gralloc_handler.cpp
 +++ b/hwcomposer/gralloc_handler.cpp
 @@ -83,8 +83,15 @@ std::unique_ptr<buffer> create_shm_wl_buffer(display *display, const buffer_meta
@@ -106,7 +106,7 @@ index 6b6096b..0a03917 100644
      zwp_linux_buffer_params_v1_add_listener(params, &params_listener, nullptr);
  
      buf->wl_buffer = zwp_linux_buffer_params_v1_create_immed(params, buf->metadata.width, buf->metadata.height, drm_format, 0);
-@@ -370,16 +379,33 @@ std::unique_ptr<buffer> create_buffer_generic(display *display, const buffer_met
+@@ -371,16 +380,33 @@ std::unique_ptr<buffer> create_buffer_generic(display *display, const buffer_met
  }
  std::unique_ptr<buffer> create_buffer_gbm(display *display, const buffer_metadata& metadata, buffer_handle_t handle) {
      auto *drm_handle = reinterpret_cast<const gralloc_handle_t *>(handle);
@@ -147,7 +147,7 @@ index 6b6096b..0a03917 100644
  }
  std::unique_ptr<buffer> create_buffer_android(display *display, const buffer_metadata& metadata, buffer_handle_t handle) {
      return create_android_wl_buffer(display, metadata, handle);
-@@ -454,10 +480,69 @@ gralloc_handler::update_shm_buffer_func gralloc_handler::select_update_shm_buffe
+@@ -455,10 +481,69 @@ gralloc_handler::update_shm_buffer_func gralloc_handler::select_update_shm_buffe
  }
  
  namespace {
@@ -219,7 +219,7 @@ index 6b6096b..0a03917 100644
  }
  
  bool displayable_buffer_gbm(display *display, buffer_handle_t handle) {
-@@ -465,6 +550,10 @@ bool displayable_buffer_gbm(display *display, buffer_handle_t handle) {
+@@ -466,6 +551,10 @@ bool displayable_buffer_gbm(display *display, buffer_handle_t handle) {
      int drm_format = ConvertHalFormatToDrm(display, drm_handle->format);
      if (drm_format < 0)
          return false;
@@ -254,6 +254,3 @@ index aa15147..261bdf8 100644
  /* client target for a compositor on another GPU (prime-copy.h) */
  std::unique_ptr<buffer> create_prime_wl_buffer(display *display, const buffer_metadata& metadata, buffer_handle_t handle);
  std::unique_ptr<buffer> create_android_wl_buffer(display *display, const buffer_metadata& metadata, buffer_handle_t target);
--- 
-2.56.0
-

@@ -12,7 +12,7 @@ where the "Used in" column says so. The recipe file is authoritative for the exa
 | [virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer) | `dc35e4db` | Venus host renderer, `patches/virglrenderer/` |
 | [ANGLE](https://chromium.googlesource.com/angle/angle) | `c1a25085` | guest GLES for all modes, `build/angle/`, `angle/patches/` |
 | [Waydroid](https://github.com/waydroid/waydroid) | `a33a5c0b` | `patches/waydroid/`, `waydroid/0001-lxc-nvidia-native-mounts.patch`, `dev/build-waydroid` |
-| [android_hardware_waydroid](https://github.com/waydroid/android_hardware_waydroid) | `77503071` | `hwcomposer/` (+ `hwcomposer/patches/`) |
+| [android_hardware_waydroid](https://github.com/waydroid/android_hardware_waydroid) | `a3e42399` | `hwcomposer/` (+ `hwcomposer/patches/`) |
 | [android_external_minigbm](https://github.com/waydroid/android_external_minigbm) (Waydroid fork) | `16844bab` | `nvidia-prolapse/gralloc` (+ `gralloc/minigbm/` patches), Venus gralloc, hwcomposer headers |
 | [android_vendor_waydroid](https://github.com/waydroid/android_vendor_waydroid) | `dd9c6361` (lineage-20, 2026-04-02) | `nvidia-prolapse/media/vndk/build.sh` |
 | [LineageOS](https://github.com/LineageOS/android) 20 + Waydroid device/vendor trees | manifest pinned to 2026-09-27 (`vendor-image/manifests/`) | `vendor-image/` (vendor image from source), `build/lineage-20/` (SurfaceFlinger) |

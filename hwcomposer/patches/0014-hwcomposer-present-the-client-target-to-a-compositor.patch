@@ -1,8 +1,8 @@
-From 4cd0f63ac9a55d296bff68f9609d2a4eb7c2295c Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Wed, 14 Oct 2026 16:33:08 +0300
-Subject: [PATCH 14/14] hwcomposer: present the client target to a compositor on
- another GPU through a system-memory LINEAR copy
+Subject: [PATCH 14/20] hwcomposer: present the client target to a compositor
+ on another GPU through a system-memory LINEAR copy
 
 What: bind zwp_linux_dmabuf_v1 at min(version, 4) and read the default
 dma-buf feedback (format table + tranches replace the v3 format/modifier
@@ -73,7 +73,7 @@ the direct path (logged; stock falls back to wl_drm's device).
  create mode 100644 hwcomposer/prime-copy.h
 
 diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
-index 3215c6f..6b6096b 100644
+index c6dd294..c698686 100644
 --- a/hwcomposer/gralloc_handler.cpp
 +++ b/hwcomposer/gralloc_handler.cpp
 @@ -45,6 +45,7 @@
@@ -103,7 +103,7 @@ index 3215c6f..6b6096b 100644
      /* Search under the lock: the Wayland thread may reallocate this vector at any time. */
      std::lock_guard<std::mutex> lock(display->formats_mutex);
      /* NVIDIA's EGL imports a LINEAR dma-buf only as GL_TEXTURE_EXTERNAL_OES (eglQueryDmaBuf-
-@@ -248,6 +261,26 @@ std::unique_ptr<buffer> create_dmabuf_wl_buffer(display *display, const buffer_m
+@@ -249,6 +262,26 @@ std::unique_ptr<buffer> create_dmabuf_wl_buffer(display *display, const buffer_m
      return buf;
  }
  
@@ -144,7 +144,7 @@ index 73a173b..aa15147 100644
  
  
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 3ff35a2..9d60732 100644
+index 60cc01d..53de76f 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
 @@ -53,6 +53,7 @@
@@ -155,7 +155,7 @@ index 3ff35a2..9d60732 100644
  #include "egl-tools.h"
  #include "extension.h"
  
-@@ -124,6 +125,28 @@ namespace {
+@@ -129,6 +130,28 @@ namespace {
          metadata.opaque = layer->blending == HWC_BLENDING_NONE
                            && !(layer->flags & HWC_IS_CURSOR_LAYER);
          buffer *buf = find_cached_buffer(pdev, metadata, layer->handle);
@@ -184,7 +184,7 @@ index 3ff35a2..9d60732 100644
  
          if (!buf) {
              /* set-time backstop for the prepare-time displayable gate: a layer
-@@ -139,7 +162,9 @@ namespace {
+@@ -144,7 +167,9 @@ namespace {
                  && layer->handle
                  && !gralloc_handler.displayable_buffer(pdev->display, layer->handle);
              std::unique_ptr<buffer> result;
@@ -195,7 +195,7 @@ index 3ff35a2..9d60732 100644
                  result = pdev->display->cursor_handler->create_buffer(pdev, metadata, layer);
              else if (undisplayable) {
                  static int undisp_count = 0;
-@@ -401,6 +426,29 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+@@ -406,6 +431,29 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
      // TODO: Implement per-hwc_layer explicit synchronization
      hwc_layer->releaseFenceFd = -1;
  
@@ -225,7 +225,7 @@ index 3ff35a2..9d60732 100644
      surface_context.attach_buffer(*buf);
      apply_surface_damage(hwc_layer, surface_context);
      surface_context.set_buffer_transform(hwc_transform_to_buffer_transform(hwc_layer->transform));
-@@ -437,23 +485,6 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+@@ -442,23 +490,6 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
          surface_context.set_buffer_scale(pdev->display->scale);
      }
  
@@ -949,7 +949,7 @@ index 0000000..60d76fd
 +/* Called from ~buffer for prime buffers. */
 +void prime_release_source(void *source);
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 6066dd4..d56c55f 100644
+index 3686293..be44bd9 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -40,6 +40,7 @@
@@ -980,7 +980,7 @@ index 6066dd4..d56c55f 100644
      if (isShm)
          munmap(shm_data, size);
  }
-@@ -1809,22 +1814,23 @@ static const struct wl_seat_listener seat_listener = {
+@@ -1819,22 +1824,23 @@ static const struct wl_seat_listener seat_listener = {
  };
  
  static void dmabuf_format(void *, struct zwp_linux_dmabuf_v1 *, uint32_t);
@@ -1012,7 +1012,7 @@ index 6066dd4..d56c55f 100644
          if (fourcc_mod_get_vendor(modifier) == DRM_FORMAT_MOD_VENDOR_NVIDIA)
              d->nvidia_modifier_formats.insert(format);
      }
-@@ -1838,6 +1844,14 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
+@@ -1848,6 +1854,14 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
      property_set(prop_name.c_str(), prop_value.c_str());
  }
  
@@ -1027,7 +1027,7 @@ index 6066dd4..d56c55f 100644
  static void
  dmabuf_format(void *data, struct zwp_linux_dmabuf_v1 *, uint32_t format)
  {
-@@ -1851,6 +1865,167 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
+@@ -1861,6 +1875,167 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
      dmabuf_modifiers
  };
  
@@ -1195,7 +1195,7 @@ index 6066dd4..d56c55f 100644
  static void
  output_handle_mode(void *data, struct wl_output *,
                     uint32_t, int32_t width, int32_t height,
-@@ -2358,9 +2533,21 @@ registry_handle_global(void *data, struct wl_registry *registry,
+@@ -2368,9 +2543,21 @@ registry_handle_global(void *data, struct wl_registry *registry,
                 (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
          if (version < 3)
              return;
@@ -1267,6 +1267,3 @@ index 44037f4..44f9cd3 100644
      std::map<uint32_t, std::string> layer_names;
      std::map<uint32_t, struct handleExt> layer_handles_ext;
      struct handleExt target_layer_handle_ext;
--- 
-2.56.0
-

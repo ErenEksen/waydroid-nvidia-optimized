@@ -1,8 +1,8 @@
-From a3bb0244f1111564dcfaa4607fa698e4ac7e8a80 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Fri, 16 Oct 2026 18:12:50 +0300
-Subject: [PATCH] hwcomposer: never send a display hotplug from the present
- path
+Subject: [PATCH 16/20] hwcomposer: never send a display hotplug from the
+ present path
 
 hwc_set() called procs->hotplug(0, 1) whenever an xdg_toplevel configure
 (resize, or a state change such as activation) had set needHotplug. Older
@@ -35,7 +35,7 @@ procs->hotplug call a build error.
  3 files changed, 36 insertions(+), 14 deletions(-)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 9d60732..9fb0034 100644
+index 53de76f..9adeda1 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
 @@ -62,6 +62,11 @@
@@ -50,7 +50,7 @@ index 9d60732..9fb0034 100644
  using ::android::hardware::configureRpcThreadpool;
  using ::android::hardware::joinRpcThreadpool;
  
-@@ -652,12 +657,21 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+@@ -657,12 +662,21 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
          refit_windows_to_display(pdev);
      }
  
@@ -79,7 +79,7 @@ index 9d60732..9fb0034 100644
  }
  
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index d56c55f..d5f5a06 100644
+index be44bd9..5d4a5d2 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -85,6 +85,11 @@
@@ -95,7 +95,7 @@ index d56c55f..d5f5a06 100644
  
  /* See display::last_input_serial: keyboard and pointer events do not reach the
 @@ -262,8 +267,10 @@ do_hotplug(struct display *display) {
-         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
+         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
          chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
      }
 +    /* Despite the name, no HWC hotplug is sent: the configs SurfaceFlinger
@@ -144,6 +144,3 @@ index 44f9cd3..b13c2b6 100644
      std::atomic<bool> creatingWindow;
  };
  
--- 
-2.56.0
-

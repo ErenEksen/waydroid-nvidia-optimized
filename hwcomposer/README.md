@@ -9,7 +9,7 @@ the NDK (no AOSP tree). Nothing is binary-patched.
 
 | Input | Pin |
 |---|---|
-| hwcomposer | `waydroid/android_hardware_waydroid` `7750307152d2c1bc0f81ca0163c9253a7a82d8fa` (the baseline's HWC_BASE) |
+| hwcomposer | `waydroid/android_hardware_waydroid` `a3e42399afbd23613f123a28bda658a4c6c1faec` (lineage-20, 2026-10-18; the vendor image's `hardware/waydroid` pin) |
 | NDK | r29 (`14206865`), zip sha256 `4abbbcdc…` (what built the prebuilt: `.note.android.ident`) |
 | AOSP headers | android-13-era commits of libhidl, libhwbinder, libfmq, fmtlib, frameworks/native, hardware/interfaces, system/tools/hidl, libbase, libhardware, system/core; LineageOS system_logging; waydroid minigbm `16844bab` (same values as the baseline's `packaging/ci/hwc-pins.env`) |
 | Static guest libs | libffi 3.4.6, wayland 1.25.0 (+ native wayland-scanner), libxkbcommon 1.7.0, libdrm 2.4.133 headers; tarball sha256s in `pins.env` |
@@ -30,9 +30,9 @@ is on another GPU; the same-GPU path does not touch Vulkan.
 
 `build.sh` applies the patches in a fresh git tree and fails if one does not apply or changes
 nothing (a `git apply` in a non-repo directory inside another work tree silently skips every path).
-`-ffile-prefix-map` and fixed xkbcommon config roots keep build-host paths out of the binary; with
-the baseline's build paths mapped back in, `HWC_PATCHES_UPTO=0001` reproduces the baseline's
-prebuilt hwcomposer byte for byte (checked in the development tree).
+`-ffile-prefix-map` and fixed xkbcommon config roots keep build-host paths out of the binary; on the
+former base 7750307 with the baseline's build paths mapped back in, `HWC_PATCHES_UPTO=0001`
+reproduced the baseline's prebuilt hwcomposer byte for byte (checked in the development tree).
 
 Glue copied from the baseline's former `build/hwcomposer/` (MIT; this tree replaced it): `hidl-gen/` (CMake for a standalone
 hidl-gen), `libcxx_compat.cpp` and `libcxx-override/__config_site` (r29 libc++ headers vs the
@@ -61,7 +61,10 @@ types that libui's headers include). `provision.sh`/`build.sh` are adapted from 
 | 0015 | YUV layers (Chrome/ExoPlayer video on a SurfaceControl, NV12 from the Codec2 decoder) are composed by SurfaceFlinger, never attached: hwc1 has no dataspace, and KWin 6.7/NVIDIA advertises NV12+LINEAR yet rejects that import (fatal error 7, exit 75, SF abort, soft reboot). Every dma-buf plane of the gralloc handle is passed and a plane-count mismatch is refused; wl_shm fallback fails loudly for formats without a wl_shm equivalent | ours |
 | 0016 | never call `hwc_procs_t::hotplug`: `hwc_set()` sent hotplug(0, 1) after every xdg configure (resize, activation); the 20260927 vendor `libhwc2on1adapter` forwards primary hotplugs, the synchronous callback runs nested on SurfaceFlinger's main thread inside `presentAndGetReleaseFences`, SF recreates the display and dereferences the erased `DisplayData` (SEGV 2026-10-16; upstream waydroid/android_hardware_waydroid#84). `#pragma GCC poison hotplug` makes a new call from those files a build error; live check `dev/hwc-hotplug-check` (KDE Plasma) | ours |
 | 0017 | the Android display follows the window (vanilla resize, upstream 40c54a5), safely: a settled window size (`persist.waydroid.resize_settle_ms`, default 250 ms as upstream's lineage-23.2 hwcomposer) becomes the display's only config and the hotplug is sent from hwc's own resize thread (`display-resize.cpp`, the only caller), never from a composer call. Needs a composer HAL that survives a primary reconnect with frames in flight; enabled only when the vendor image declares `ro.vendor.composer.safe_primary_reconnect=true` (our vendor image, with its `hardware/interfaces` patch). Without it nothing changes; the composer log says which path is active | ours |
-| 0018 | per-frame `attach dmabuf` / `hwc_set` logs only with `debug.waydroid.hwc_buffers` / `debug.waydroid.hwc_frames`; each surface caches its opaque region and sends `wl_surface_set_opaque_region` only when opacity or size changes | waydroid-nvidia-optimized |
+| 0018 | single-window mode: the per-app window **is** the Android display, so it drives the display size too (issue #5). The configure gate asks whether the window owns the display — task `"0"`, or any app window while `persist.waydroid.multi_windows` is off; the IME helper (`"none"`) never does. Multi-window cards keep the fixed display. Matches upstream lineage-23.2 `window_owns_display_geometry()` (`ef6ae3f`) | ours |
+| 0019 | a failed EGL read-back of a wl_shm copy (the mouse pointer, layers the compositor cannot import, inactive-window snapshots) is logged with the failing step, the EGL/GL error and the buffer, rate-limited, instead of leaving the zeroed (transparent) memfd on screen without a word | ours |
+| 0020 | window creation never waits for the Wayland thread: the new window's role objects are made on the creation queue and dispatched by the composer thread that waits for their first configure (inside presentDisplay, holding the HWC2On1Adapter state mutex and windowsMutex), then handed to the default queue under a read intent. Before, the Wayland thread dispatched that configure while it could itself block on those locks (refresh nudge, input handlers): a lock cycle that wedged the display stack until the watchdog killed system_server | ours |
+| 0021 | per-frame `attach dmabuf` / `hwc_set` logs only with `debug.waydroid.hwc_buffers` / `debug.waydroid.hwc_frames`; each surface caches its opaque region and sends `wl_surface_set_opaque_region` only when opacity or size changes | waydroid-nvidia-optimized |
 
 Each patch header states what, why, source URL and author, licence and deviations. Not taken:
 quinovax's multi-window and input hunks (content-frame origins, `prepare_layer_geom` co-clipping,
