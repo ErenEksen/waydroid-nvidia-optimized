@@ -1,14 +1,16 @@
 # Waydroid NVIDIA Optimized
 
 A self-contained, performance-focused fork of [Shiro836/waydroid-nvidia](https://github.com/Shiro836/waydroid-nvidia):
-GPU-accelerated [Waydroid](https://waydro.id) on NVIDIA cards.
+GPU-accelerated [Waydroid](https://waydro.id) on NVIDIA cards. Up to date with upstream **v0.2.0**
+([what came in, and this update's changes](release-notes/perf-v2.md)).
 
 > **Goal:** smoother frames and less CPU overhead in the **Venus** path, without lowering resolution, refresh rate or
 > graphics quality. It installs on its own; you do not need the upstream package.
 
 **Contents:** [What this fork does differently](#what-this-fork-does-differently) ·
-[Expected performance difference](#expected-performance-difference-theoretical) · [Status](#status) ·
-[Install](#install) · [Other driver modes](#other-driver-modes)
+[Expected performance difference](#expected-performance-difference) · [Status](#status) ·
+[Install on Arch Linux](#install-on-arch-linux-pacman) · [Other distributions](#other-distributions-installsh) ·
+[Other driver modes](#other-driver-modes)
 
 ## What this fork does differently
 
@@ -18,9 +20,9 @@ work unchanged. It removes **CPU work, round trips and lock contention** around 
 
 ```mermaid
 flowchart LR
-    A["Android app<br/>(ANGLE / Vulkan)"] -->|commands| B["Guest Venus driver<br/>① submit pool ② one wait per submit"]
+    A["Android app<br/>(ANGLE / Vulkan)"] -->|commands| B["Guest Venus driver<br/>① submit pool ② one wait per submit<br/>⑧ 2-ioctl fence export ⑨ one write per command"]
     B -->|vtest socket| C["Host renderer<br/>③ fence export once ④ format cache"]
-    C --> D["NVIDIA driver<br/>⑥ private shader cache"]
+    C --> D["NVIDIA driver<br/>⑥ ⑩ private shader cache, 4 GiB"]
     D -->|dma-buf| E["hwcomposer<br/>⑤ opaque region cache, quiet logs"]
     E --> F["Wayland compositor"]
 ```
@@ -31,9 +33,12 @@ flowchart LR
 | ② | **One ring wait per submission** (semaphore imports) | a ring round trip for each imported semaphore | one wait for ring consumption per submission, however many semaphores it has | removes (n − 1) guest↔host round trips when a frame waits on several fences |
 | ③ | **Fence payload exported once** (host renderer) | every export calls `vkGetFenceFdKHR` under the renderer's sync-thread mutex | exported once, then the kept sync-file is duplicated with `dup()` | an export costs microseconds instead of a driver call behind a contended lock |
 | ④ | **Format/modifier cache** (host buffer allocation) | each gralloc allocation asks the driver for format and modifier properties | cached per format after the first query | faster buffer allocation on app start, window resize, rotation and swapchain recreation |
-| ⑤ | **hwcomposer opaque region cache + quiet logs** (`hwcomposer/patches/0018`) | creates, sends and destroys a `wl_region` for every layer in every frame; logs every buffer attach | sent only when a layer's opacity or size changes; logs only with `debug.waydroid.hwc_*` | fewer Wayland requests and less compositor region work per frame; no log writes in the present path |
+| ⑤ | **hwcomposer opaque region cache + quiet logs** (`hwcomposer/patches/0021`) | creates, sends and destroys a `wl_region` for every layer in every frame; logs every buffer attach | sent only when a layer's opacity or size changes; logs only with `debug.waydroid.hwc_*` | fewer Wayland requests and less compositor region work per frame; no log writes in the present path |
 | ⑥ | **Private renderer shader cache** (`wd-venus.service`) | NVIDIA's shared per-user cache, which other desktop apps and games can fill and evict | a dedicated cache under `~/.cache/waydroid-nvidia` | Waydroid's compiled shaders stay cached, so fewer recompile hitches after restarts |
 | ⑦ | **Bounded failure handling** | a stalled peer can hang a client forever; EOF could spin | socket I/O fails within 30 s with a named error; fds are never double-closed | a hang becomes a clear error instead of a frozen window |
+| ⑧ | **Fence export straight from the timeline** (guest, kernel ≥ 6.16) | every exported fence creates a syncobj, transfers the timeline point into it, exports and destroys it: 5 ioctls | the timeline point is exported directly: 2 ioctls, no syncobj per export; older kernels fall back automatically | less kernel work on every presented frame |
+| ⑨ | **One write per vtest command** (semaphore import, timeline submit) | header and payload in separate writes | one write each, same bytes | one syscall and one renderer wakeup less per command |
+| ⑩ | **Larger private shader cache** (`wd-venus.service`) | NVIDIA's default size limit | 4 GiB, still only Waydroid's pipelines | evictions no longer cause avoidable recompile hitches |
 
 ## Expected performance difference 
 
@@ -70,23 +75,64 @@ Average FPS in GPU-heavy games stays about the same. The gains are in **consiste
 
 ## Status
 
-- Synchronization and fault regression tests pass, and both guest ABIs (x86, x86_64) build.
-- Full live gameplay acceptance is **still pending**. Some games (for example Epic Seven) still stutter, and results
-  vary by game and system ([measurements](docs/performance-epic7-2026-09-19.md),
+- Merged with upstream **v0.2.0** (rc13 and v0.2.0 fixes: hwcomposer lock cycles #38 and window creation, single-window
+  resize #35, NV12 video buffers #16, allocation rate limit, semaphore-import retry, Xid 32 fix in the default mode).
+  Details in [release-notes/perf-v2.md](release-notes/perf-v2.md).
+- Tests: `tests/host` builds this fork's allocator, gralloc backend and the guest/host code its patches add, and runs
+  them against fakes (kernel, Vulkan driver, vtest server) under ASan/UBSan; every test was mutation-checked. The Arch
+  package is built from source and installed in CI (`.github/workflows/arch-package.yml`).
+- Full live gameplay acceptance is **still pending** (no NVIDIA GPU in CI). Some games (for example Epic Seven) still
+  stutter, and results vary by game and system ([measurements](docs/performance-epic7-2026-09-19.md),
   [acceptance criteria](docs/performance-smoothness.md)).
-- The optimized Venus binaries (`perf-v1`) are built locally and checksummed, **not CI-attested**.
-- Change ⑤ exists in source only. The installed hwcomposer is still upstream's until a new overlay ships.
+- The Arch package uses upstream's v0.2.0 hwcomposer; change ⑤ (`hwcomposer/patches/0021`) is compile-checked in CI
+  but not shipped yet.
 
-## Install
+## Install on Arch Linux (pacman)
 
-**Requirements:**
+**Requirements:** an NVIDIA GPU with `nvidia-drm.modeset=1` and a Wayland desktop running on it; Waydroid kernel
+support (binder); for Venus mode the **open** NVIDIA kernel module and driver 580 or newer.
 
-- an NVIDIA GPU with `nvidia-drm.modeset=1` and a Wayland desktop running on it;
-- Waydroid kernel support (binder) on a systemd distribution;
-- for Venus mode, the **open** NVIDIA kernel module and driver 580 or newer.
+The package replaces `waydroid` and `waydroid-nvidia-bin` (pacman asks to remove them). Android apps and data in
+`/var/lib/waydroid` are kept.
+
+**Ready-built package:** download the `waydroid-nvidia-optimized-pkg` artifact of the latest successful
+[arch-package](https://github.com/ErenEksen/waydroid-nvidia-optimized/actions/workflows/arch-package.yml) run (or a `perf-v*` release), check it against its
+`SHA256SUMS`, then:
+
+```sh
+sudo pacman -U waydroid-nvidia-optimized-0.2.0.perf2-1-x86_64.pkg.tar.zst
+```
+
+**Or build it yourself** (downloads about 2 GB: Android NDK r29, Mesa, virglrenderer; about 6 GB of disk while building):
+
+```sh
+git clone https://github.com/ErenEksen/waydroid-nvidia-optimized.git
+cd waydroid-nvidia-optimized/packaging/arch/waydroid-nvidia-optimized
+makepkg -si
+```
+
+Then:
+
+```sh
+systemctl --user enable --now wd-venus.service
+sudo waydroid-nvidia-setup --mode venus     # add -s GAPPS for Google apps on a fresh install
+# log out and back in once (the /dev/udmabuf permission rule)
+waydroid session start
+```
+
+- What the package builds and what it takes from upstream's release is listed at the top of the
+  [PKGBUILD](packaging/arch/waydroid-nvidia-optimized/PKGBUILD); `/usr/lib/waydroid-nvidia/BUILD-INFO` records it.
+- Run `sudo waydroid-nvidia-setup` again after every NVIDIA driver update (a pacman hook reminds you).
+- **Uninstall:** `sudo pacman -R waydroid-nvidia-optimized` puts the official vendor image back first.
+
+## Other distributions (install.sh)
+
+`./install.sh` installs on any systemd distribution. It still installs the **previous** base (upstream v0.2.0-rc12
+and this fork's `perf-v1` Venus binaries) until a `perf-v2` binary set is published; the Arch package above is the
+current one.
 
 Remove an older `waydroid` or `waydroid-nvidia-bin` package first, because the installer never overwrites files owned
-by a distro package. Android apps and data in `/var/lib/waydroid` are kept.
+by a distro package.
 
 ```sh
 git clone https://github.com/ErenEksen/waydroid-nvidia-optimized.git && cd waydroid-nvidia-optimized
@@ -113,7 +159,7 @@ The install also includes upstream's other two modes, unchanged:
 - `glibc-shim`: runs the host's own NVIDIA driver inside Android.
 
 Switch with `sudo waydroid-nvidia-setup --mode <mode>`. GPU and driver compatibility for these modes is documented
-upstream. This fork's optimizations ①–④ and ⑥ apply only to Venus mode.
+upstream. This fork's optimizations ①–④, ⑥ and ⑧–⑩ apply only to Venus mode.
 
 ## Development
 
@@ -124,5 +170,6 @@ upstream. This fork's optimizations ①–④ and ⑥ apply only to Venus mode.
 ## Credits / license
 
 Based on **Shiro836/waydroid-nvidia**, Mesa, virglrenderer and Waydroid. The prebuilt base (vendor image, native
-driver bundle, ANGLE, SurfaceFlinger) is upstream's v0.2.0-rc12 build. Our code is [MIT](LICENSE). Patches keep their
+driver bundle, ANGLE, hwcomposer, SurfaceFlinger) is upstream's v0.2.0 build in the Arch package and its
+v0.2.0-rc12 build in `install.sh`. Our code is [MIT](LICENSE). Patches keep their
 upstream licenses. This fork does not maintain or guarantee upstream's benchmark claims.
