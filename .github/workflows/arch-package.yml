@@ -1,0 +1,168 @@
+---
+# The Arch Linux package of this fork, built for real: packaging/arch/waydroid-nvidia-optimized/PKGBUILD in a clean
+# archlinux container (Mesa x86/x86_64 and the gralloc backend with NDK r29, the host renderer, patched Waydroid,
+# upstream v0.2.0's pinned release assets), checked, installed with its dependencies, smoke-tested and removed.
+# Also: the host unit tests (tests/host), and a compile check of the hwcomposer series with this fork's patch on top
+# of upstream's (hwcomposer/patches 0001-0021).
+#
+# The package is uploaded as the workflow artifact "waydroid-nvidia-optimized-pkg". A pushed perf-v* tag also
+# publishes it, with its SHA256SUMS, as a prerelease.
+name: arch-package
+
+on:
+  push:
+    branches: [main, 'claude/**']
+    tags: ['perf-v*']
+    paths:
+      - '.github/workflows/arch-package.yml'
+      - 'build/**'
+      - 'hwcomposer/**'
+      - 'packaging/**'
+      - 'patches/**'
+      - 'src/**'
+      - 'tests/host/**'
+      - 'waydroid/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: host unit tests (tests/host, tests/python, scripts)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load pins
+        run: grep -v '^#' packaging/ci/pins.env >> "$GITHUB_ENV"
+      - name: Host deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq libvulkan-dev libdrm-dev shellcheck
+      - name: minigbm at the pinned commit (gbm_mesa_wrapper.h)
+        run: |
+          git init -q "$RUNNER_TEMP/minigbm"
+          git -C "$RUNNER_TEMP/minigbm" fetch -q --depth 1 "$MINIGBM_UPSTREAM" "$MINIGBM_SHA"
+          git -C "$RUNNER_TEMP/minigbm" checkout -q FETCH_HEAD
+      - name: tests/host (built from this tree's sources and patch text; ASan/UBSan)
+        run: |
+          sudo sysctl -w vm.mmap_rnd_bits=28   # ASan's shadow layout on the runner kernel
+          MINIGBM="$RUNNER_TEMP/minigbm" python3 -m unittest discover -s tests/host -v
+      - name: tests/python
+        run: python3 -m unittest discover -s tests/python -v
+      - name: Shell syntax and lint
+        run: |
+          bash -n install.sh packaging/install.sh packaging/arch/test-assembly.sh \
+            packaging/arch/waydroid-nvidia-optimized/PKGBUILD packaging/arch/waydroid-nvidia-optimized/*.install
+          # SC2034/SC2154: PKGBUILD variables are read and set by makepkg
+          shellcheck -S warning -s bash -e SC2034,SC2154 packaging/arch/test-assembly.sh packaging/arch/waydroid-nvidia-optimized/PKGBUILD \
+            packaging/arch/waydroid-nvidia-optimized/waydroid-nvidia-optimized.install
+
+  arch-package:
+    name: makepkg in archlinux (full source build), check, install, smoke test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Base system
+        run: |
+          pacman -Syu --noconfirm --needed base-devel git sudo namcap
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          git config --system --add safe.directory '*'
+      - uses: actions/checkout@v4
+      - name: makepkg -s (installs depends and makedepends from the Arch repositories)
+        run: |
+          chown -R builder: "$GITHUB_WORKSPACE"
+          mkdir -p /home/builder/out && chown builder: /home/builder/out
+          cd packaging/arch/waydroid-nvidia-optimized
+          sudo -u builder env PKGDEST=/home/builder/out makepkg -s --noconfirm
+          # the committed .SRCINFO must be this PKGBUILD's
+          sudo -u builder makepkg --printsrcinfo | diff -u .SRCINFO -
+      - name: check-package.py --built-here
+        run: |
+          pkg=$(ls /home/builder/out/waydroid-nvidia-optimized-*.pkg.tar.zst)
+          python3 -I packaging/arch/check-package.py "$pkg" --built-here
+          namcap "$pkg" | tee /home/builder/out/namcap.txt || true
+      - name: pacman -U (with its dependencies), verify, smoke test, remove
+        run: |
+          pkg=$(ls /home/builder/out/waydroid-nvidia-optimized-*.pkg.tar.zst)
+          pacman -U --noconfirm "$pkg"
+          pacman -Qkk waydroid-nvidia-optimized
+          cat /usr/lib/waydroid-nvidia/BUILD-INFO
+          # every host ELF resolves its libraries with the installed dependencies
+          for f in /usr/lib/waydroid-nvidia/virgl_test_server /usr/lib/waydroid-nvidia/virgl_render_server \
+                   /usr/lib/waydroid-nvidia/libvirglrenderer.so.1; do
+            out=$(ldd "$f"); echo "$out" | grep -q 'not found' && { echo "$f: $out"; exit 1; }
+          done
+          ldd /usr/lib/waydroid-nvidia/virgl_test_server | grep -q '/usr/lib/waydroid-nvidia/libvirglrenderer.so.1'
+          waydroid -h | head -3
+          python3 -c 'import sys; sys.path.insert(0, "/usr/lib/waydroid"); import tools.helpers.nvidia_native'
+          pacman -R --noconfirm waydroid-nvidia-optimized
+          ! pacman -Qq waydroid-nvidia-optimized 2>/dev/null
+      - name: SHA256SUMS
+        run: cd /home/builder/out && sha256sum ./*.pkg.tar.zst > SHA256SUMS && cat SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: waydroid-nvidia-optimized-pkg
+          path: |
+            /home/builder/out/*.pkg.tar.zst
+            /home/builder/out/SHA256SUMS
+            /home/builder/out/namcap.txt
+          if-no-files-found: error
+          compression-level: 0
+
+  hwcomposer:
+    name: hwcomposer 0001-0021 compiles (upstream series + this fork's opaque-region patch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      FETCH_MIN_KIBPS: 2048
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq cmake bison flex libssl-dev libjsoncpp-dev pkg-config \
+            meson ninja-build libexpat1-dev e2fsprogs unzip zstd xz-utils curl
+      - name: Cache provisioned tree
+        uses: actions/cache@v4
+        with:
+          path: ~/hwc-work
+          key: hwc-work-${{ hashFiles('hwcomposer/pins.env', 'hwcomposer/provision.sh') }}
+      - name: Provision (hwcomposer/pins.env)
+        run: HWC_WORK="$HOME/hwc-work" ./hwcomposer/provision.sh
+      - name: Build
+        run: |
+          HWC_WORK="$HOME/hwc-work" ./hwcomposer/build.sh "$PWD/hwc-out"
+          cat hwc-out/PATCHES
+          grep -q '0021-hwcomposer-per-frame-logs' hwc-out/PATCHES
+          readelf -h hwc-out/hwcomposer.waydroid.stripped.so | grep -q 'Class:.*ELF64'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hwcomposer-0021
+          path: hwc-out/hwcomposer.waydroid.stripped.so
+          if-no-files-found: error
+
+  release:
+    name: publish the package (perf-v* tags)
+    if: startsWith(github.ref, 'refs/tags/perf-v')
+    needs: [host-tests, arch-package]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: waydroid-nvidia-optimized-pkg
+          path: out
+      - name: Prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd out && sha256sum -c SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease \
+            --title "$GITHUB_REF_NAME (Arch Linux package)" \
+            --notes "Arch Linux package built by the arch-package workflow from $GITHUB_SHA. Install: sudo pacman -U $(ls ./*.pkg.tar.zst | xargs -n1 basename)" \
+            ./*.pkg.tar.zst SHA256SUMS

@@ -99,3 +99,14 @@ nvidia-prolapse/driver-source/native/target/
 !/build/virglrenderer/
 !/build/profile.sh
 !/build/requirements.txt
+
+# makepkg staging in the Arch package directory
+packaging/arch/*/src/
+packaging/arch/*/pkg/
+packaging/arch/*/*.tar.gz
+packaging/arch/*/*.tar.zst
+packaging/arch/*/*.zip
+packaging/arch/*/*.json
+packaging/arch/*/mesa/
+packaging/arch/*/virglrenderer/
+packaging/arch/*/minigbm/
