@@ -7,6 +7,9 @@ CacheDirectory=waydroid-nvidia
 CacheDirectoryMode=0700
 Environment=XDG_CACHE_HOME=%C/waydroid-nvidia
 Environment=__GL_SHADER_DISK_CACHE_PATH=%C/waydroid-nvidia/nvidia
+# The cache holds only Waydroid's pipelines, so it may be larger than NVIDIA's default limit: an evicted pipeline
+# is a compile hitch the next time an app uses it.
+Environment=__GL_SHADER_DISK_CACHE_SIZE=4294967296
 ExecStartPre=/usr/bin/mkdir -p %C/waydroid-nvidia/nvidia
 Environment=RENDER_SERVER_EXEC_PATH=/usr/lib/waydroid-nvidia/virgl_render_server
 Environment=LD_LIBRARY_PATH=/usr/lib/waydroid-nvidia
