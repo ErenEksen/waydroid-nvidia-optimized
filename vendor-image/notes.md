@@ -83,7 +83,8 @@ Waydroid publishes no build manifest. The rule used here: the last first-parent 
 branch-tracked project, and the LineageOS manifest as of that time (0d12a65, 2026-09-23).
 
 - Waydroid repos at the cutoff (every one of them is also the remote head today):
-  - hardware/waydroid 6e898e9 (2026-09-26, 5 hwcomposer commits after the 7750307 our hwcomposer pins)
+  - hardware/waydroid 6e898e9 (2026-09-26); our manifest has since moved this one project to a3e4239 (2026-10-18,
+    upstream's fix for the keyboard-enter/setFocusedTask deadlock), which the standalone hwcomposer pins too
   - vendor/extra 1b95b85 (2026-07-23)
   - device/waydroid/waydroid 2234f4b
   - external/mesa a6685db (Mesa 26.0.8 merge, 2026-07-23)
@@ -152,9 +153,16 @@ Lunch `lineage_nvidia_waydroid_x86_64-userdebug`, out dir `out-vendor-l20-prolap
     HIDL/Codec2 libraries are the tree's vendor variants (`*.vendor`), not the bundle's.
   - Built in-tree:
     - `hardware/waydroid` with `patches/hardware/waydroid`: our hwcomposer 0001-0016 rebased onto 6e898e9 (0001
-      conflicts resolved to our side; upstream's leak/null-handle/0660-FIFO fixes kept) plus an `Android.bp` commit
+      conflicts resolved to our side; upstream's leak/null-handle/0660-FIFO fixes kept), since 10-27 onto a3e4239 (applies
+      without conflicts) plus an `Android.bp` commit
       for prime-copy.cpp, and 0018: the Android display follows the window (a display reconnect sent from hwc's own
-      resize thread, enabled by `ro.vendor.composer.safe_primary_reconnect`, which `prolapse.mk` sets).
+      resize thread, enabled by `ro.vendor.composer.safe_primary_reconnect`, which `prolapse.mk` sets); 0019 lets
+      the single-window per-app window drive that size too (issue #5; multi-window cards keep the fixed display); 0020 names a
+      failed EGL read-back of a wl_shm copy (pointer, unimportable layers, snapshots) instead of showing a blank buffer. 0021: window creation
+      never waits for the Wayland thread (its configure is dispatched on the creation queue by the composer thread).
+      0022 (waydroid-nvidia-optimized; = hwcomposer/patches/0021): per-frame logs behind `debug.waydroid.hwc_*`
+      properties and a per-surface opaque-region cache. Source only: the vendor image this fork installs is upstream's
+      v0.2.0 build (0001-0021).
     - `hardware/interfaces` with `patches/hardware/interfaces`: composer 2.1 HAL 0001 makes a primary display
       reconnect safe while frames are in flight (hwc2on1 re-reads the configs without holding its state mutex
       across the Display's; ComposerClient keeps the display's cached buffer handles instead of freeing them).

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Wed, 14 Oct 2026 16:33:08 +0300
-Subject: [PATCH 14/17] hwcomposer: present the client target to a compositor
+Subject: [PATCH 14/20] hwcomposer: present the client target to a compositor
  on another GPU through a system-memory LINEAR copy
 
 What: bind zwp_linux_dmabuf_v1 at min(version, 4) and read the default
@@ -949,7 +949,7 @@ index 0000000..60d76fd
 +/* Called from ~buffer for prime buffers. */
 +void prime_release_source(void *source);
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 7ec658c..db90453 100644
+index 3686293..be44bd9 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -40,6 +40,7 @@
@@ -980,7 +980,7 @@ index 7ec658c..db90453 100644
      if (isShm)
          munmap(shm_data, size);
  }
-@@ -1809,22 +1814,23 @@ static const struct wl_seat_listener seat_listener = {
+@@ -1819,22 +1824,23 @@ static const struct wl_seat_listener seat_listener = {
  };
  
  static void dmabuf_format(void *, struct zwp_linux_dmabuf_v1 *, uint32_t);
@@ -1012,7 +1012,7 @@ index 7ec658c..db90453 100644
          if (fourcc_mod_get_vendor(modifier) == DRM_FORMAT_MOD_VENDOR_NVIDIA)
              d->nvidia_modifier_formats.insert(format);
      }
-@@ -1838,6 +1844,14 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
+@@ -1848,6 +1854,14 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
      property_set(prop_name.c_str(), prop_value.c_str());
  }
  
@@ -1027,7 +1027,7 @@ index 7ec658c..db90453 100644
  static void
  dmabuf_format(void *data, struct zwp_linux_dmabuf_v1 *, uint32_t format)
  {
-@@ -1851,6 +1865,167 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
+@@ -1861,6 +1875,167 @@ static const struct zwp_linux_dmabuf_v1_listener dmabuf_listener = {
      dmabuf_modifiers
  };
  
@@ -1195,7 +1195,7 @@ index 7ec658c..db90453 100644
  static void
  output_handle_mode(void *data, struct wl_output *,
                     uint32_t, int32_t width, int32_t height,
-@@ -2358,9 +2533,21 @@ registry_handle_global(void *data, struct wl_registry *registry,
+@@ -2368,9 +2543,21 @@ registry_handle_global(void *data, struct wl_registry *registry,
                 (strcmp(interface, "zwp_linux_dmabuf_v1") == 0)) {
          if (version < 3)
              return;

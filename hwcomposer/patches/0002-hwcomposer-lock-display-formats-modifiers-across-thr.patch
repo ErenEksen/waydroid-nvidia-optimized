@@ -1,7 +1,7 @@
-From e90f3a9198959d3abc1d8d66fbe4e7a4dd725672 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:51:46 +0300
-Subject: [PATCH 02/13] hwcomposer: lock display->formats/modifiers across
+Subject: [PATCH 02/20] hwcomposer: lock display->formats/modifiers across
  threads
 
 What: add display->formats_mutex and hold it for every access to
@@ -36,7 +36,7 @@ the binder thread should not wait for).
  3 files changed, 18 insertions(+), 3 deletions(-)
 
 diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
-index 940c89b..abaf8a4 100644
+index a6eb83f..f1fbdc9 100644
 --- a/hwcomposer/gralloc_handler.cpp
 +++ b/hwcomposer/gralloc_handler.cpp
 @@ -115,6 +115,7 @@ namespace {
@@ -57,10 +57,10 @@ index 940c89b..abaf8a4 100644
      if (it == display->modifiers.end())
          return false;
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 5d239e4..46a9223 100644
+index 00e4b90..4ef5150 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
-@@ -1797,21 +1797,27 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
+@@ -1807,21 +1807,27 @@ dmabuf_modifiers(void *data, struct zwp_linux_dmabuf_v1 * dmabuf,
      if (modifier == DRM_FORMAT_MOD_INVALID)
          return;
  

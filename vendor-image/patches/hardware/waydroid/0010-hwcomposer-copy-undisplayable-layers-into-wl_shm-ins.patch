@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 01:00:25 +0300
-Subject: [PATCH 10/17] hwcomposer: copy undisplayable layers into wl_shm
+Subject: [PATCH 10/20] hwcomposer: copy undisplayable layers into wl_shm
  instead of dropping them
 
 What: get_wl_buffer()'s set-time backstop no longer returns nullptr for a

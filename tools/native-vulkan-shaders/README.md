@@ -14,6 +14,8 @@ cc -std=c11 -Wall -Wextra -Werror tools/native-vulkan-probe.c -ldl \
 build/hwcomposer-work/ndk/android-ndk-r29/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android33-clang \
   -std=c11 -Wall -Wextra -Werror tools/native-vulkan-probe.c -ldl \
   -o build/native-vulkan-probe/probe-android
+cc -std=c11 -Wall -Wextra -Werror tools/native-vulkan-copy-indirect.c -ldl \
+  -o build/native-vulkan-probe/copy-indirect-host
 glslangValidator -V --target-env vulkan1.0 tools/native-vulkan-shaders/generate.comp \
   -o build/native-vulkan-probe/generate.spv
 glslangValidator -V --target-env vulkan1.0 tools/native-vulkan-shaders/transform.comp \
@@ -62,9 +64,21 @@ with `VK_ERROR_EXTENSION_NOT_PRESENT`, then requests one core feature the driver
 reported unsupported and expects `VK_ERROR_FEATURE_NOT_PRESENT`. The feature
 check is reported as not applicable if every core feature is advertised.
 
+`../native-vulkan-copy-indirect.c` (host only: the NDK r29 Vulkan headers predate
+`VK_KHR_copy_memory_indirect`) records `vkCmdCopyMemoryIndirectKHR` on a
+compute-only queue family, a transfer-write to shader-read barrier, then a
+dispatch of `transform.spv` that reads the copied words; 1000 iterations, every
+output word checked. It exits 77 when the device has no compute-only family:
+
+```sh
+build/native-vulkan-probe/copy-indirect-host \
+  --driver /absolute/path/to/libvulkan_nouveau.so \
+  --transform build/native-vulkan-probe/transform.spv
+```
+
 For Mesa ICDs exporting `vk_icdGetInstanceProcAddr`, add `--icd` to direct
 invocations. `../native-vulkan-regression.py` prepares the current full-NVK
-compute, graphics, interop, and HAL commands, and defaults to a dry run.
+compute, graphics, interop, host copy-indirect and HAL commands, and defaults to a dry run.
 
 The probe selects a physical device by NVIDIA vendor ID and a queue by its
 compute capability. It enables no extensions or optional features and requires

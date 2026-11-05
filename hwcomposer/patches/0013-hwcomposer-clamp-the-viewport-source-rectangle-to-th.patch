@@ -1,7 +1,7 @@
-From 034b656601809a1f514350ec6a34757a3cc51813 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 01:01:26 +0300
-Subject: [PATCH 13/13] hwcomposer: clamp the viewport source rectangle to the
+Subject: [PATCH 13/20] hwcomposer: clamp the viewport source rectangle to the
  buffer
 
 What: surface_context::set_crop() takes the buffer bounds and clamps the
@@ -31,10 +31,10 @@ origins of the same commit are not taken.
  3 files changed, 33 insertions(+), 7 deletions(-)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index d8a576b..3ff35a2 100644
+index c58d58b..60cc01d 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
-@@ -426,7 +426,12 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+@@ -431,7 +431,12 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
      }
      // Scaling can only be supported correctly with wp_viewport
      if (surface_context.viewport) {
@@ -49,7 +49,7 @@ index d8a576b..3ff35a2 100644
      } else {
          surface_context.set_buffer_scale(pdev->display->scale);
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 28db068..6066dd4 100644
+index 2ad322b..3686293 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -703,13 +703,33 @@ void surface_context::set_buffer_scale(double d_scale) {

@@ -1566,7 +1566,7 @@ diff --git a/src/virtio/vulkan/vn_renderer_vtest.c b/src/virtio/vulkan/vn_render
 index 7aaebd2..b0758e7 100644
 --- a/src/virtio/vulkan/vn_renderer_vtest.c
 +++ b/src/virtio/vulkan/vn_renderer_vtest.c
-@@ -10,12 +10,18 @@
+@@ -10,12 +10,19 @@
  #include <errno.h>
  #include <netinet/in.h>
  #include <poll.h>
@@ -1582,10 +1582,11 @@ index 7aaebd2..b0758e7 100644
 +
 +#include "drm-uapi/drm.h"
 +#include "util/log.h"
++#include "util/u_atomic.h"
  #include "drm-uapi/virtgpu_drm.h"
  #include "util/os_file.h"
  #include "util/os_misc.h"
-@@ -44,6 +50,11 @@ struct vtest_bo {
+@@ -44,6 +51,11 @@ struct vtest_bo {
  
  struct vtest_sync {
     struct vn_renderer_sync base;
@@ -1597,7 +1598,7 @@ index 7aaebd2..b0758e7 100644
  };
  
  struct vtest {
-@@ -57,6 +68,20 @@ struct vtest {
+@@ -57,6 +69,21 @@ struct vtest {
     uint32_t protocol_version;
     uint32_t max_timeline_count;
     bool has_venus_sync_fd;
@@ -1614,11 +1615,12 @@ index 7aaebd2..b0758e7 100644
 +      uint32_t handle;     /* timeline syncobj handle on node_fd */
 +      uint64_t next_point; /* guarded by sock_mutex */
 +      uint32_t ring_idx;   /* timeline points must belong to ONE ordered queue */
++      bool no_point_export; /* kernel < 6.16: export via a scratch syncobj */
 +   } timeline;
  
     struct {
        uint32_t id;
-@@ -80,7 +105,10 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
+@@ -80,7 +107,10 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
  
     sock = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (sock < 0) {
@@ -1630,7 +1632,7 @@ index 7aaebd2..b0758e7 100644
        return -1;
     }
  
-@@ -89,11 +117,21 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
+@@ -89,11 +119,21 @@ vtest_connect_socket(struct vn_instance *instance, const char *path)
     memcpy(un.sun_path, path, strlen(path));
  
     if (connect(sock, (struct sockaddr *)&un, sizeof(un)) == -1) {
@@ -1653,7 +1655,7 @@ index 7aaebd2..b0758e7 100644
     return sock;
  }
  
-@@ -102,8 +140,10 @@ vtest_read(struct vtest *vtest, void *buf, size_t size)
+@@ -102,8 +142,10 @@ vtest_read(struct vtest *vtest, void *buf, size_t size)
  {
     do {
        const ssize_t ret = read(vtest->sock_fd, buf, size);
@@ -1666,7 +1668,7 @@ index 7aaebd2..b0758e7 100644
                  "lost connection to rendering server on %zu read %zi %d",
                  size, ret, errno);
           abort();
-@@ -130,14 +170,18 @@ vtest_receive_fd(struct vtest *vtest)
+@@ -130,14 +172,18 @@ vtest_receive_fd(struct vtest *vtest)
        .msg_controllen = sizeof(cmsg_buf),
     };
  
@@ -1687,7 +1689,7 @@ index 7aaebd2..b0758e7 100644
        vn_log(vtest->instance, "invalid cmsghdr");
        abort();
     }
-@@ -166,7 +210,9 @@ vtest_send_fd(struct vtest *vtest, int fd)
+@@ -166,7 +212,9 @@ vtest_send_fd(struct vtest *vtest, int fd)
     cmsg->cmsg_len = CMSG_LEN(sizeof(fd));
     memcpy(CMSG_DATA(cmsg), &fd, sizeof(fd));
  
@@ -1698,7 +1700,7 @@ index 7aaebd2..b0758e7 100644
     return ret > 0 ? 0 : -ECONNRESET;
  }
  
-@@ -174,9 +220,11 @@ static void
+@@ -174,9 +222,11 @@ static void
  vtest_write(struct vtest *vtest, const void *buf, size_t size)
  {
     do {
@@ -1713,7 +1715,7 @@ index 7aaebd2..b0758e7 100644
                  "lost connection to rendering server on %zu write %zi %d",
                  size, ret, errno);
           abort();
-@@ -532,6 +580,39 @@ vtest_vcmd_resource_import_blob(struct vtest *vtest, uint64_t size, int fd)
+@@ -532,6 +582,39 @@ vtest_vcmd_resource_import_blob(struct vtest *vtest, uint64_t size, int fd)
     return res_id;
  }
  
@@ -1753,7 +1755,7 @@ index 7aaebd2..b0758e7 100644
  static int
  vtest_vcmd_sync_export_sync_file(struct vtest *vtest,
                                   uint32_t sync_id,
-@@ -581,11 +662,34 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
+@@ -581,11 +664,38 @@ vtest_vcmd_submit_cmd2(struct vtest *vtest,
     if (!total_size)
        return;
  
@@ -1780,20 +1782,42 @@ index 7aaebd2..b0758e7 100644
 +   vtest_hdr[VTEST_CMD_LEN] =
 +      total_size / sizeof(uint32_t) + (point ? 2 : 0);
 +   vtest_hdr[VTEST_CMD_ID] = point ? VCMD_SUBMIT_CMD2_TIMELINE : VCMD_SUBMIT_CMD2;
-    vtest_write(vtest, vtest_hdr, sizeof(vtest_hdr));
- 
+-   vtest_write(vtest, vtest_hdr, sizeof(vtest_hdr));
 +   if (point) {
-+      const uint32_t point_buf[2] = { (uint32_t)point, (uint32_t)(point >> 32) };
-+      vtest_write(vtest, point_buf, sizeof(point_buf));
++      /* header and point in one write: one syscall and one server wakeup */
++      const uint32_t hdr_point[VTEST_HDR_SIZE + 2] = {
++         vtest_hdr[VTEST_CMD_LEN], vtest_hdr[VTEST_CMD_ID],
++         (uint32_t)point, (uint32_t)(point >> 32),
++      };
++      vtest_write(vtest, hdr_point, sizeof(hdr_point));
++   } else {
++      vtest_write(vtest, vtest_hdr, sizeof(vtest_hdr));
 +   }
-+
+ 
     /* write batch count and batch headers */
     const uint32_t batch_count = 1;
     size_t sync_offset = header_size + batch->cs_size;
-@@ -658,6 +762,59 @@ vtest_sync_reset(struct vn_renderer *renderer,
+@@ -658,6 +768,96 @@ vtest_sync_reset(struct vn_renderer *renderer,
     return vtest_sync_write(renderer, sync, initial_val);
  }
  
++/* struct drm_syncobj_handle as of kernel 6.16 (adds .point and the
++ * TIMELINE flags). Defined here because the bundled UAPI header may predate
++ * it; the ioctl number carries this 24-byte size, which older kernels also
++ * accept (they reject the TIMELINE flag with EINVAL).
++ */
++struct vtest_syncobj_handle_point {
++   uint32_t handle;
++   uint32_t flags;
++   int32_t fd;
++   uint32_t pad;
++   uint64_t point;
++};
++#define VTEST_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE (1u << 0)
++#define VTEST_SYNCOBJ_HANDLE_TO_FD_FLAGS_TIMELINE (1u << 1)
++#define VTEST_IOCTL_SYNCOBJ_HANDLE_TO_FD_POINT \
++   DRM_IOWR(0xC1, struct vtest_syncobj_handle_point)
++
 +/* Export a sync_file of a materialized timeline point with local syncobj
 + * ioctls only — zero socket traffic.  Returns the fd, or < -1 to make the
 + * caller fall back to the socket export.
@@ -1825,6 +1849,26 @@ index 7aaebd2..b0758e7 100644
 +   if (ioctl(node_fd, DRM_IOCTL_SYNCOBJ_TIMELINE_WAIT, &wait))
 +      return -ENOTSUP;
 +
++   /* Kernel >= 6.16 exports a sync_file of the timeline point itself: two
++    * ioctls per export instead of five, and no syncobj created and destroyed
++    * per frame. An older kernel rejects the TIMELINE flag with EINVAL; that
++    * is remembered and the scratch-syncobj sequence below is used from then
++    * on. Any other failure also falls through to it for this export.
++    */
++   if (!p_atomic_read(&vtest->timeline.no_point_export)) {
++      struct vtest_syncobj_handle_point export_point = {
++         .handle = vtest->timeline.handle,
++         .flags = VTEST_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE |
++                  VTEST_SYNCOBJ_HANDLE_TO_FD_FLAGS_TIMELINE,
++         .fd = -1,
++         .point = point,
++      };
++      if (!ioctl(node_fd, VTEST_IOCTL_SYNCOBJ_HANDLE_TO_FD_POINT, &export_point))
++         return export_point.fd;
++      if (errno == EINVAL)
++         p_atomic_set(&vtest->timeline.no_point_export, true);
++   }
++
 +   struct drm_syncobj_create create = { 0 };
 +   if (ioctl(node_fd, DRM_IOCTL_SYNCOBJ_CREATE, &create))
 +      return -ENOTSUP;
@@ -1850,7 +1894,7 @@ index 7aaebd2..b0758e7 100644
  static int
  vtest_sync_export_syncobj(struct vn_renderer *renderer,
                            struct vn_renderer_sync *_sync,
-@@ -670,6 +827,14 @@ vtest_sync_export_syncobj(struct vn_renderer *renderer,
+@@ -670,6 +870,14 @@ vtest_sync_export_syncobj(struct vn_renderer *renderer,
     if (!sync_file || !vtest->has_venus_sync_fd)
        return -ENOTSUP;
  
@@ -1865,7 +1909,7 @@ index 7aaebd2..b0758e7 100644
     /* Resolve the (binary) sync's signal point to the pending submit's
      * VkFence on the server and export a sync_file from it.  -1 means the
      * point already retired (already-signaled sync_file convention).
-@@ -1032,6 +1197,44 @@ vtest_submit(struct vn_renderer *renderer,
+@@ -1032,6 +1240,51 @@ vtest_submit(struct vn_renderer *renderer,
     return VK_SUCCESS;
  }
  
@@ -1888,11 +1932,18 @@ index 7aaebd2..b0758e7 100644
 +      (uint32_t)(semaphore_id >> 32),
 +   };
 +
++   /* header and command in one write: one syscall and one server wakeup */
++   const uint32_t msg[VTEST_HDR_SIZE + ARRAY_SIZE(cmd)] = {
++      [VTEST_CMD_LEN] = ARRAY_SIZE(cmd),
++      [VTEST_CMD_ID] = VCMD_SEMAPHORE_IMPORT_SYNC_FD,
++      [VTEST_HDR_SIZE + 0] = cmd[0],
++      [VTEST_HDR_SIZE + 1] = cmd[1],
++      [VTEST_HDR_SIZE + 2] = cmd[2],
++      [VTEST_HDR_SIZE + 3] = cmd[3],
++   };
++
 +   mtx_lock(&vtest->sock_mutex);
-+   vtest_hdr[VTEST_CMD_LEN] = ARRAY_SIZE(cmd);
-+   vtest_hdr[VTEST_CMD_ID] = VCMD_SEMAPHORE_IMPORT_SYNC_FD;
-+   vtest_write(vtest, vtest_hdr, sizeof(vtest_hdr));
-+   vtest_write(vtest, cmd, sizeof(cmd));
++   vtest_write(vtest, msg, sizeof(msg));
 +   if (vtest_send_fd(vtest, sync_file_fd)) {
 +      mtx_unlock(&vtest->sock_mutex);
 +      return VK_ERROR_DEVICE_LOST;
@@ -1910,7 +1961,7 @@ index 7aaebd2..b0758e7 100644
  static void
  vtest_init_renderer_info(struct vtest *vtest)
  {
-@@ -1042,6 +1245,8 @@ vtest_init_renderer_info(struct vtest *vtest)
+@@ -1042,6 +1295,8 @@ vtest_init_renderer_info(struct vtest *vtest)
  
     info->has_dma_buf_import = vtest->has_venus_sync_fd;
     info->has_external_sync = vtest->has_venus_sync_fd;
@@ -1919,7 +1970,7 @@ index 7aaebd2..b0758e7 100644
     info->has_implicit_fencing = false;
  
     const struct virgl_renderer_capset_venus *capset = &vtest->capset.data;
-@@ -1078,6 +1283,12 @@ vtest_destroy(struct vn_renderer *renderer,
+@@ -1078,6 +1333,12 @@ vtest_destroy(struct vn_renderer *renderer,
        close(vtest->sock_fd);
     }
  
@@ -1932,7 +1983,7 @@ index 7aaebd2..b0758e7 100644
     mtx_destroy(&vtest->sock_mutex);
     util_sparse_array_finish(&vtest->shmem_array);
     util_sparse_array_finish(&vtest->bo_array);
-@@ -1172,11 +1383,39 @@ vtest_init(struct vtest *vtest)
+@@ -1172,11 +1433,39 @@ vtest_init(struct vtest *vtest)
  
     vtest_vcmd_context_init(vtest, vtest->capset.id);
  

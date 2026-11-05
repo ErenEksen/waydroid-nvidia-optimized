@@ -1,0 +1,109 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: hyzor <jesper.hansson.f@gmail.com>
+Date: Sun, 25 Oct 2026 17:21:45 +0100
+Subject: [PATCH 2/2] hwcomposer: let a single-window app window resize the
+ Android display
+
+Patch 0017 only lets the full-UI window (task "0") drive the display size, so
+a per-app window in single-window mode (persist.waydroid.multi_windows off)
+falls to do_hotplug(): Android keeps its calibrated size and the app is scaled
+into the window with letterbox bars.
+
+A per-app window is the whole display exactly when multi-window is off. In
+multi-window mode every app window is a freeform card on a fixed display, so
+only task "0" may resize it; the IME helper ("none") never does.
+
+Store the effective multi_windows value on struct display after the
+subcompositor fallback, and use it when a toplevel configure decides whether
+this window owns the display size. This matches upstream lineage-23.2's
+window_owns_display_geometry() (ef6ae3f).
+
+Tested on KDE Plasma 6 / RTX 5080: resizing a desktop-entry app window reflows
+Android to the window size, one display reconnect per settled drag.
+---
+ hwcomposer/hwcomposer.cpp  |  4 ++++
+ hwcomposer/wayland-hwc.cpp | 24 ++++++++++++++++++++----
+ hwcomposer/wayland-hwc.h   |  6 ++++++
+ 3 files changed, 30 insertions(+), 4 deletions(-)
+
+diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
+index ade5a3c..73e955d 100644
+--- a/hwcomposer/hwcomposer.cpp
++++ b/hwcomposer/hwcomposer.cpp
+@@ -1026,6 +1026,10 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
+         ALOGW("usage of subsurfaces requested but wl_subcompositor is not supported. Disabling it.");
+         pdev->should_compose = false;
+     }
++    /* Decided once, after the subcompositor fallback: a per-app window is the
++     * whole Android display only in single-window mode. See
++     * window_owns_display_geometry() in wayland-hwc.cpp. */
++    pdev->display->multiWindows.store(pdev->multi_windows, std::memory_order_relaxed);
+ 
+     if (!property_get_bool("persist.waydroid.cursor_on_subsurface", false)) {
+         pdev->display->cursor_handler.reset(new wl_cursor_cursor_handler(pdev));
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index ea30e40..a31de20 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -583,6 +583,21 @@ fit_guest_display_to_window(struct display *display)
+     if (display->present_y < 0) display->present_y = 0;
+ }
+ 
++/* Whether this window's size may become the Android display's size. The full-UI
++ * window (task "0") always stands for the display. So does a per-app window in
++ * single-window mode, where the one app on screen IS the entire display (its
++ * taskID is the app's task). In multi-window mode every app window is a card
++ * on a fixed display, so only task "0" may resize it. Helper windows (the IME's
++ * "none") never do. */
++static bool
++window_owns_display_geometry(const struct window *window)
++{
++    if (window->taskID == "0")
++        return true;
++    return window->taskID != "none"
++        && !window->display->multiWindows.load(std::memory_order_relaxed);
++}
++
+ static void
+ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
+                               int32_t width, int32_t height,
+@@ -621,9 +636,10 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
+             wl_region_destroy(opaque);
+             wl_surface_commit(window->surface);
+         }
+-        /* Only the window that stands for the whole Android display (full UI,
+-         * task "0") resizes it; per-app windows keep the old path. */
+-        if (display->resizeFollowsWindow && window->taskID == "0") {
++        /* Only a window that stands for the whole Android display resizes it:
++         * the full UI (task "0") and, without multi-window, the single per-app
++         * window. Multi-window cards keep the old path. */
++        if (display->resizeFollowsWindow && window_owns_display_geometry(window)) {
+             /* The Android display becomes the window's size (display-resize.cpp).
+              * A forced size left by an earlier session would keep the logical
+              * display from following, so clear it once. */
+@@ -737,7 +753,7 @@ shell_surface_configure(void *data, struct wl_shell_surface *, uint32_t, int32_t
+ 
+     if (display->height && display->width) {
+         choose_width_height(display, width, height);
+-        if (display->resizeFollowsWindow && window->taskID == "0")
++        if (display->resizeFollowsWindow && window_owns_display_geometry(window))
+             follow_window_size(display);
+         else
+             do_hotplug(display);
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 0f46428..0735818 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -564,6 +564,12 @@ struct display {
+     /* The Android display follows the window (display-resize.cpp): set when the
+      * vendor image declares ro.vendor.composer.safe_primary_reconnect. */
+     bool resizeFollowsWindow;
++    /* persist.waydroid.multi_windows was accepted: every per-app window is a
++     * card on a fixed Android display, so a card's size must never become the
++     * display's. Off, the one per-app window IS the display (single-window
++     * mode). Written once before the first toplevel, read by the Wayland
++     * thread on a configure. */
++    std::atomic<bool> multiWindows;
+     /* The Android display size the last configure asked for (Wayland thread). */
+     int follow_width;
+     int follow_height;

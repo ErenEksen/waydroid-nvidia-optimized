@@ -47,8 +47,8 @@ respect each upstream component's license.
 The pinned third-party sources and where each is used are listed in
 THIRD_PARTY.md.
 
-3. Native driver modes (public-test branch)
--------------------------------------------
+3. Native driver modes
+----------------------
 Original work under the MIT license above, same copyright line:
 
     nvidia-prolapse/      (shim, probe, hal, gralloc, libdrm, media, egl,

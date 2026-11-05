@@ -53,7 +53,7 @@ Exit code 0 means Venus mode can work here; 3 means it cannot, and the output sa
 
 ## Reporting a problem
 
-Open an issue at https://github.com/Shiro836/waydroid-nvidia/issues with `[public-test]` in the title and include:
+Open an issue at https://github.com/Shiro836/waydroid-nvidia/issues and include:
 
 - your GPU, `cat /proc/driver/nvidia/version`, open or closed kernel module, distro and desktop;
 - the mode and whether native GL is on, plus the output of both status commands above;

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:58:18 +0300
-Subject: [PATCH 08/17] hwcomposer: check the cursor buffer is importable
+Subject: [PATCH 08/20] hwcomposer: check the cursor buffer is importable
  before attaching it
 
 What: cursor_handler::create_buffer() runs displayable_buffer() and copies an

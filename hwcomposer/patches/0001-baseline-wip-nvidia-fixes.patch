@@ -1,6 +1,7 @@
 hwcomposer: waydroid-nvidia baseline WIP (as of the 2026-07-28 working tree)
 
-What: the baseline's whole downstream hwcomposer patch on upstream 7750307:
+What: the baseline's whole downstream hwcomposer patch, first made on upstream 7750307 and
+rebased onto upstream a3e4239 (2026-10-27) with the rest of this series:
 - WIP NVIDIA fixes committed in waydroid-nvidia 7dd9dd1 (2026-07-13):
   single-window blacklist ordering, bufferless-SKIP draw index, refresh
   override property, full-UI window creation fixes, gralloc_handler tweaks,
@@ -15,10 +16,9 @@ What: the baseline's whole downstream hwcomposer patch on upstream 7750307:
   persist.waydroid.clipboard_debug) and the deferred window destruction
   (window-lifetime UAF fix).
 
-Why here: this is exactly the source of the prebuilt this project shipped
-(packaging/arch/prebuilt/hwcomposer.waydroid.so, sha256 25f739be...):
-hwcomposer/verify-prebuilt.sh rebuilds it byte for byte from upstream
-7750307 + this patch.
+Why here: this is the source of the prebuilt this project first shipped
+(packaging/arch/prebuilt/hwcomposer.waydroid.so, sha256 25f739be..., upstream
+7750307 + this patch); on a3e4239 it is the same change, context only.
 
 Source: waydroid-nvidia maintainer, uncommitted 2026-07-28 working tree of
   https://github.com/Shiro836/waydroid-nvidia (patches/hwcomposer/
@@ -136,7 +136,7 @@ index 672a5c0..fbf5d1e 100644
      return Void();
  }
 diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
-index a86b9aa..940c89b 100644
+index d2b405e..a6eb83f 100644
 --- a/hwcomposer/gralloc_handler.cpp
 +++ b/hwcomposer/gralloc_handler.cpp
 @@ -25,6 +25,7 @@
@@ -196,7 +196,7 @@ index a86b9aa..940c89b 100644
      zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(display->dmabuf);
      zwp_linux_buffer_params_v1_add(params, prime_fd, 0, offset, byte_stride, modifier >> 32, modifier & 0xffffffff);
      zwp_linux_buffer_params_v1_add_listener(params, &params_listener, nullptr);
-@@ -264,6 +300,11 @@ std::unique_ptr<buffer> create_buffer_gbm(display *display, const buffer_metadat
+@@ -265,6 +301,11 @@ std::unique_ptr<buffer> create_buffer_gbm(display *display, const buffer_metadat
  }
  std::unique_ptr<buffer> create_buffer_cros(display *display, const buffer_metadata& metadata, buffer_handle_t handle) {
      auto *cros_handle = reinterpret_cast<const cros_gralloc_handle *>(handle);
@@ -208,7 +208,7 @@ index a86b9aa..940c89b 100644
      return create_dmabuf_wl_buffer(display, metadata, cros_handle->fds[0], cros_handle->format, cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, handle);
  }
  std::unique_ptr<buffer> create_buffer_android(display *display, const buffer_metadata& metadata, buffer_handle_t handle) {
-@@ -314,6 +355,8 @@ gralloc_handler::get_buffer_metadata_func gralloc_handler::select_get_buffer_met
+@@ -315,6 +356,8 @@ gralloc_handler::get_buffer_metadata_func gralloc_handler::select_get_buffer_met
  }
  
  gralloc_handler::create_buffer_func gralloc_handler::select_create_buffer_impl(display *display, GrallocType gralloc_type) {
@@ -217,7 +217,7 @@ index a86b9aa..940c89b 100644
      if (gralloc_type == GrallocType::GRALLOC_GBM && display->dmabuf) {
          return create_buffer_gbm;
      } else if (gralloc_type == GrallocType::GRALLOC_CROS && display->dmabuf) {
-@@ -333,7 +376,39 @@ gralloc_handler::update_shm_buffer_func gralloc_handler::select_update_shm_buffe
+@@ -334,7 +377,39 @@ gralloc_handler::update_shm_buffer_func gralloc_handler::select_update_shm_buffe
      }
  }
  
@@ -296,11 +296,11 @@ index 1d045e3..73a173b 100644
  };
 \ No newline at end of file
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index f509ed7..55b3fcc 100644
+index 1adabf7..d62a338 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
-@@ -104,9 +104,25 @@ namespace {
-     buffer *get_wl_buffer(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1_t *layer, size_t pos) {
+@@ -109,9 +109,25 @@ namespace {
+ 
          const auto& gralloc_handler = pdev->gralloc_handler;
          auto metadata = gralloc_handler.get_buffer_metadata(pdev->display, layer, pos);
 +        metadata.opaque = layer->blending == HWC_BLENDING_NONE
@@ -325,7 +325,7 @@ index f509ed7..55b3fcc 100644
              std::unique_ptr<buffer> result;
              if (layer->flags & HWC_IS_CURSOR_LAYER)
                  result = pdev->display->cursor_handler->create_buffer(pdev, metadata, layer);
-@@ -351,6 +367,26 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+@@ -356,6 +372,26 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
      surface_context.attach_buffer(*buf);
      apply_surface_damage(hwc_layer, surface_context);
      surface_context.set_buffer_transform(hwc_transform_to_buffer_transform(hwc_layer->transform));
@@ -352,7 +352,7 @@ index f509ed7..55b3fcc 100644
      // Scaling can only be supported correctly with wp_viewport
      if (surface_context.viewport) {
          surface_context.set_crop(rect_apply_transform(hwc_layer->sourceCropf, hwc_layer->transform));
-@@ -395,15 +431,17 @@ int apply_hwc_layer_to_window(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1
+@@ -400,15 +436,17 @@ int apply_hwc_layer_to_window(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1
          return -1;
      }
  
@@ -374,7 +374,7 @@ index f509ed7..55b3fcc 100644
                        2*WINDOW_DECORATION_OUTSET + ceil((hwc_layer->displayFrame.right - hwc_layer->displayFrame.left) / pdev->display->scale),
                        2*WINDOW_DECORATION_OUTSET + ceil((hwc_layer->displayFrame.bottom - hwc_layer->displayFrame.top) / pdev->display->scale));
      }
-@@ -446,6 +484,14 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+@@ -451,6 +489,14 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
      }
  
      auto& mode = pdev->selected_mode;
@@ -389,15 +389,13 @@ index f509ed7..55b3fcc 100644
      mode->setup_set(pdev, contents);
  
      std::scoped_lock lock(pdev->display->windowsMutex);
-@@ -459,9 +505,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+@@ -464,8 +510,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
          if (layer->flags & HWC_IS_CURSOR_LAYER) {
              found_cursor = true;
              pdev->display->cursor_handler->apply_cursor(pdev, layer, l);
 -        } else {
--            if (layer->handle)
--                mode->handle_layer(pdev, layer, l);
 +        } else if (layer->handle) {
-+            mode->handle_layer(pdev, layer, l);
+             mode->handle_layer(pdev, layer, l);
 +        } else if (layer->acquireFenceFd != -1) {
 +            /* bufferless layers are never visited by handle_layer; their
 +             * fences must not leak (one fd per frame kills the composer) */
@@ -406,7 +404,7 @@ index f509ed7..55b3fcc 100644
          }
      }
      if (!found_cursor) {
-@@ -481,6 +531,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+@@ -485,6 +536,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
      sw_sync_timeline_inc(pdev->timeline_fd, 1);
      contents->retireFenceFd = sw_sync_fence_create(pdev->timeline_fd, "hwc_contents_release", ++pdev->next_sync_point);
  
@@ -420,7 +418,7 @@ index f509ed7..55b3fcc 100644
      if (pdev->display->needHotplug && pdev->procs && pdev->procs->hotplug) {
          pdev->procs->hotplug(pdev->procs, 0, 1);
          pdev->display->buffer_map.clear();
-@@ -542,15 +599,22 @@ static void hwc_register_procs(struct hwc_composer_device_1* dev,
+@@ -546,15 +604,22 @@ static void hwc_register_procs(struct hwc_composer_device_1* dev,
      pdev->display->procs = procs;
  }
  
@@ -446,7 +444,7 @@ index f509ed7..55b3fcc 100644
          return 0;
      }
  
-@@ -558,10 +622,17 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
+@@ -562,10 +627,17 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev __unused,
  }
  
  static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
@@ -465,7 +463,7 @@ index f509ed7..55b3fcc 100644
      int density = 180;
  
      switch(attribute) {
-@@ -595,12 +666,12 @@ static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
+@@ -599,12 +671,12 @@ static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
  }
  
  static int hwc_get_display_attributes(struct hwc_composer_device_1* dev,
@@ -480,7 +478,7 @@ index f509ed7..55b3fcc 100644
              if (values[i] == -EINVAL) {
                  return -EINVAL;
              }
-@@ -613,16 +684,31 @@ static int hwc_get_display_attributes(struct hwc_composer_device_1* dev,
+@@ -617,16 +689,31 @@ static int hwc_get_display_attributes(struct hwc_composer_device_1* dev,
      return 0;
  }
  
@@ -518,7 +516,7 @@ index f509ed7..55b3fcc 100644
  }
  
  static int hwc_set_cursor_position_async(struct hwc_composer_device_1 *, int, int, int) {
-@@ -792,6 +878,21 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
+@@ -796,6 +883,21 @@ static int hwc_open(const struct hw_module_t* module, const char* name,
      if (pdev->display->refresh > 1000 && pdev->display->refresh < 1000000)
          pdev->vsync_period_ns = 1000 * 1000 * 1000 / (pdev->display->refresh / 1000);
  
@@ -540,15 +538,14 @@ index f509ed7..55b3fcc 100644
      struct timespec rt;
      if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in vsync thread clock_gettime: %s",
-@@ -924,6 +1025,8 @@ int wl_cursor_cursor_handler::apply_cursor(waydroid_hwc_composer_device_1* pdev,
-             return -1;
+@@ -929,7 +1031,6 @@ int wl_cursor_cursor_handler::apply_cursor(waydroid_hwc_composer_device_1* pdev,
          }
          set_cursor(pdev->display);
-+    } else if (hwc_layer->acquireFenceFd != -1) {
-+        close(hwc_layer->acquireFenceFd);
+     } else if (hwc_layer->acquireFenceFd != -1) {
+-        /* Not rendering the cursor still leaves us owning its fence */
+         close(hwc_layer->acquireFenceFd);
      }
      return 0;
- }
 diff --git a/hwcomposer/modes/full-ui.cpp b/hwcomposer/modes/full-ui.cpp
 index 351d780..52d27c6 100644
 --- a/hwcomposer/modes/full-ui.cpp
@@ -798,7 +795,7 @@ index 000b388..a874a73 100644
                  m_draw_framebuffer_at = i;
              }
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 0bd2f35..5d239e4 100644
+index 6ddbddb..00e4b90 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -40,6 +40,8 @@
@@ -928,7 +925,7 @@ index 0bd2f35..5d239e4 100644
 +    for (size_t i = 0; i < count; i++) {
 +        if (begin[i] == wanted)
 +            return true;
-     }
++    }
 +    return false;
 +}
 +
@@ -979,7 +976,7 @@ index 0bd2f35..5d239e4 100644
 +    if (err != 0) {
 +        ALOGE("could not spawn `cmd window size %s`: %s", arg, strerror(err));
 +        return;
-+    }
+     }
 +    last_child = pid;
 +}
 +
@@ -1315,9 +1312,9 @@ index 0bd2f35..5d239e4 100644
      display->keyboard_enter_serial = serial;
 +    note_input_serial(display, serial);
  
-     std::scoped_lock lock(display->windowsMutex);
-     auto window = reinterpret_cast<struct window *>(wl_surface_get_user_data(surface));
-@@ -817,6 +1201,7 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
+     // Only the task id is read under windowsMutex; setFocusedTask() is made
+     // after it is released. It is a synchronous call that ends in
+@@ -827,6 +1211,7 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
                        uint32_t, struct wl_surface *)
  {
      struct display *display = (struct display *)data;
@@ -1325,7 +1322,7 @@ index 0bd2f35..5d239e4 100644
  
      for (size_t i = 0; i < display->keysDown.size(); i++) {
          if (display->keysDown[i] == WL_KEYBOARD_KEY_STATE_PRESSED) {
-@@ -827,18 +1212,21 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
+@@ -837,18 +1222,21 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
  
  static void
  keyboard_handle_key(void *data, struct wl_keyboard *,
@@ -1351,7 +1348,7 @@ index 0bd2f35..5d239e4 100644
  }
  
  static void
-@@ -869,6 +1257,7 @@ pointer_handle_enter(void *data, struct wl_pointer *,
+@@ -879,6 +1267,7 @@ pointer_handle_enter(void *data, struct wl_pointer *,
      struct display *display = (struct display *)data;
      display->pointer_surface = surface;
      display->pointer_enter_serial = serial;
@@ -1359,7 +1356,7 @@ index 0bd2f35..5d239e4 100644
      display->cursor_handler->on_cursor_enter(display);
  }
  
-@@ -962,10 +1351,11 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
+@@ -972,10 +1361,11 @@ handle_relative_motion(void *data, struct zwp_relative_pointer_v1*,
  
  static void
  pointer_handle_button(void *data, struct wl_pointer *,
@@ -1372,7 +1369,7 @@ index 0bd2f35..5d239e4 100644
      struct input_event event[2];
      struct timespec rt;
      unsigned int res, n = 0;
-@@ -1115,9 +1505,10 @@ flush_touch_id(struct display *display, int id)
+@@ -1125,9 +1515,10 @@ flush_touch_id(struct display *display, int id)
  
  static void
  touch_handle_down(void *data, struct wl_touch *,
@@ -1384,7 +1381,7 @@ index 0bd2f35..5d239e4 100644
      if (!surface) {
          // The surface this down event corresponds to was already destroyed
          return;
-@@ -1162,9 +1553,10 @@ touch_handle_down(void *data, struct wl_touch *,
+@@ -1172,9 +1563,10 @@ touch_handle_down(void *data, struct wl_touch *,
  
  static void
  touch_handle_up(void *data, struct wl_touch *,
@@ -1396,7 +1393,7 @@ index 0bd2f35..5d239e4 100644
      struct input_event event[3];
      struct timespec rt;
      unsigned int res, n = 0;
-@@ -1953,6 +2345,9 @@ registry_handle_global(void *data, struct wl_registry *registry,
+@@ -1963,6 +2355,9 @@ registry_handle_global(void *data, struct wl_registry *registry,
                  &wl_data_device_manager_interface, std::min(version,  3U));
          if (d->data_device_manager && d->seat)
              d->data_device = wl_data_device_manager_get_data_device(d->data_device_manager, d->seat);
@@ -1406,7 +1403,7 @@ index 0bd2f35..5d239e4 100644
      } else if (strcmp(interface, "gtk_shell1") == 0) {
          if (version < 6)
              d->supports_cursor_viewport = false;
-@@ -2021,33 +2416,58 @@ void open_windows::add(const std::string& key, std::unique_ptr<window> window) {
+@@ -2031,55 +2426,57 @@ void open_windows::add(const std::string& key, std::unique_ptr<window> window) {
  }
  
  void open_windows::clear() {
@@ -1453,28 +1450,44 @@ index 0bd2f35..5d239e4 100644
 -    while (ret != -1)
 +    while (ret != -1) {
          ret = wl_display_dispatch(display);
--
--    ALOGE("*** %s: Wayland client was disconnected: %s", __PRETTY_FUNCTION__, strerror(ret));
 +        /* Safe point: dispatch has returned, so no event handler is running on
 +         * this thread and windows retired by the composer thread can be freed. */
 +        d->windows.reap();
 +    }
-+
-+    int err = wl_display_get_error(display);
-+    if (err == EPROTO) {
+ 
+-    /* Report why the connection died, not strerror(-1): for a protocol
+-     * error name the interface/object the compositor rejected, otherwise
+-     * the socket errno. Also persist it under /data (bind-mounted from
+-     * the host) so it survives the container for post-mortem debugging. */
+     int err = wl_display_get_error(display);
+-    char msg[256];
+     if (err == EPROTO) {
+-        const struct wl_interface *intf = NULL;
 +        const struct wl_interface *iface = nullptr;
-+        uint32_t id = 0;
+         uint32_t id = 0;
+-        uint32_t code = wl_display_get_protocol_error(display, &intf, &id);
+-        snprintf(msg, sizeof(msg), "protocol error: interface %s, object id %u, code %u",
+-                 intf ? intf->name : "?", id, code);
 +        uint32_t code = wl_display_get_protocol_error(display, &iface, &id);
 +        ALOGE("*** %s: Wayland protocol error: interface %s id %u code %u",
 +              __PRETTY_FUNCTION__, iface ? iface->name : "?", id, code);
-+    } else {
+     } else {
+-        snprintf(msg, sizeof(msg), "socket error: %s", strerror(err));
+-    }
+-    ALOGE("*** %s: Wayland client was disconnected: %s", __PRETTY_FUNCTION__, msg);
+-
+-    FILE *f = fopen("/data/waydroid_hwc_wayland_error.txt", "a");
+-    if (f) {
+-        struct timespec rt;
+-        clock_gettime(CLOCK_REALTIME, &rt);
+-        fprintf(f, "[%lld] %s\n", (long long)rt.tv_sec, msg);
+-        fclose(f);
 +        ALOGE("*** %s: Wayland client was disconnected: %s", __PRETTY_FUNCTION__,
 +              strerror(err));
-+    }
+     }
  
      abort();
- }
-@@ -2064,7 +2484,11 @@ create_display(const char *gralloc)
+@@ -2097,7 +2494,11 @@ create_display(const char *gralloc)
      display->system_version = property_get_int32("ro.system.build.version.sdk", 0);
      display->gtype = get_gralloc_type(gralloc);
      display->refresh = 0;
@@ -1487,8 +1500,8 @@ index 0bd2f35..5d239e4 100644
      display->supports_cursor_viewport = true;
      display->supports_cursor_hw_buffer = property_get_bool("persist.waydroid.cursor_force_shm", false);
      display->display = wl_display_connect(NULL);
-@@ -2081,12 +2505,19 @@ create_display(const char *gralloc)
-     mkdir("/dev/input", S_IRWXO | S_IRWXG | S_IRWXU);
+@@ -2114,12 +2515,19 @@ create_display(const char *gralloc)
+     mkdir("/dev/input", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
      chown("/dev/input", 1000, 1000);
  
 +    display->create_queue = wl_display_create_queue(display->display);
@@ -1508,7 +1521,7 @@ index 0bd2f35..5d239e4 100644
          ALOGE("Couldn't create wayland thread");
          wl_display_disconnect(display->display);
          sem_destroy(&display->egl_go);
-@@ -2103,6 +2534,13 @@ destroy_display(struct display *display)
+@@ -2136,6 +2544,13 @@ destroy_display(struct display *display)
  {
      pthread_kill(display->wayland_thread, SIGTERM);
      pthread_join(display->wayland_thread, nullptr);
@@ -1522,7 +1535,7 @@ index 0bd2f35..5d239e4 100644
  
      if (display->wm_base)
          xdg_wm_base_destroy(display->wm_base);
-@@ -2128,6 +2566,8 @@ destroy_display(struct display *display)
+@@ -2161,6 +2576,8 @@ destroy_display(struct display *display)
          zwp_pointer_constraints_v1_destroy(display->pointer_constraints);
  
      wl_registry_destroy(display->registry);

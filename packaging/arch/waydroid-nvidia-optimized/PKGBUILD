@@ -1,0 +1,252 @@
+# Maintainer: Eren Eksen
+#
+# waydroid-nvidia-optimized: Waydroid with NVIDIA GPU acceleration, this fork's optimized Venus path on top of
+# upstream Shiro836/waydroid-nvidia v0.2.0. Build it from a checkout of this repository:
+#
+#   cd packaging/arch/waydroid-nvidia-optimized && makepkg -si
+#
+# Built here, from source, with this tree's patches (the Venus path; what this fork changes):
+#   - guest Venus Vulkan driver for x86_64 and x86 (Mesa at MESA_SHA + patches/mesa, Android NDK r29)
+#   - guest gralloc backend (src/minigbm-vtest/vtest_wrapper.c against minigbm at MINIGBM_SHA, NDK r29)
+#   - host Venus renderer (virglrenderer at VIRGL_SHA + patches/virglrenderer + src/virglrenderer-vtest)
+#   - patched Waydroid (waydroid at _waydroid_sha + patches/waydroid/0001 + waydroid/0001-lxc-nvidia-native-mounts)
+# Taken from upstream's v0.2.0 release, pinned by sha256 (CI-built there with SLSA provenance:
+# gh attestation verify <file> --repo Shiro836/waydroid-nvidia):
+#   - the nvidia-prolapse vendor image, its native driver bundle (default mode and glibc-shim mode)
+#   - ANGLE, hwcomposer and SurfaceFlinger for the Venus guest stack
+# The scripts that gate and install the vendor image are this tree's, identical to upstream v0.2.0's.
+#
+# Network: makepkg downloads the sources below; prepare() also lets Meson fetch Mesa's pinned libdrm wrap.
+# Disk: about 6 GB during the build (NDK toolchain, Mesa clone, two Android builds).
+
+pkgname=waydroid-nvidia-optimized
+pkgver=0.2.0.perf2
+pkgrel=1
+_upstream_tag=v0.2.0
+_waydroid_sha=a33a5c0b31d89d6ce687381104b30aff4dd2d330  # patches/waydroid/BASE
+_mesa_sha=a8ce4d829191939d8db4381a09dadcffdf6b5b7c       # packaging/ci/pins.env MESA_SHA
+_virgl_sha=dc35e4db03144f81637c5ad061f61d3334b078fe      # VIRGL_SHA
+_minigbm_sha=16844babfbd83d7c206ca22256257cbf26ca7de1    # MINIGBM_SHA
+_ndk=r29                                                 # NDK_VERSION
+pkgdesc="Waydroid with NVIDIA GPU acceleration: optimized Venus path on waydroid-nvidia v0.2.0 (NVK default mode, glibc-shim, Venus)"
+arch=('x86_64')
+url="https://github.com/ErenEksen/waydroid-nvidia-optimized"
+license=('GPL-3.0-or-later' 'MIT')
+depends=(
+  # waydroid runtime (as extra/waydroid)
+  'lxc' 'python' 'python-gbinder>=1.3.0' 'python-gobject' 'nftables' 'dnsmasq'
+  'gtk3' 'python-dbus' 'pulse-native-provider'
+  'binutils'   # readelf: the setup checks guest ABI and SONAME before installing
+  'e2fsprogs'  # debugfs: the nvidia-prolapse gate reads the bionic runtime from system.img
+  'util-linux' # unshare: the i686 gate cases run in their own PID namespace
+  # host Venus renderer
+  'libepoxy' 'libdrm' 'mesa' 'libx11' 'expat' 'vulkan-icd-loader' 'glibc' 'gcc-libs'
+)
+makedepends=('git' 'meson' 'ninja' 'pkgconf' 'python-mako' 'python-packaging' 'python-yaml' 'glslang'
+             'unzip' 'patchelf' 'vulkan-headers' 'wayland' 'libglvnd' 'zstd' 'libarchive')
+optdepends=(
+  'nvidia-utils: the NVIDIA driver this stack targets (Venus mode: open kernel module, 580 or newer)'
+  'python-pyclip: clipboard sharing'
+)
+provides=('waydroid' "waydroid-nvidia-bin=${_upstream_tag#v}")
+conflicts=('waydroid' 'waydroid-nvidia-bin')
+backup=()
+# guest ELFs are bionic: host strip/debug tooling must not touch them; !lto: the host renderer builds as upstream does
+options=('!strip' '!debug' '!lto')
+install=waydroid-nvidia-optimized.install
+_rel=https://github.com/Shiro836/waydroid-nvidia/releases/download/$_upstream_tag
+source=(
+  "waydroid-$_waydroid_sha.tar.gz::https://github.com/waydroid/waydroid/archive/$_waydroid_sha.tar.gz"
+  "$_rel/waydroid-nvidia-guest-prebuilts-$_upstream_tag.tar.zst"
+  "$_rel/waydroid-nvidia-native-x86_64-$_upstream_tag.tar.zst"
+  "$_rel/waydroid-nvidia-vendor-x86_64-$_upstream_tag.zip"
+  "$_rel/waydroid-nvidia-vendor-ota-$_upstream_tag.json"
+  "https://dl.google.com/android/repository/android-ndk-$_ndk-linux.zip"
+  "mesa::git+https://gitlab.freedesktop.org/mesa/mesa.git#commit=$_mesa_sha"
+  "virglrenderer::git+https://gitlab.freedesktop.org/virgl/virglrenderer.git#commit=$_virgl_sha"
+  "minigbm::git+https://github.com/waydroid/android_external_minigbm.git#commit=$_minigbm_sha"
+)
+noextract=(
+  "waydroid-nvidia-guest-prebuilts-$_upstream_tag.tar.zst"
+  "waydroid-nvidia-native-x86_64-$_upstream_tag.tar.zst"
+  "waydroid-nvidia-vendor-x86_64-$_upstream_tag.zip"
+  "android-ndk-$_ndk-linux.zip"
+)
+sha256sums=('e7817beac7e26f7d54b2d9f49c847dab8e137c92e403825829e7abbd0b63c411'
+            '7dd098c01e00159da66b3249872d48773bd3449aaae77eac23ab91fcabe3cedc'
+            '33c9f75fa216c53828e93e8fb2a4e63562e3ab27b24c81268879ee48390fccf8'
+            '692a0eeb45c288492f66ddba5b77ea15f00f88eca5354b048ec4b1e752aee29b'
+            '2940a04d71ba26e32f85ec7223b19344a89cb9ecaafde4a715aaf9cff4ee3c60'
+            '4abbbcdc842f3d4879206e9695d52709603e52dd68d3c1fff04b3b5e7a308ecf'
+            'SKIP'
+            'SKIP'
+            'SKIP')
+
+# This checkout (the PKGBUILD lives in packaging/arch/<pkgname>/): its committed HEAD is what gets built.
+_repo() { (cd "$startdir/../../.." && pwd); }
+
+prepare() {
+  _prepare_tree
+  _prepare_ndk
+  _prepare_waydroid
+  _prepare_mesa
+  _prepare_virgl
+  _prepare_prebuilts
+}
+
+_prepare_tree() { # this checkout's committed HEAD -> $srcdir/nvwd
+  local repo commit
+  repo=$(_repo)
+  if [ ! -f "$repo/packaging/releases/release.env" ] || [ ! -f "$repo/patches/mesa/BASE" ]; then
+    error "build this PKGBUILD from a waydroid-nvidia-optimized checkout ($repo)"
+    return 1
+  fi
+  commit=$(git -C "$repo" rev-parse HEAD)
+  if [ -n "$(git -C "$repo" status --porcelain --untracked-files=no)" ]; then
+    warning "the checkout has uncommitted changes; building its committed HEAD $commit"
+  fi
+  rm -rf "$srcdir/nvwd" && mkdir "$srcdir/nvwd"
+  git -C "$repo" archive --format=tar "$commit" | bsdtar -xf - -C "$srcdir/nvwd"
+  printf '%s\n' "$commit" > "$srcdir/nvwd/.commit"
+  # the pins this PKGBUILD carries must be the tree's own
+  local pins=$srcdir/nvwd/packaging/ci/pins.env
+  if ! grep -qx "MESA_SHA=$_mesa_sha" "$pins" || ! grep -qx "VIRGL_SHA=$_virgl_sha" "$pins" ||
+     ! grep -qx "MINIGBM_SHA=$_minigbm_sha" "$pins" || ! grep -qx "NDK_VERSION=$_ndk" "$pins" ||
+     ! grep -q "base-commit: ${_waydroid_sha:0:7}" "$srcdir/nvwd/patches/waydroid/BASE"; then
+    error "PKGBUILD pins differ from packaging/ci/pins.env or patches/waydroid/BASE"
+    return 1
+  fi
+}
+
+_prepare_ndk() { # only the LLVM toolchain and its sysroot are used
+  rm -rf "$srcdir/android-ndk-$_ndk"
+  bsdtar -xf "$srcdir/android-ndk-$_ndk-linux.zip" -C "$srcdir" \
+    "android-ndk-$_ndk/source.properties" "android-ndk-$_ndk/toolchains/llvm/prebuilt/linux-x86_64"
+  [ -d "$srcdir/android-ndk-$_ndk/toolchains/llvm/prebuilt/linux-x86_64" ]
+}
+
+_prepare_waydroid() { # pinned upstream + the baseline patch + ours; the generator in the patch equals the tree's
+  local N=$srcdir/nvwd
+  cd "$srcdir/waydroid-$_waydroid_sha" || return 1
+  patch -p1 < "$N/patches/waydroid/0001-nvidia-integration.patch"
+  patch -p1 < "$N/waydroid/0001-lxc-nvidia-native-mounts.patch"
+  cmp "$N/waydroid/nvidia_native.py" tools/helpers/nvidia_native.py
+}
+
+_prepare_mesa() { # git am 0001-0002, git apply 0003 (patches/mesa/BASE)
+  local N=$srcdir/nvwd
+  cd "$srcdir/mesa" || return 1
+  git -c user.name=makepkg -c user.email=makepkg@localhost am -q "$N"/patches/mesa/0001-*.patch "$N"/patches/mesa/0002-*.patch
+  git apply "$N"/patches/mesa/0003-*.patch
+  meson subprojects download libdrm
+}
+
+_prepare_virgl() { # git am 0001-0003, git apply 0004 (patches/virglrenderer/BASE); build.sh adds src/virglrenderer-vtest
+  local N=$srcdir/nvwd
+  cd "$srcdir/virglrenderer" || return 1
+  git -c user.name=makepkg -c user.email=makepkg@localhost am -q "$N"/patches/virglrenderer/000[123]-*.patch
+  git apply "$N"/patches/virglrenderer/0004-*.patch
+}
+
+_prepare_prebuilts() { # upstream's ANGLE, hwcomposer, SurfaceFlinger
+  rm -rf "$srcdir/prebuilts" && mkdir "$srcdir/prebuilts"
+  bsdtar -xf "$srcdir/waydroid-nvidia-guest-prebuilts-$_upstream_tag.tar.zst" -C "$srcdir/prebuilts"
+}
+
+_check_elf() { # file class machine soname
+  local header dynamic
+  header=$(LC_ALL=C readelf -h "$1") && dynamic=$(LC_ALL=C readelf -dW "$1") || return 1
+  if ! grep -Eq "Class:[[:space:]]+$2\$" <<<"$header" || ! grep -Eq "Machine:[[:space:]]+$3\$" <<<"$header" ||
+     ! grep -Eq "\(SONAME\)[[:space:]]+Library soname: \[$4\]" <<<"$dynamic"; then
+    error "$1: not a $2 $3 library with SONAME $4"
+    return 1
+  fi
+}
+
+build() {
+  local N=$srcdir/nvwd NDK=$srcdir/android-ndk-$_ndk abi
+  export BUILD_PROFILE=release JOBS=${JOBS:-$(nproc)}
+
+  # Android guest: the NDK toolchain, none of the host's compiler flags
+  for abi in x86_64 x86; do
+    env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u LTOFLAGS -u RUSTFLAGS \
+      ANDROID_ABI=$abi NDK="$NDK" "$N/build/mesa/build.sh" "$srcdir/mesa" "$srcdir/mesa-build-$abi"
+  done
+  env -u CFLAGS -u CXXFLAGS -u CPPFLAGS -u LDFLAGS -u LTOFLAGS \
+    NDK="$NDK" MINIGBM="$srcdir/minigbm" REPO="$N" "$N/build/gralloc/build.sh" "$srcdir/gralloc-out"
+
+  # host renderer
+  REPO="$N" "$N/build/virglrenderer/build.sh" "$srcdir/virglrenderer" "$srcdir/virgl-build"
+
+  _check_elf "$srcdir/mesa-build-x86_64/src/virtio/vulkan/libvulkan_virtio.so" ELF64 'Advanced Micro Devices X86-64' libvulkan_virtio.so
+  _check_elf "$srcdir/mesa-build-x86/src/virtio/vulkan/libvulkan_virtio.so" ELF32 'Intel 80386' libvulkan_virtio.so
+  _check_elf "$srcdir/gralloc-out/libgbm_mesa_wrapper.so" ELF64 'Advanced Micro Devices X86-64' libgbm_mesa_wrapper.so
+}
+
+check() {
+  # the binaries carry this tree's code: patches/mesa/0003 in both guest drivers, patches/virglrenderer/0004 and
+  # src/virglrenderer-vtest in the host renderer
+  local f
+  for f in "$srcdir"/mesa-build-{x86_64,x86}/src/virtio/vulkan/libvulkan_virtio.so; do
+    grep -aq 'timeline export failed, socket fallback' "$f" || { error "$f lacks patches/mesa/0003"; return 1; }
+  done
+  grep -aq 'vtest_gpu_alloc: allocating on' "$srcdir/virgl-build/vtest/virgl_test_server" ||
+    { error "virgl_test_server lacks src/virglrenderer-vtest"; return 1; }
+  grep -aq 'refusing to signal incomplete GPU work' "$srcdir/virgl-build/src/libvirglrenderer.so.1" ||
+    { error "libvirglrenderer.so.1 lacks patches/virglrenderer/0004"; return 1; }
+}
+
+package() {
+  local N=$srcdir/nvwd L=$pkgdir/usr/lib/waydroid-nvidia A=$srcdir/nvwd/packaging/aur/waydroid-nvidia-bin rel
+
+  # 1. patched waydroid (layout of extra/waydroid)
+  make -C "$srcdir/waydroid-$_waydroid_sha" install DESTDIR="$pkgdir" USE_NFTABLES=1
+
+  # 2. host Venus renderer, private libdir (wd-venus.service sets LD_LIBRARY_PATH; RUNPATH $ORIGIN as well)
+  install -Dm755 "$srcdir/virgl-build/vtest/virgl_test_server" "$L/virgl_test_server"
+  install -Dm755 "$srcdir/virgl-build/server/virgl_render_server" "$L/virgl_render_server"
+  install -Dm755 "$srcdir/virgl-build/src/libvirglrenderer.so.1" "$L/libvirglrenderer.so.1"
+  patchelf --set-rpath '$ORIGIN' "$L/virgl_test_server" "$L/virgl_render_server" "$L/libvirglrenderer.so.1"
+
+  # 3. guest stack: this fork's Venus driver and gralloc, upstream's ANGLE/hwcomposer/SurfaceFlinger, with the
+  #    Android lib (ELF32) / lib64 (ELF64) split kept explicit
+  install -Dm644 "$srcdir/mesa-build-x86_64/src/virtio/vulkan/libvulkan_virtio.so" "$L/guest/vendor/lib64/hw/vulkan.virtio.so"
+  install -Dm644 "$srcdir/mesa-build-x86/src/virtio/vulkan/libvulkan_virtio.so" "$L/guest/vendor/lib/hw/vulkan.virtio.so"
+  install -Dm644 "$srcdir/gralloc-out/libgbm_mesa_wrapper.so" "$L/guest/vendor/lib64/libgbm_mesa_wrapper.so"
+  for rel in vendor/lib/egl/libEGL_angle.so vendor/lib/egl/libGLESv1_CM_angle.so vendor/lib/egl/libGLESv2_angle.so \
+             vendor/lib64/egl/libEGL_angle.so vendor/lib64/egl/libGLESv1_CM_angle.so vendor/lib64/egl/libGLESv2_angle.so \
+             vendor/lib64/hw/hwcomposer.waydroid.so; do
+    [ -f "$srcdir/prebuilts/$rel" ] || { error "upstream guest prebuilts lack $rel"; return 1; }
+    install -Dm644 "$srcdir/prebuilts/$rel" "$L/guest/$rel"
+  done
+  install -Dm755 "$srcdir/prebuilts/system/bin/surfaceflinger" "$L/guest/system/bin/surfaceflinger"
+
+  # 4. nvidia-prolapse: vendor image + release bundle + the tools that gate/install/activate it (upstream's script)
+  bash "$N/packaging/native/install-native.sh" "$N" \
+    "$srcdir/waydroid-nvidia-native-x86_64-$_upstream_tag.tar.zst" "$srcdir/waydroid-nvidia-vendor-x86_64-$_upstream_tag.zip" \
+    "$srcdir/waydroid-nvidia-vendor-ota-$_upstream_tag.json" "$pkgdir" "$_upstream_tag"
+  install -Dm644 "$A/waydroid-nvidia-driver.hook" "$pkgdir/usr/share/libalpm/hooks/90-waydroid-nvidia-driver.hook"
+  install -Dm755 "$A/driver-update-note" "$L/driver-update-note"
+
+  # 5. host integration
+  install -Dm644 "$A/wd-venus.service" "$pkgdir/usr/lib/systemd/user/wd-venus.service"
+  install -Dm644 "$A/waydroid-venus.tmpfiles" "$pkgdir/usr/lib/tmpfiles.d/waydroid-venus.conf"
+  install -Dm755 "$A/waydroid-nvidia-setup" "$pkgdir/usr/bin/waydroid-nvidia-setup"
+  install -Dm644 "$A/waydroid-nvidia.rules" "$pkgdir/usr/lib/udev/rules.d/70-waydroid-nvidia.rules"
+  install -Dm644 "$A/waydroid-nvidia-gpu.rules" "$pkgdir/usr/lib/udev/rules.d/70-waydroid-nvidia-gpu.rules"
+
+  # 6. what was built, from what
+  cat > "$L/BUILD-INFO" <<EOF
+package=$pkgname $pkgver-$pkgrel
+fork_commit=$(cat "$N/.commit")
+upstream_release=$_upstream_tag
+mesa=$_mesa_sha
+virglrenderer=$_virgl_sha
+minigbm=$_minigbm_sha
+waydroid=$_waydroid_sha
+ndk=$_ndk
+EOF
+  chmod 644 "$L/BUILD-INFO"
+  install -Dm644 "$N/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 "$N/THIRD_PARTY.md" "$pkgdir/usr/share/licenses/$pkgname/THIRD_PARTY.md"
+}

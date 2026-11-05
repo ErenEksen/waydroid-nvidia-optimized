@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:58:44 +0300
-Subject: [PATCH 09/17] hwcomposer: never shrink the HIDL thread pool from the
+Subject: [PATCH 09/20] hwcomposer: never shrink the HIDL thread pool from the
  binder thread
 
 What: hwc_binder_thread() configures the HIDL pool with

@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:57:16 +0300
-Subject: [PATCH 06/17] hwcomposer: a lost Wayland connection ends the composer
+Subject: [PATCH 06/20] hwcomposer: a lost Wayland connection ends the composer
  with a named cause
 
 What: when wl_display_dispatch() fails for good, hwc_wayland_thread() logs
@@ -47,10 +47,10 @@ Licence: Apache-2.0 (android_hardware_waydroid).
  2 files changed, 24 insertions(+), 6 deletions(-)
 
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 7f2ec25..76adc84 100644
+index def657f..7f8f3f2 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
-@@ -2468,19 +2468,33 @@ static void* hwc_wayland_thread(void* data) {
+@@ -2478,19 +2478,33 @@ static void* hwc_wayland_thread(void* data) {
          d->windows.reap();
      }
  

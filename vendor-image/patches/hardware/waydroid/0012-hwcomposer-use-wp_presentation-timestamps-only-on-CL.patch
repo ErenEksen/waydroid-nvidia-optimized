@@ -1,7 +1,7 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 01:00:55 +0300
-Subject: [PATCH 12/17] hwcomposer: use wp_presentation timestamps only on
+Subject: [PATCH 12/20] hwcomposer: use wp_presentation timestamps only on
  CLOCK_MONOTONIC
 
 What:
@@ -90,10 +90,10 @@ index 7a1916c..c58d58b 100644
      if (!pdev->vsync_thread) {
          ret = pthread_create (&pdev->vsync_thread, NULL, hwc_vsync_thread, pdev);
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 76adc84..7c8b32c 100644
+index 7f8f3f2..2ad322b 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
-@@ -1878,10 +1878,17 @@ static const struct wl_output_listener output_listener = {
+@@ -1888,10 +1888,17 @@ static const struct wl_output_listener output_listener = {
  };
  
  static void

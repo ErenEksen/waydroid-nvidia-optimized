@@ -1,0 +1,199 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Shiro836 <noreply>
+Date: Tue, 27 Oct 2026 23:24:55 +0300
+Subject: [PATCH 21/21] hwcomposer: window creation never waits for the Wayland
+ thread
+
+What: window::create() makes the new window's role objects (xdg_surface,
+xdg_toplevel, the decoration, wl_shell_surface, the calibration's fractional
+scale object) on create_queue through proxy wrappers, so the configure it
+waits for is dispatched by the creating thread itself. Once the window is
+configured the objects move to the default queue while the creating thread
+holds a read intent on create_queue (wl_display_prepare_read_queue), so no
+event is left behind or overtaken. The creatingWindow comment now says what
+that flag still does (skip the refresh nudge for the window being created)
+and what it cannot do.
+
+Why: window::create() runs inside presentDisplay with the HWC2On1Adapter's
+state mutex and windowsMutex held, but its first configure was dispatched by
+hwc_wayland_thread, which takes those locks itself. Measured here in
+glibc-shim mode under rapid app launches and focus switches (single-window
+mode, headless KWin): the composer thread in window::create ->
+wl_display_roundtrip_queue(create_queue), forever, waiting for
+window->configured; the Wayland thread in an event handler ->
+procs->invalidate -> HWC2On1Adapter::hwc1Invalidate, waiting for the state
+mutex the composer holds. creatingWindow was meant to keep the Wayland thread
+out of invalidate() during creation, but it is checked before the call, so a
+handler that checked just before the composer set it still walks in. The
+watchdog then killed system_server every ~70 s. With the composer never
+waiting for that thread, the cycle cannot form, whatever the Wayland thread
+blocks on (the adapter mutex, windowsMutex, setFocusedTask()).
+---
+ hwcomposer/wayland-hwc.cpp | 65 ++++++++++++++++++++++++++++++++------
+ hwcomposer/wayland-hwc.h   | 20 +++++++-----
+ 2 files changed, 68 insertions(+), 17 deletions(-)
+
+diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
+index a43b195..8ef25db 100644
+--- a/hwcomposer/wayland-hwc.cpp
++++ b/hwcomposer/wayland-hwc.cpp
+@@ -55,6 +55,7 @@
+ #include <syscall.h>
+ #include <cmath>
+ #include <algorithm>
++#include <initializer_list>
+ 
+ #include <libsync/sw_sync.h>
+ #include <sync/sync.h>
+@@ -295,8 +296,7 @@ set_touch_size(struct display *display, int width, int height) {
+ static void
+ request_refresh(struct display *display) {
+     if (display->procs && display->procs->invalidate) {
+-        /* See display::creatingWindow — calling into SurfaceFlinger here while
+-         * the composer thread is blocked in window::create() deadlocks both. */
++        /* See display::creatingWindow: skipped for the window being created. */
+         if (!display->creatingWindow.load(std::memory_order_acquire))
+             display->procs->invalidate(display->procs);
+     }
+@@ -969,6 +969,42 @@ static const struct wp_fractional_scale_v1_listener fractional_scale_listener =
+     .preferred_scale = fractional_scale_handle_preferred_scale
+ };
+ 
++/* window::create() runs on the composer thread inside hwc_set(), i.e. inside presentDisplay with the
++ * HWC2On1Adapter's state mutex and windowsMutex held, and has to wait for the compositor's first
++ * configure. hwc_wayland_thread must not be the one that dispatches it: that thread takes the very
++ * locks the waiting composer holds (procs->invalidate() takes the adapter's state mutex; input and
++ * window handlers take windowsMutex) and makes synchronous calls that can end up waiting for this
++ * present (setFocusedTask() waits for system_server, which can wait for SurfaceFlinger). A
++ * composer thread waiting on it closes a lock cycle that wedges the display stack until the
++ * watchdog kills system_server. So a new window's role objects are made on create_queue, which only
++ * the creating thread dispatches, and handed to the default queue once the window is configured:
++ * the composer never waits for hwc_wayland_thread. */
++template <typename T>
++static T *creation_queue_wrapper(struct display *display, T *factory)
++{
++    T *wrapper = static_cast<T *>(wl_proxy_create_wrapper(factory));
++    if (!wrapper) {
++        ALOGE("window::create: wl_proxy_create_wrapper failed (out of memory)");
++        abort();
++    }
++    wl_proxy_set_queue(reinterpret_cast<struct wl_proxy *>(wrapper), display->create_queue);
++    return wrapper;
++}
++
++/* Dispatches what create_queue still holds, then moves the proxies to the default queue while this
++ * thread holds a read intent on create_queue: no thread reads (and queues) events in between, so no
++ * event for them is left behind on create_queue or overtaken by a later one on the default queue. */
++static void
++hand_to_default_queue(struct display *display, std::initializer_list<void *> proxies)
++{
++    while (wl_display_prepare_read_queue(display->display, display->create_queue) != 0)
++        wl_display_dispatch_queue_pending(display->display, display->create_queue);
++    for (void *proxy : proxies)
++        if (proxy)
++            wl_proxy_set_queue(static_cast<struct wl_proxy *>(proxy), nullptr);
++    wl_display_cancel_read(display->display);
++}
++
+ std::unique_ptr<window>
+ window::create(struct display *display, bool use_subsurfaces, std::string appID, std::string taskID, hwc_color_t color)
+ {
+@@ -1008,8 +1044,9 @@ window::create(struct display *display, bool use_subsurfaces, std::string appID,
+     } creating_guard{display};
+ 
+     if (display->wm_base) {
+-        window->xdg_surface =
+-                xdg_wm_base_get_xdg_surface(display->wm_base, window->surface);
++        struct xdg_wm_base *wm_base = creation_queue_wrapper(display, display->wm_base);
++        window->xdg_surface = xdg_wm_base_get_xdg_surface(wm_base, window->surface);
++        wl_proxy_wrapper_destroy(wm_base);
+         assert(window->xdg_surface);
+         xdg_surface_add_listener(window->xdg_surface,
+                                      &xdg_surface_listener, window.get());
+@@ -1020,8 +1057,11 @@ window::create(struct display *display, bool use_subsurfaces, std::string appID,
+ 
+         if (display->wantDecorations) {
+             if (display->decoration_manager) {
++                struct zxdg_decoration_manager_v1 *decoration_manager =
++                        creation_queue_wrapper(display, display->decoration_manager);
+                 window->decoration = zxdg_decoration_manager_v1_get_toplevel_decoration(
+-                        display->decoration_manager, window->xdg_toplevel);
++                        decoration_manager, window->xdg_toplevel);
++                wl_proxy_wrapper_destroy(decoration_manager);
+                 zxdg_toplevel_decoration_v1_add_listener(window->decoration,
+                         &toplevel_decoration_listener, window.get());
+                 zxdg_toplevel_decoration_v1_set_mode(window->decoration,
+@@ -1032,8 +1072,9 @@ window::create(struct display *display, bool use_subsurfaces, std::string appID,
+             }
+         }
+     } else if (display->shell) {
+-        window->shell_surface =
+-            wl_shell_get_shell_surface(display->shell, window->surface);
++        struct wl_shell *shell = creation_queue_wrapper(display, display->shell);
++        window->shell_surface = wl_shell_get_shell_surface(shell, window->surface);
++        wl_proxy_wrapper_destroy(shell);
+         assert(window->shell_surface);
+         wl_shell_surface_add_listener(window->shell_surface, &shell_surface_listener, window.get());
+         wl_shell_surface_set_toplevel(window->shell_surface);
+@@ -1068,8 +1109,10 @@ window::create(struct display *display, bool use_subsurfaces, std::string appID,
+         wp_fractional_scale_v1* fs = nullptr;
+         if (display->fractional_scale_manager) {
+             // We only support one global scale
+-            fs = wp_fractional_scale_manager_v1_get_fractional_scale(
+-                    display->fractional_scale_manager, window->surface);
++            struct wp_fractional_scale_manager_v1 *fs_manager =
++                    creation_queue_wrapper(display, display->fractional_scale_manager);
++            fs = wp_fractional_scale_manager_v1_get_fractional_scale(fs_manager, window->surface);
++            wl_proxy_wrapper_destroy(fs_manager);
+             wp_fractional_scale_v1_add_listener(fs, &fractional_scale_listener, display);
+         }
+ 
+@@ -1101,6 +1144,10 @@ window::create(struct display *display, bool use_subsurfaces, std::string appID,
+             window->set_maximize(false);
+     }
+ 
++    /* configured: from here on hwc_wayland_thread handles this window's events */
++    hand_to_default_queue(display, {window->xdg_surface, window->xdg_toplevel, window->decoration,
++                                    window->shell_surface});
++
+     if (display->wm_base)
+         xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, display->width, display->height);
+ 
+diff --git a/hwcomposer/wayland-hwc.h b/hwcomposer/wayland-hwc.h
+index 0735818..a85fc7d 100644
+--- a/hwcomposer/wayland-hwc.h
++++ b/hwcomposer/wayland-hwc.h
+@@ -370,7 +370,10 @@ struct display {
+      * hazard, and it wedged window creation ~50% of the time with decorations
+      * on (both threads parked in ppoll, waiting on each other). Sync callbacks
+      * for creation go to this private queue instead, which only the creating
+-     * thread ever dispatches. */
++     * thread ever dispatches. The new window's role objects (xdg_surface,
++     * xdg_toplevel, decoration, wl_shell_surface, fractional scale) are made
++     * on it too, so their first configure is dispatched by the creating thread
++     * and never by hwc_wayland_thread (see window::create()). */
+     struct wl_event_queue *create_queue;
+     struct wl_registry *registry;
+     struct wl_compositor *compositor;
+@@ -542,13 +545,14 @@ struct display {
+     sp<IWaydroidTask> task;
+ 
+     const hwc_procs_t *procs;
+-    /* Set while the composer thread is inside window::create(), which blocks
+-     * waiting for the compositor's first configure. do_hotplug() must not call
+-     * procs->invalidate() during that window: invalidate re-enters
+-     * SurfaceFlinger, which comes back into hwc on the very thread that is
+-     * blocked, and both threads wedge (composer in wl_display_roundtrip_queue,
+-     * Wayland thread in do_hotplug). Skipping the nudge loses nothing: the
+-     * next frame SurfaceFlinger presents re-positions the layers anyway. */
++    /* Set while the composer thread is inside window::create(). The configure
++     * handlers of the window being created run on that thread then, inside
++     * presentDisplay; they skip the procs->invalidate() nudge, which loses
++     * nothing: the frame being presented and the next one re-position the
++     * layers anyway. It is not what keeps hwc_wayland_thread out of a lock
++     * cycle with the composer (a check-then-call cannot): window::create()
++     * never waits for that thread, so an invalidate() it makes during a present
++     * only waits for the present to finish. */
+     std::atomic<bool> creatingWindow;
+ 
+     /* modes, active_mode, phys_width and phys_height are replaced by the resize

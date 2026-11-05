@@ -1,7 +1,7 @@
-From 76cc20afce9f5014818bfbe5e5322c5d03ec71f6 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 01:00:25 +0300
-Subject: [PATCH 11/13] hwcomposer: an acquire-fence timeout still presents the
+Subject: [PATCH 11/20] hwcomposer: an acquire-fence timeout still presents the
  layer completely
 
 What: apply_hwc_layer_to_surface_context() waits up to 1000 ms (was 100 ms)
@@ -32,10 +32,10 @@ origins), which is not taken.
  1 file changed, 18 insertions(+), 8 deletions(-)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 62d209c..81ddf0d 100644
+index 4a09b77..7a1916c 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
-@@ -372,7 +372,8 @@ static void apply_surface_damage(hwc_layer_1 *hwc_layer, surface_context &surfac
+@@ -377,7 +377,8 @@ static void apply_surface_damage(hwc_layer_1 *hwc_layer, surface_context &surfac
  }
  
  static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pdev, hwc_layer_1 *hwc_layer, size_t hwc_layer_index, surface_context &surface_context, buffer *buf = nullptr) {
@@ -45,7 +45,7 @@ index 62d209c..81ddf0d 100644
      int res = -1;
  
      if (!buf) {
-@@ -417,22 +418,31 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
+@@ -422,22 +423,31 @@ static int apply_hwc_layer_to_surface_context(waydroid_hwc_composer_device_1 *pd
          surface_context.set_buffer_scale(pdev->display->scale);
      }
  

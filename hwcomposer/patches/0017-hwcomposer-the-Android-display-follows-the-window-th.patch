@@ -1,8 +1,8 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Shiro836 <17294277+Shiro836@users.noreply.github.com>
 Date: Sat, 17 Oct 2026 21:39:33 +0300
-Subject: [PATCH] hwcomposer: the Android display follows the window, through a
- display reconnect sent from its own thread
+Subject: [PATCH 1/2] hwcomposer: the Android display follows the window,
+ through a display reconnect sent from its own thread
 
 With Waydroid's hwc2on1 "Handle primary hotplugs" patch, an HWC1
 hotplug(0, 1) makes SurfaceFlinger re-read the primary display's configs and
@@ -243,7 +243,7 @@ index 0000000..6fc7807
 +    display->resize_thread.join();
 +}
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 9fb0034..b9a0a5c 100644
+index 9adeda1..ade5a3c 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
 @@ -62,9 +62,10 @@
@@ -260,7 +260,7 @@ index 9fb0034..b9a0a5c 100644
  #pragma GCC poison hotplug
  
  using ::android::hardware::configureRpcThreadpool;
-@@ -668,10 +669,12 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
+@@ -673,10 +674,12 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
       * HWComposer::DisplayData that presentAndGetReleaseFences still holds a
       * reference to. It then calls getReleaseFences() through the freed entry
       * (SEGV in presentAndGetReleaseFences, 2026-10-16).
@@ -277,7 +277,7 @@ index 9fb0034..b9a0a5c 100644
      return 0;
  }
  
-@@ -736,6 +739,7 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev,
+@@ -741,6 +744,7 @@ static int hwc_get_display_configs(struct hwc_composer_device_1* dev,
      }
  
      if (disp == HWC_DISPLAY_PRIMARY) {
@@ -285,7 +285,7 @@ index 9fb0034..b9a0a5c 100644
          size_t n = pdev->display->modes.size();
          if (n == 0)
              n = 1;
-@@ -758,9 +762,12 @@ static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
+@@ -763,9 +767,12 @@ static int32_t hwc_attribute(struct waydroid_hwc_composer_device_1* pdev,
      /* Per-config dimensions: the adapter queries every advertised config to
       * build SurfaceFlinger's mode list, so answering with the *current* size
       * for all of them would collapse the list to one mode. */
@@ -301,7 +301,7 @@ index 9fb0034..b9a0a5c 100644
      }
      int density = 180;
  
-@@ -815,8 +822,10 @@ static int hwc_get_display_attributes(struct hwc_composer_device_1* dev,
+@@ -820,8 +827,10 @@ static int hwc_get_display_attributes(struct hwc_composer_device_1* dev,
  
  static int hwc_get_active_config(struct hwc_composer_device_1* dev, int disp) {
      auto *pdev = static_cast<waydroid_hwc_composer_device_1 *>(dev);
@@ -313,7 +313,7 @@ index 9fb0034..b9a0a5c 100644
      return -EINVAL;
  }
  
-@@ -825,18 +834,21 @@ static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, in
+@@ -830,18 +839,21 @@ static int hwc_set_active_config(struct hwc_composer_device_1* dev, int disp, in
      struct display *display = pdev->display;
      if (disp != HWC_DISPLAY_PRIMARY)
          return -EINVAL;
@@ -346,7 +346,7 @@ index 9fb0034..b9a0a5c 100644
  }
  
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index d5f5a06..0a9e8ad 100644
+index 5d4a5d2..ea30e40 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -85,9 +85,11 @@
@@ -424,7 +424,7 @@ index d5f5a06..0a9e8ad 100644
          if (property_get("persist.waydroid.width_padding", property, nullptr) > 0)
              width -= atoi(property);
 @@ -267,9 +286,12 @@ do_hotplug(struct display *display) {
-         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRWXO | S_IRWXG | S_IRWXU);
+         mkfifo(INPUT_PIPE_NAME[INPUT_TOUCH], S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP);
          chown(INPUT_PIPE_NAME[INPUT_TOUCH], 1000, 1000);
      }
 -    /* Despite the name, no HWC hotplug is sent: the configs SurfaceFlinger
@@ -599,7 +599,7 @@ index d5f5a06..0a9e8ad 100644
      }
  }
  
-@@ -2783,12 +2869,14 @@ create_display(const char *gralloc)
+@@ -2793,12 +2879,14 @@ create_display(const char *gralloc)
      }
  
      display->task = IWaydroidTask::getService();
@@ -705,6 +705,3 @@ index b13c2b6..0f46428 100644
  struct display *
  create_display(const char* gralloc);
  void
--- 
-2.56.0
-

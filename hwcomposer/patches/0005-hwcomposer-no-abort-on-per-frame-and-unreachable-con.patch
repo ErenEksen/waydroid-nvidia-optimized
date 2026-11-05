@@ -1,7 +1,7 @@
-From 97480b80f56b2985b3723bbdc75f177d9e060a77 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 00:56:58 +0300
-Subject: [PATCH 05/13] hwcomposer: no abort() on per-frame and unreachable
+Subject: [PATCH 05/20] hwcomposer: no abort() on per-frame and unreachable
  conditions
 
 What: the composer no longer abort()s when
@@ -44,7 +44,7 @@ Deviations from the source:
  4 files changed, 57 insertions(+), 14 deletions(-)
 
 diff --git a/hwcomposer/gralloc_handler.cpp b/hwcomposer/gralloc_handler.cpp
-index d598324..3215c6f 100644
+index 84e739d..c6dd294 100644
 --- a/hwcomposer/gralloc_handler.cpp
 +++ b/hwcomposer/gralloc_handler.cpp
 @@ -103,11 +103,15 @@ std::unique_ptr<buffer> create_shm_wl_buffer(display *display, const buffer_meta
@@ -66,7 +66,7 @@ index d598324..3215c6f 100644
      }
  
      const struct zwp_linux_buffer_params_v1_listener params_listener = {
-@@ -387,7 +391,10 @@ gralloc_handler::get_buffer_metadata_func gralloc_handler::select_get_buffer_met
+@@ -388,7 +392,10 @@ gralloc_handler::get_buffer_metadata_func gralloc_handler::select_get_buffer_met
          case GrallocType::GRALLOC_DEFAULT:
              return get_buffer_metadata_generic;
          default:
@@ -152,7 +152,7 @@ index a874a73..432c21b 100644
                  int res = apply_hwc_layer_to_window(pdev, fbt, skipped_layers.framebuffer_target_index(), window);
                  if (in_run || is_fbt) {
 diff --git a/hwcomposer/wayland-hwc.cpp b/hwcomposer/wayland-hwc.cpp
-index 322fba5..b11ae76 100644
+index b9e7421..def657f 100644
 --- a/hwcomposer/wayland-hwc.cpp
 +++ b/hwcomposer/wayland-hwc.cpp
 @@ -675,8 +675,9 @@ BufferTransform hwc_transform_to_buffer_transform(uint32_t hwc_transform) {
@@ -178,7 +178,7 @@ index 322fba5..b11ae76 100644
      }
  
      if (display->isMaximized || calibrating) {
-@@ -2525,6 +2528,15 @@ create_display(const char *gralloc)
+@@ -2535,6 +2538,15 @@ create_display(const char *gralloc)
                   &registry_listener, display);
      wl_display_roundtrip(display->display);
  

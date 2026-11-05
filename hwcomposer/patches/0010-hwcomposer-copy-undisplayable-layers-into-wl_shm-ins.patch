@@ -1,7 +1,7 @@
-From b24b8b52eb2b907ef49e9043bcbd75c5fc007502 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: waydroid-nvidia-prolapse <build@local>
 Date: Mon, 12 Oct 2026 01:00:25 +0300
-Subject: [PATCH 10/13] hwcomposer: copy undisplayable layers into wl_shm
+Subject: [PATCH 10/20] hwcomposer: copy undisplayable layers into wl_shm
  instead of dropping them
 
 What: get_wl_buffer()'s set-time backstop no longer returns nullptr for a
@@ -26,10 +26,10 @@ Deviation: none in behaviour; log text says how often it happened.
  1 file changed, 13 insertions(+), 9 deletions(-)
 
 diff --git a/hwcomposer/hwcomposer.cpp b/hwcomposer/hwcomposer.cpp
-index 8f9b0c9..62d209c 100644
+index 80ad7e6..4a09b77 100644
 --- a/hwcomposer/hwcomposer.cpp
 +++ b/hwcomposer/hwcomposer.cpp
-@@ -130,20 +130,24 @@ namespace {
+@@ -135,20 +135,24 @@ namespace {
               * whose buffer the compositor cannot import must never reach
               * create_immed — INVALID_WL_BUFFER is a fatal protocol error that
               * kills the wayland connection (seen with LINEAR CPU buffers on
